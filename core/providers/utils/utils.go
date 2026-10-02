@@ -539,6 +539,9 @@ func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
 // reads that drain it. Streamed responses consumed through NewIdleTimeoutReader
 // are unwrapped there — the idle reader does its own per-chunk timing.
 func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	if err := applyRequestBodyRewriterHTTP(req); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 	resp, err := client.Do(req)
 	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
