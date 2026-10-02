@@ -560,6 +560,9 @@ func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, erro
 		}()
 		req = req.WithContext(attemptCtx)
 	}
+	if err := applyRequestBodyRewriterHTTP(req); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 	resp, err := client.Do(req)
 	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
