@@ -148,7 +148,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	}
 
 	bw := hc.AcquireWriter(conn)
-	err = req.Write(bw)
+	err = writeRequestWithRewriter(ctx, req, bw)
 	if resetConnection {
 		req.Header.ResetConnectionClose()
 	}

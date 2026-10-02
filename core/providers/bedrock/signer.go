@@ -316,9 +316,12 @@ func signAWSRequestFastHTTP(
 	// Escape path for canonical URI (Bedrock doesn't disable escaping)
 	canonicalURI := httpbinding.EscapePath(path, false)
 
-	// Calculate payload hash
-	hash := sha256.Sum256(body)
-	payloadHash := hex.EncodeToString(hash[:])
+	// Calculate payload hash over what will actually be sent (the rewritten body
+	// when ctx carries a providerUtils.RequestBodyRewriter), and sign its length.
+	payloadHash, payloadSize, err := providerUtils.RewrittenBodyDigest(ctx, body)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("error rewriting request body for signing", err)
+	}
 
 	// Set required headers
 	req.Header.Set("Content-Type", "application/json")
@@ -339,7 +342,7 @@ func signAWSRequestFastHTTP(
 	// Include content-length if body is present
 	if cl := req.Header.ContentLength(); cl >= 0 {
 		headerNames = append(headerNames, "content-length")
-		headerMap["content-length"] = []string{strconv.Itoa(cl)}
+		headerMap["content-length"] = []string{strconv.FormatInt(payloadSize, 10)}
 	}
 
 	// Collect other headers

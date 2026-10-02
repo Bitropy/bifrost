@@ -699,8 +699,16 @@ func signAWSRequest(
 		// Restore the body for subsequent reads
 		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-		hash := sha256.Sum256(bodyBytes)
-		bodyHash = hex.EncodeToString(hash[:])
+		// Hash and sign the length of what will actually be sent: with a
+		// providerUtils.RequestBodyRewriter on ctx that is the rewritten body,
+		// otherwise bodyBytes (whose length every caller already set as
+		// ContentLength). The SDK signs content-length whenever ContentLength > 0.
+		hash, size, err := providerUtils.RewrittenBodyDigest(ctx, bodyBytes)
+		if err != nil {
+			return providerUtils.NewBifrostOperationError("error rewriting request body for signing", err)
+		}
+		bodyHash = hash
+		req.ContentLength = size
 	} else {
 		// For empty body, use the hash of an empty string
 		hash := sha256.Sum256([]byte{})
