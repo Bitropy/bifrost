@@ -7534,10 +7534,13 @@ func executeRequestWithRetries[T any](
 
 		logger.Debug("request %s for provider %s completed", requestType, providerKey)
 
-		// Check if successful or if we should retry
+		// Check if successful or if we should retry. An aborted request-body
+		// rewrite (providerUtils.ErrRequestBodyRewrite) is deterministic, so
+		// retrying the attempt would abort again; fallbacks still run.
 		if bifrostError == nil ||
 			bifrostError.IsBifrostError ||
-			(bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled) {
+			(bifrostError.Error != nil && bifrostError.Error.Type != nil && *bifrostError.Error.Type == schemas.RequestCancelled) ||
+			(bifrostError.Error != nil && errors.Is(bifrostError.Error.Error, providerUtils.ErrRequestBodyRewrite)) {
 			// A timeout or a cancellation ends the attempt here, before the classification
 			// below would stamp its record, so it is labelled now. Keyless providers keep no
 			// trail of their own, and the last record may be another provider's.
