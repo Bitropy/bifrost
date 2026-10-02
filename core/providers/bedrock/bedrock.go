@@ -704,9 +704,11 @@ func signAWSRequestWithDefaults(
 
 	// Calculate SHA256 hash of the request body
 	var bodyHash string
-	if req.Body != nil && req.GetBody != nil {
+	if req.Body != nil && req.GetBody != nil && providerUtils.RequestBodyRewriterFromContext(ctx) == nil {
 		// A body that can be re-read (every request built from a byte slice) is hashed as a stream
-		// and then rewound, so signing a large upload never holds a second copy of it.
+		// and then rewound, so signing a large upload never holds a second copy of it. With a
+		// providerUtils.RequestBodyRewriter on ctx the body is the small pre-rewrite one and the
+		// bytes to hash are the rewritten ones, so that case takes the branch below (BIT-2286).
 		h := sha256.New()
 		if _, err := io.Copy(h, req.Body); err != nil {
 			return providerUtils.NewBifrostOperationError("error reading request body", err)
@@ -725,8 +727,23 @@ func signAWSRequestWithDefaults(
 		// Restore the body for subsequent reads
 		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-		hash := sha256.Sum256(bodyBytes)
-		bodyHash = hex.EncodeToString(hash[:])
+		// Hash and sign the length of what will actually be sent: with a
+		// providerUtils.RequestBodyRewriter on ctx that is the rewritten body,
+		// otherwise bodyBytes. The SDK signs content-length whenever
+		// ContentLength > 0, and DoHTTPRequest sends the rewritten size, so with
+		// a rewriter ContentLength is set to it here. Without one, ContentLength
+		// is left exactly as the caller set it: every caller builds req over the
+		// body bytes (http.NewRequest, or an explicit assignment), so the
+		// invariant ContentLength == len(bodyBytes) already holds and the
+		// signature is the pre-existing one.
+		hash, size, err := providerUtils.RewrittenBodyDigest(ctx, bodyBytes)
+		if err != nil {
+			return providerUtils.NewBifrostOperationError("error rewriting request body for signing", err)
+		}
+		bodyHash = hash
+		if providerUtils.RequestBodyRewriterFromContext(ctx) != nil {
+			req.ContentLength = size
+		}
 	} else {
 		// For empty body, use the hash of an empty string
 		hash := sha256.Sum256([]byte{})
