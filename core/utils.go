@@ -453,9 +453,12 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 //     and forward the caller's headers on a call the caller doesn't own.
 //
 // Deliberately not cleared: tracing/observability keys (the sub-request
-// should stay tied to the caller's trace) and
+// should stay tied to the caller's trace),
 // BifrostContextKeySkipPluginPipeline (whether the internal request runs the
-// plugin pipeline is the caller's decision).
+// plugin pipeline is the caller's decision) and
+// BifrostContextKeyDisableDecisionEmulation (a safety opt-out, not routing or
+// transport state: a sub-request derived from an opted-out caller stays opted
+// out, so it fails closed rather than turning a decision into an LLM call).
 // virtualKeyHeader carries Bifrost's own virtual key. IsSensitiveHeader does not match it
 // (no api-key/authorization/secret substring, no -token suffix), so it would otherwise be
 // exported to traces verbatim.

@@ -2,8 +2,11 @@ package bifrost
 
 import (
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -278,5 +281,156 @@ func TestEmulateDecisionToolChoicePerSurface(t *testing.T) {
 				t.Errorf("tool_choice = %+v, want %q", choice, tc.want)
 			}
 		})
+	}
+}
+
+// openAIResponsesServer counts every hit and answers /v1/responses with an
+// emit_decision function call for the single "approve" noul question.
+func openAIResponsesServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1700000000,"model":"gpt-4o-mini","status":"completed",` +
+			`"output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"emit_decision","status":"completed",` +
+			`"arguments":"{\"approve\":{\"value\":0.9,\"confidence\":0.8}}"}],` +
+			`"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`))
+	}))
+	t.Cleanup(server.Close)
+	return server, &hits
+}
+
+func addOpenAIProvider(account *MockAccount, baseURL string) {
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, baseURL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "openai-key", Value: *schemas.NewSecretVar("sk-openai"),
+		Models: schemas.WhiteList{"*"}, Weight: 100,
+	}})
+}
+
+func openAIDecisionRequest() *schemas.BifrostDecisionRequest {
+	req := noulDecisionRequest(schemas.OpenAI)
+	req.Model = "gpt-4o-mini"
+	return req
+}
+
+// BIT-2398: with BifrostContextKeyDisableDecisionEmulation set, a provider
+// without native decision support answers unsupported_operation and the
+// decision is never turned into a Responses call.
+func TestDecisionEmulationOptOutReturnsUnsupportedOperation(t *testing.T) {
+	server, hits := openAIResponsesServer(t)
+	account := NewMockAccount()
+	addOpenAIProvider(account, server.URL)
+	client := newStreamTestClient(t, account)
+
+	ctx := decisionTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDisableDecisionEmulation, true)
+	_, bifrostErr := client.DecisionRequest(ctx, openAIDecisionRequest())
+	if !isUnsupportedOperation(bifrostErr) {
+		t.Fatalf("expected unsupported_operation, got %+v", bifrostErr)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("opted-out decision reached the OpenAI server %d time(s), want 0", got)
+	}
+}
+
+func TestDecisionEmulationOptOutHoldsOnFallback(t *testing.T) {
+	primary := newTypesafeServer(t, http.StatusInternalServerError)
+	server, hits := openAIResponsesServer(t)
+	account := NewMockAccount()
+	addTypesafeCustomProvider(account, typesafeOnPrem, primary.URL, "ts-onprem-secret", nil)
+	addOpenAIProvider(account, server.URL)
+	client := newStreamTestClient(t, account)
+
+	ctx := decisionTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDisableDecisionEmulation, true)
+	req := noulDecisionRequest(typesafeOnPrem)
+	req.Fallbacks = []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}}
+	_, bifrostErr := client.DecisionRequest(ctx, req)
+	// Core returns the primary's error once every fallback has failed; the
+	// opted-out fallback failed with unsupported_operation instead of emulating.
+	if bifrostErr == nil || bifrostErr.ExtraFields.Provider != typesafeOnPrem {
+		t.Fatalf("expected the primary's error after the fallback failed, got %+v", bifrostErr)
+	}
+	if got := primary.hits.Load(); got != 1 {
+		t.Fatalf("primary hits = %d, want 1 (the fallback must have been tried after it)", got)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("opted-out fallback reached the OpenAI server %d time(s), want 0", got)
+	}
+	if ctx.Value(schemas.BifrostContextKeyDisableDecisionEmulation) != true {
+		t.Error("the opt-out key must survive the fallback transition")
+	}
+}
+
+// Regression: without the key, emulation through the Responses API is
+// unchanged, on the primary and on a fallback.
+func TestDecisionEmulationWithoutOptOutStillEmulates(t *testing.T) {
+	t.Run("primary", func(t *testing.T) {
+		server, hits := openAIResponsesServer(t)
+		account := NewMockAccount()
+		addOpenAIProvider(account, server.URL)
+		client := newStreamTestClient(t, account)
+
+		resp, bifrostErr := client.DecisionRequest(decisionTestContext(), openAIDecisionRequest())
+		if bifrostErr != nil {
+			t.Fatalf("emulated decision failed: %+v", bifrostErr.Error)
+		}
+		if got := hits.Load(); got != 1 {
+			t.Fatalf("OpenAI server hits = %d, want 1", got)
+		}
+		if got := resp.Answers["approve"].Value; got != 0.9 {
+			t.Errorf("approve answer = %v, want 0.9", got)
+		}
+	})
+	t.Run("fallback", func(t *testing.T) {
+		primary := newTypesafeServer(t, http.StatusInternalServerError)
+		server, hits := openAIResponsesServer(t)
+		account := NewMockAccount()
+		addTypesafeCustomProvider(account, typesafeOnPrem, primary.URL, "ts-onprem-secret", nil)
+		addOpenAIProvider(account, server.URL)
+		client := newStreamTestClient(t, account)
+
+		req := noulDecisionRequest(typesafeOnPrem)
+		req.Fallbacks = []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}}
+		resp, bifrostErr := client.DecisionRequest(decisionTestContext(), req)
+		if bifrostErr != nil {
+			t.Fatalf("emulated fallback decision failed: %+v", bifrostErr.Error)
+		}
+		if got := hits.Load(); got != 1 {
+			t.Fatalf("OpenAI server hits = %d, want 1", got)
+		}
+		if resp.ExtraFields.Provider != schemas.OpenAI {
+			t.Errorf("ExtraFields.Provider = %q, want openai", resp.ExtraFields.Provider)
+		}
+	})
+}
+
+// The opt-out is a caller policy: it survives both the per-fallback clear and
+// the internal-request clear (fail closed).
+func TestDecisionEmulationOptOutSurvivesContextClears(t *testing.T) {
+	ctx := decisionTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDisableDecisionEmulation, true)
+	clearCtxForFallback(ctx)
+	if !isDecisionEmulationDisabled(ctx) {
+		t.Fatal("clearCtxForFallback dropped BifrostContextKeyDisableDecisionEmulation")
+	}
+	ClearContextForInternalRequest(ctx)
+	if !isDecisionEmulationDisabled(ctx) {
+		t.Fatal("ClearContextForInternalRequest dropped BifrostContextKeyDisableDecisionEmulation")
+	}
+	if isDecisionEmulationDisabled(nil) {
+		t.Error("nil context must not report the opt-out")
+	}
+	other := decisionTestContext()
+	other.SetValue(schemas.BifrostContextKeyDisableDecisionEmulation, "true")
+	if isDecisionEmulationDisabled(other) {
+		t.Error("a non-bool value must not enable the opt-out")
 	}
 }

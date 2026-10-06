@@ -7976,6 +7976,13 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		// emulate the judgment through that provider's model (tool-calling /
 		// structured output). Covers both an LLM named as the decision model and an
 		// LLM reached as a fallback - both flow through this one case.
+		// An embedder that must never turn a decision into an LLM call sets
+		// BifrostContextKeyDisableDecisionEmulation: the provider's
+		// unsupported_operation is then returned as is. clearCtxForFallback keeps
+		// the key, so this holds for the primary and every fallback.
+		if isUnsupportedOperation(bifrostError) && isDecisionEmulationDisabled(req.Context) {
+			return nil, bifrostError
+		}
 		if isUnsupportedOperation(bifrostError) {
 			// unsupported_operation also covers a policy denial (AllowedRequests without
 			// Decision). Emulate only when the operation is actually permitted, so a
