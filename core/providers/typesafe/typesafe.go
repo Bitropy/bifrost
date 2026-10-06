@@ -22,6 +22,8 @@ type TypesafeProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+
+	customProviderConfig *schemas.CustomProviderConfig // Custom provider config (nil for the native typesafe provider)
 }
 
 // NewTypesafeProvider creates a new Typesafe provider instance.
@@ -57,18 +59,38 @@ func NewTypesafeProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
+
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
-// GetProviderKey returns the provider identifier for Typesafe.
+// GetProviderKey returns the provider identifier for Typesafe, or the custom
+// provider key when this instance is a custom provider based on typesafe.
 func (provider *TypesafeProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Typesafe
+	return providerUtils.GetProviderName(schemas.Typesafe, provider.customProviderConfig)
+}
+
+// buildRequestURL constructs the full request URL. The native provider keeps
+// its context-path resolution unchanged; a custom provider additionally honours
+// CustomProviderConfig.RequestPathOverrides, as the other providers do.
+func (provider *TypesafeProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
+	if provider.customProviderConfig == nil {
+		return provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, defaultPath)
+	}
+	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	if isCompleteURL {
+		return path
+	}
+	return provider.networkConfig.BaseURL + path
 }
 
 // ListModels serves the static jev catalog. Typesafe documents no model-listing
 // endpoint, so no upstream call is made; the catalog is pinned in utils.go and
 // mirrored in the hosted datasheet.
 func (provider *TypesafeProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Typesafe, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
 	startTime := time.Now()
 
 	response, err := providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, provider.listModelsByKey)
@@ -125,6 +147,9 @@ func (provider *TypesafeProvider) listModelsByKey(ctx *schemas.BifrostContext, k
 
 // Decision performs a synchronous evaluation against POST /v1/systemone.
 func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Typesafe, provider.customProviderConfig, schemas.DecisionRequest); err != nil {
+		return nil, err
+	}
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -144,7 +169,7 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, typesafeSystemOnePath))
+	req.SetRequestURI(provider.buildRequestURL(ctx, typesafeSystemOnePath, schemas.DecisionRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {

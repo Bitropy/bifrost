@@ -19,6 +19,16 @@ func isUnsupportedOperation(err *schemas.BifrostError) bool {
 	return err != nil && err.Error != nil && err.Error.Code != nil && *err.Error.Code == "unsupported_operation"
 }
 
+// isDecisionEmulationDisabled reports whether the caller opted out of decision
+// emulation via BifrostContextKeyDisableDecisionEmulation.
+func isDecisionEmulationDisabled(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	disabled, ok := ctx.Value(schemas.BifrostContextKeyDisableDecisionEmulation).(bool)
+	return ok && disabled
+}
+
 // decisionSystemPrompt frames the judgment task for an emulating LLM.
 const decisionSystemPrompt = "You are a judgment engine. Read the given state and answer every question by " +
 	"calling the provided function exactly once. For each question emit the requested value and your " +

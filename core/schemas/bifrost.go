@@ -88,6 +88,7 @@ var SupportedBaseProviders = []ModelProvider{
 	OpenAI,
 	HuggingFace,
 	Replicate,
+	Typesafe,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
@@ -414,6 +415,7 @@ const (
 	BifrostContextKeyStreamAccumulatedUsage              BifrostContextKey = "bifrost-stream-accumulated-usage"           // *BifrostLLMUsage handle, set ONCE by a streaming provider and mutated in place as usage arrives; read on cancel/timeout to bill partial usage that the provider already consumed
 	BifrostContextKeyDeferredLargePayloadMetadata        BifrostContextKey = "bifrost-deferred-large-payload-metadata"    // <-chan *LargePayloadMetadata (set by enterprise Phase B request — delivers metadata after body streaming)
 	BifrostContextKeyRequestBodyRewriter                 BifrostContextKey = "bifrost-request-body-rewriter"              // providerUtils.RequestBodyRewriter (set by the embedder — rewrites the provider-built request body at write time; see providers/utils/bodyrewrite.go)
+	BifrostContextKeyDisableDecisionEmulation            BifrostContextKey = "bifrost-disable-decision-emulation"         // bool (set by the embedder) - when true, a decision request whose provider (primary or any fallback) returns unsupported_operation fails with that error instead of being emulated through the provider's Responses API; kept across fallbacks
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
 	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
