@@ -1154,6 +1154,7 @@ func HandleAnthropicChatCompletionStreaming(
 		// True once message_stop arrives — Anthropic's only completion signal.
 		sawTerminalEvent := false
 
+		var event AnthropicStreamEvent
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -1173,14 +1174,15 @@ func HandleAnthropicChatCompletionStreaming(
 				}
 				break
 			}
-			eventData := string(eventDataBytes)
-			if eventType == "" || eventData == "" {
+			if eventType == "" || len(eventDataBytes) == 0 {
 				continue
 			}
-			var event AnthropicStreamEvent
+			// One event value per stream, reset per event: nothing keeps its
+			// address, only the pointers it holds, which each decode allocates anew.
+			event = AnthropicStreamEvent{}
 			// Per-event decode -> "response-parse" (Serialization) stream phase.
 			parseStart := time.Now()
-			umErr := sonic.Unmarshal([]byte(eventData), &event)
+			umErr := decodeAnthropicStreamEvent(eventDataBytes, &event)
 			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if umErr != nil {
 				logger.Warn("Failed to parse message_start event: %v", umErr)
@@ -1354,7 +1356,7 @@ func HandleAnthropicChatCompletionStreaming(
 						chunkIndex++
 
 						if sendBackRawResponse {
-							response.ExtraFields.RawResponse = eventData
+							response.ExtraFields.RawResponse = string(eventDataBytes)
 							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatAnthropicMessagesStreamEvent
 						}
 
@@ -1399,7 +1401,7 @@ func HandleAnthropicChatCompletionStreaming(
 				chunkIndex++
 
 				if sendBackRawResponse {
-					response.ExtraFields.RawResponse = eventData
+					response.ExtraFields.RawResponse = string(eventDataBytes)
 					response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatAnthropicMessagesStreamEvent
 				}
 
@@ -1876,8 +1878,7 @@ func HandleAnthropicResponsesStream(
 				}
 				break
 			}
-			eventData := string(eventDataBytes)
-			if eventType == "" || eventData == "" {
+			if eventType == "" || len(eventDataBytes) == 0 {
 				continue
 			}
 			if bytes.Contains(eventDataBytes, []byte(`"amazon-bedrock-`)) {
@@ -1887,7 +1888,7 @@ func HandleAnthropicResponsesStream(
 			}
 			var event AnthropicStreamEvent
 			parseStart := time.Now()
-			umErr := sonic.Unmarshal([]byte(eventData), &event)
+			umErr := decodeAnthropicStreamEvent(eventDataBytes, &event)
 			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if umErr != nil {
 				logger.Warn("Failed to parse message_start event: %v", umErr)
@@ -2006,7 +2007,7 @@ func HandleAnthropicResponsesStream(
 					chunkIndex++
 
 					if providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse) && i == rawIdx {
-						response.ExtraFields.RawResponse = eventData
+						response.ExtraFields.RawResponse = string(eventDataBytes)
 						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatAnthropicMessagesStreamEvent
 					}
 
