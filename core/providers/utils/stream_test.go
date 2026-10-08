@@ -506,7 +506,7 @@ func TestAttachBilledUsageFromContext_KeepsUsageWithOnlyDetails(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
 
 	bifrostErr := &schemas.BifrostError{}
-	attachBilledUsageFromContext(ctx, bifrostErr)
+	AttachBilledUsageFromContext(ctx, bifrostErr)
 
 	if bifrostErr.ExtraFields.BilledUsage == nil {
 		t.Fatal("BilledUsage should be attached when cache details are present")
@@ -532,7 +532,7 @@ func TestAttachBilledUsageFromContext_CopiesUsage(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
 
 	bifrostErr := &schemas.BifrostError{}
-	attachBilledUsageFromContext(ctx, bifrostErr)
+	AttachBilledUsageFromContext(ctx, bifrostErr)
 
 	// Mutating the original (top-level AND nested pointers) must not change the
 	// billed snapshot - BilledUsage is meant to be a fully decoupled record.
@@ -564,7 +564,7 @@ func TestAttachBilledUsageFromContext_CopiesIterations(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
 
 	bifrostErr := &schemas.BifrostError{}
-	attachBilledUsageFromContext(ctx, bifrostErr)
+	AttachBilledUsageFromContext(ctx, bifrostErr)
 	usage.Iterations[0].InputTokens = 999
 
 	billed := bifrostErr.ExtraFields.BilledUsage
@@ -580,7 +580,7 @@ func TestAttachBilledUsageFromContext_NoOpWhenEmpty(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &schemas.BifrostLLMUsage{})
 	bifrostErr := &schemas.BifrostError{}
-	attachBilledUsageFromContext(ctx, bifrostErr)
+	AttachBilledUsageFromContext(ctx, bifrostErr)
 	if bifrostErr.ExtraFields.BilledUsage != nil {
 		t.Fatal("BilledUsage should stay nil when nothing measurable accumulated")
 	}
