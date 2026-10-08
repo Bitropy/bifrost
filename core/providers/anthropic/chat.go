@@ -59,15 +59,19 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error
 	}
 
 	// Convert function parameters to input_schema. Anthropic requires
-	// input_schema on every custom tool: a parameterless tool (no parameters, or
-	// a raw `{}`) still sends one, as the Responses converter does.
+	// input_schema on every custom tool: a parameterless tool (no parameters)
+	// still sends one, as the Responses converter does. Any other schema is
+	// carried as sent, including a root without `type` (a root
+	// oneOf/anyOf/allOf, a bare `properties` or `description` object, a raw
+	// `{}`): no `type` is injected here, and a root composition is rewritten
+	// by normalizeAnthropicToolInputSchema below, as for a typed root.
 	switch params := tool.Function.Parameters; {
 	case params == nil:
 		anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
 			Type:       "object",
 			Properties: &schemas.OrderedMap{},
 		}
-	case params.Type != "" || params.Properties != nil || params.IsExplicitEmptyObject():
+	default:
 		anthropicTool.InputSchema = schemas.DeepCopyToolFunctionParameters(params)
 	}
 
