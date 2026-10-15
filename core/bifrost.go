@@ -7610,6 +7610,16 @@ func executeRequestWithRetries[T any](
 			ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, trail)
 		}
 
+		// A large-payload passthrough request is never re-sent, whatever the failure class
+		// and whatever max_retries says: its body is a one-shot reader the first attempt has
+		// already drained, so a retry, a key rotation or a stripped replay would go out
+		// without a body and fail locally, and that local failure would replace the
+		// provider's real answer. The first attempt's error is the answer. The check sits
+		// before the encrypted-reasoning strip because that also re-sends.
+		if isLargePayloadPassthrough(ctx) {
+			break
+		}
+
 		// Fail soft on a 400 when the request replays encrypted reasoning. The ciphertext
 		// is bound to the identity that minted it (item id, organization, serving
 		// endpoint, model family), and a gateway routinely changes that between turns:
