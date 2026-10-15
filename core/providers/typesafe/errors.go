@@ -77,8 +77,9 @@ func parseTypesafeEnvelopeFailure(resp *fasthttp.Response) *schemas.BifrostError
 
 // describeTypesafeDetail reads the message and error_type out of a native
 // "detail" value the way the official SDKs do: a string is the message, an
-// object carries message and error_type, and a validation array of {loc, msg}
-// entries is joined as "path: msg; path: msg".
+// object carries message and error_type, and a FastAPI validation array of
+// {loc, msg} entries yields its non-empty msg values joined with "; ", without
+// the loc path (the fork's shape since BIT-2398, re-carried in BIT-2567).
 func describeTypesafeDetail(detail interface{}) (message string, errorType string) {
 	switch typed := detail.(type) {
 	case string:
@@ -94,21 +95,7 @@ func describeTypesafeDetail(detail interface{}) (message string, errorType strin
 			if !ok {
 				continue
 			}
-			msg, ok := item["msg"].(string)
-			if !ok {
-				continue
-			}
-			var loc []string
-			if rawLoc, ok := item["loc"].([]interface{}); ok {
-				for _, segment := range rawLoc {
-					if text, ok := segment.(string); ok && text != "body" {
-						loc = append(loc, text)
-					}
-				}
-			}
-			if len(loc) > 0 {
-				parts = append(parts, strings.Join(loc, ".")+": "+msg)
-			} else {
+			if msg, _ := item["msg"].(string); msg != "" {
 				parts = append(parts, msg)
 			}
 		}
