@@ -374,3 +374,63 @@ func TestListModelsRequestDoesNotServeLastKnownModels(t *testing.T) {
 		t.Fatalf("expected the poll error from a single-provider list call; got %v", modelIDs(resp))
 	}
 }
+
+// BIT-2567: a caller that set a deadline gets the whole of it for each
+// provider's poll, as in v1.11.3; listAllModelsProviderTimeout bounds a poll
+// only when the caller set none. Durations are scaled down: the provider
+// answers after slowAnswer, longer than the per-provider bound and well inside
+// the caller's deadline (bitrouter: a 7 s vendor under a 15 s caller budget
+// against the 5 s bound).
+func TestListAllModelsHonoursCallerDeadline(t *testing.T) {
+	const slowAnswer = 600 * time.Millisecond
+	release := make(chan struct{})
+	slowSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(slowAnswer):
+		case <-release:
+			return
+		}
+		openAIStyleModelsHandler("gpt-4o")(w, r)
+	}))
+	t.Cleanup(func() {
+		close(release)
+		slowSrv.Close()
+	})
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, slowSrv.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+
+	oldTimeout := listAllModelsProviderTimeout
+	listAllModelsProviderTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { listAllModelsProviderTimeout = oldTimeout })
+
+	client := newListModelsTestClient(t, account, nil)
+
+	t.Run("caller deadline outlasts the slow answer", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(1500*time.Millisecond))
+		defer ctx.Cancel()
+		resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+		if bfErr != nil {
+			t.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+		}
+		if !containsModelID(resp, "openai/gpt-4o") {
+			t.Fatalf("a %v answer inside the caller's deadline was cut by the per-provider bound; got %v", slowAnswer, modelIDs(resp))
+		}
+	})
+
+	t.Run("no caller deadline keeps the per-provider bound", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		start := time.Now()
+		resp, _ := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+		elapsed := time.Since(start)
+		if containsModelID(resp, "openai/gpt-4o") {
+			t.Fatalf("a %v answer was served past the %v per-provider bound", slowAnswer, listAllModelsProviderTimeout)
+		}
+		if elapsed >= slowAnswer {
+			t.Fatalf("aggregate waited %v; want the %v per-provider bound to end the poll first", elapsed, listAllModelsProviderTimeout)
+		}
+	})
+}
