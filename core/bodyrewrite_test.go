@@ -88,3 +88,31 @@ func TestRequestBodyRewriterContextIsolation(t *testing.T) {
 	clearAnthropicPassthroughForNonNativeProvider(converted, schemas.OpenAI, "gpt-4")
 	assert.NotNil(t, providerUtils.RequestBodyRewriterFromContext(converted))
 }
+
+// BIT-2567 (spec D3, corrected): an aborted rewrite is a splice failure on the
+// embedder's side, not a fault of the key that served the attempt. The retry
+// loop ends it in the terminal clause without retrying, and stampEndedAttempt
+// (which labels only timeouts and cancellations) leaves its record unclassified,
+// so nothing that reads the trail (a load balancer, key telemetry) books it
+// against the key.
+func TestExecuteRequestWithRetries_RequestBodyRewriteAbortIsNotAKeyFault(t *testing.T) {
+	ctx := rotationTestContext()
+	abort := rewriteAbortError()
+	calls := 0
+	handler := func(schemas.Key) (string, *schemas.BifrostError) {
+		calls++
+		return "", abort
+	}
+	_, err := executeRequestWithRetries(ctx, createTestConfig(2, time.Millisecond, time.Millisecond),
+		handler, poolKeyProvider([]schemas.Key{rotationKeyA, rotationKeyB}),
+		schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, NewDefaultLogger(schemas.LogLevelError))
+	require.Same(t, abort, err)
+	require.Equal(t, 1, calls, "an aborted rewrite is neither retried nor rotated to another key")
+
+	record := attemptTrail(t, ctx, 1)[0]
+	assert.Equal(t, rotationKeyA.ID, record.KeyID)
+	assert.Empty(t, record.FailureClass, "a rewrite abort must not be classified against the key: %+v", record)
+	assert.False(t, record.FailureClass.IsPerKey(), "a rewrite abort must not carry a per-key class: %+v", record)
+	assert.Nil(t, record.FailReason, "a rewrite abort must not carry a FailReason, read as \"this key failed\": %+v", record)
+	assert.False(t, record.TriggeredRotation, "a rewrite abort must not rotate the key: %+v", record)
+}
