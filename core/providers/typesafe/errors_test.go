@@ -42,6 +42,12 @@ func TestParseTypesafeError(t *testing.T) {
 			wantMessage: "invalid API key",
 		},
 		{
+			name:        "detail list (FastAPI validation)",
+			status:      422,
+			body:        `{"detail":[{"loc":["body","state"],"msg":"field required","type":"missing"},{"loc":["body","questions"],"msg":"value is not a valid dict"}]}`,
+			wantMessage: "field required; value is not a valid dict",
+		},
+		{
 			name:        "detail string unchanged",
 			status:      429,
 			body:        `{"detail":"rate limit exceeded"}`,
