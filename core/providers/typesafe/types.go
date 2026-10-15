@@ -3,10 +3,26 @@ package typesafe
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 
-	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
 )
+
+// decodeKeepingNumbers decodes data into v the way encoding/json with
+// UseNumber does, so a number in a free-form field (state, instructions,
+// criteria) stays a json.Number with its exact digits instead of a float64.
+func decodeKeepingNumbers(data []byte, v interface{}) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("typesafe: invalid trailing data after JSON value")
+	}
+	return nil
+}
 
 // Typesafe question types accepted by POST /v1/systemone.
 const (
@@ -32,7 +48,7 @@ func (q *TypesafeQuestion) UnmarshalJSON(data []byte) error {
 		alias
 		Kind string `json:"kind"`
 	}
-	if err := sonic.Unmarshal(data, &decoded); err != nil {
+	if err := decodeKeepingNumbers(data, &decoded); err != nil {
 		return err
 	}
 	*q = TypesafeQuestion(decoded.alias)
@@ -76,7 +92,7 @@ var typesafeDecisionRequestKnownFields = map[string]bool{
 // they can be forwarded losslessly.
 func (r *TypesafeDecisionRequest) UnmarshalJSON(data []byte) error {
 	type Alias TypesafeDecisionRequest
-	if err := sonic.Unmarshal(data, (*Alias)(r)); err != nil {
+	if err := decodeKeepingNumbers(data, (*Alias)(r)); err != nil {
 		return err
 	}
 	r.ExtraParams = nil
