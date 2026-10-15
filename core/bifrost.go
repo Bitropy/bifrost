@@ -547,7 +547,8 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 // unreachable provider held the aggregate response back until the shared
 // request timeout (DefaultRequestTimeoutInSeconds, 300s by default) expired.
 // Listing models is a metadata read and should not wait inference-scale
-// timeouts. A var rather than a const so package tests can shrink it.
+// timeouts. It applies only when the caller set no deadline; a caller that did
+// gets its own (BIT-2567). A var rather than a const so package tests can shrink it.
 var listAllModelsProviderTimeout = 5 * time.Second
 
 // providerModelLister is the optional model-catalog capability ListAllModels
@@ -632,8 +633,8 @@ func (bifrost *Bifrost) lastKnownListModelsResponse(ctx *schemas.BifrostContext,
 
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
-// Each provider poll is bounded by listAllModelsProviderTimeout so one unreachable provider
-// cannot block the aggregate. A provider whose poll fails contributes its last-known models
+// Each provider poll is bounded by listAllModelsProviderTimeout, or by the caller's deadline
+// when ctx carries one, so one unreachable provider cannot block the aggregate. A provider whose poll fails contributes its last-known models
 // from the model catalog (when one with per-provider listings is configured) instead; that
 // list is substituted in the worker, so the plugin post-hooks filter it like a live listing.
 // A poll still running at the deadline contributes nothing, since no post-hook has seen it.
@@ -713,7 +714,14 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			// hold the aggregate until the shared request timeout: at the
 			// deadline tryRequest stops waiting on the worker (the in-flight
 			// HTTP call is abandoned, not cancelled) and wg.Wait() finishes.
-			providerCtx := schemas.NewBifrostContext(ctx, time.Now().Add(listAllModelsProviderTimeout))
+			// A caller that set its own deadline gets all of it, as before the
+			// bound existed (BIT-2567): the poll runs under the caller's
+			// deadline, inherited from ctx along with its cancellation.
+			pollDeadline := time.Now().Add(listAllModelsProviderTimeout)
+			if _, callerHasDeadline := ctx.Deadline(); callerHasDeadline {
+				pollDeadline = schemas.NoDeadline
+			}
+			providerCtx := schemas.NewBifrostContext(ctx, pollDeadline)
 			defer providerCtx.Cancel()
 			providerCtx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
 			providerCtx.SetValue(listAllModelsFallbackKey, true)
