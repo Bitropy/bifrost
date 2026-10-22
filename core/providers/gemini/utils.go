@@ -1349,6 +1349,11 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		penalty := float64(*params.FrequencyPenalty)
 		config.FrequencyPenalty = &penalty
 	}
+	// Gemini's seed is an int32; one outside that range is left out rather
+	// than wrapped into a different seed.
+	if params.Seed != nil && *params.Seed >= math.MinInt32 && *params.Seed <= math.MaxInt32 {
+		config.Seed = schemas.Ptr(int32(*params.Seed))
+	}
 	// Only set ThinkingConfig if the model actually supports thinking
 	caps := schemas.ResolveModelCaps(provider, model)
 	if params.Reasoning != nil && caps.SupportsReasoning(defaultSupportsReasoning(model)) {
