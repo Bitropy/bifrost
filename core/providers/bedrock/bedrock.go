@@ -1231,7 +1231,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 
 		// Process AWS Event Stream format
 		decoder := eventstream.NewDecoder()
-		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
+		payloadBuf := newStreamPayloadBuffer()
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1239,7 +1239,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 				return
 			}
 			// Decode a single EventStream message
-			message, err := decoder.Decode(idleReader, payloadBuf)
+			message, err := payloadBuf.decode(decoder, idleReader)
 			if err != nil {
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
@@ -1608,7 +1608,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		// Process AWS Event Stream format using proper decoder
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
-		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
+		payloadBuf := newStreamPayloadBuffer()
 
 		// Bedrock does not provide a unique identifier for the stream, so we generate one ourselves
 		id := uuid.New().String()
@@ -1670,7 +1670,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				return
 			}
 			// Decode a single EventStream message
-			message, err := decoder.Decode(idleReader, payloadBuf)
+			message, err := payloadBuf.decode(decoder, idleReader)
 			if err != nil {
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
@@ -2103,7 +2103,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 		// Process AWS Event Stream format using proper decoder
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
-		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
+		payloadBuf := newStreamPayloadBuffer()
 		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 		var held heldStreamRaw
 
@@ -2156,7 +2156,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				return
 			}
 			// Decode a single EventStream message
-			message, err := decoder.Decode(idleReader, payloadBuf)
+			message, err := payloadBuf.decode(decoder, idleReader)
 			if err != nil {
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
