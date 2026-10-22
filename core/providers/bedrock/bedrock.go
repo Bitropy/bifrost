@@ -1637,6 +1637,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			}
 		}()
 		var finishReason *string
+		var servedTier *schemas.BifrostServiceTier
 		var progress converseStreamProgress
 		dsml := NewDSMLStreamFilter(ctx, request.Model)
 		chunkIndex := 0
@@ -1672,6 +1673,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				normalizeUsage()
+				providerUtils.AttachBilledUsageFromContext(ctx, bifrostErr)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
 				return false
 			}
@@ -1727,10 +1730,15 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				provider.logger.Warn("Error decoding EventStream message: %v", err)
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
+				// Bill what the stream consumed before the read failed, folded
+				// first: the error carries a snapshot of the handle.
+				normalizeUsage()
 				if isStreamTransportError(err) {
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, newStreamTransportError(err), responseChan, provider.logger, postHookSpanFinalizer)
+					transportErr := newStreamTransportError(err)
+					providerUtils.AttachBilledUsageFromContext(ctx, transportErr)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, transportErr, responseChan, provider.logger, postHookSpanFinalizer)
 				} else {
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendErrorWithBilledUsage(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 				}
 				return
 			}
@@ -1746,6 +1754,10 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 							}
 						}
 						streamErr := newBedrockStreamException("", excType, message.Payload)
+						// A Bedrock exception event: bill what the stream consumed
+						// before it, like the cancel/timeout/truncation exits.
+						normalizeUsage()
+						providerUtils.AttachBilledUsageFromContext(ctx, streamErr)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, streamErr, responseChan, provider.logger, postHookSpanFinalizer)
 						return
 					}
@@ -1759,7 +1771,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if umErr != nil {
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", umErr, string(message.Payload))
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
+					normalizeUsage()
+					providerUtils.ProcessAndSendErrorWithBilledUsage(ctx, postHookRunner, umErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
 
@@ -1769,6 +1782,15 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					if !sendEvent(release, nil) {
 						return
 					}
+				}
+
+				// The metadata event reports the served tier: keep it for the final
+				// chunk and mirror it onto the usage handle, so a failed stream
+				// (cancel, timeout, error) bills the served tier's rate too.
+				if streamEvent.ServiceTier != nil && streamEvent.ServiceTier.Type != "" {
+					tier := mapBedrockServiceTierToBifrost(streamEvent.ServiceTier.Type)
+					servedTier = &tier
+					usage.ServiceTier = &tier
 				}
 
 				if streamEvent.Usage != nil {
@@ -1929,6 +1951,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		if sendRaw {
 			held.attach(&response.ExtraFields, true)
 		}
+		response.ServiceTier = servedTier
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)

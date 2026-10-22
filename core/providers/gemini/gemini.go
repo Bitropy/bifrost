@@ -650,7 +650,8 @@ func HandleGeminiChatCompletionStream(
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				logger.Warn("Error reading stream: %v", readErr)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+				// Bill what the stream consumed before the read failed.
+				providerUtils.ProcessAndSendErrorWithBilledUsage(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 				return
 			}
 			// Process chunk using shared function. Per-event decode -> "response-parse" (Serialization) stream phase.
@@ -662,12 +663,20 @@ func HandleGeminiChatCompletionStream(
 					// Handle API error
 					bifrostErr := toGeminiStreamBifrostError(err)
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					// A Gemini error event: bill what the stream consumed before it,
+					// like the cancel/timeout exits.
+					providerUtils.AttachBilledUsageFromContext(ctx, bifrostErr)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 				logger.Warn("Failed to process chunk: %v", err)
 				continue
 			}
+
+			// Keep the running usage handle current from every usage-bearing
+			// event, not only the final chunk, so a failed stream bills what the
+			// provider already reported (usageMetadata is cumulative).
+			observeGeminiStreamUsage(streamUsage, geminiResponse.UsageMetadata)
 
 			// Track response ID and model
 			if geminiResponse.ResponseID != "" && responseID == "" {
@@ -683,6 +692,7 @@ func HandleGeminiChatCompletionStream(
 			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.AttachBilledUsageFromContext(ctx, bifrostErr)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 				return
 			}
@@ -697,7 +707,12 @@ func HandleGeminiChatCompletionStream(
 				}
 				// keep the running usage handle current (cumulative).
 				if response.Usage != nil {
+					tier := streamUsage.ServiceTier
 					*streamUsage = *response.Usage
+					if response.ServiceTier != nil {
+						tier = response.ServiceTier
+					}
+					streamUsage.ServiceTier = tier
 				}
 				response.ExtraFields = schemas.BifrostResponseExtraFields{
 					ChunkIndex: chunkIndex,
