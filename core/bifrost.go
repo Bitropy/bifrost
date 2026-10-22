@@ -8273,6 +8273,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					isPreamble = azure.IsStreamPreamble
 				}
 				startup := providerUtils.NewStreamStartupState(isPreamble, providerUtils.AttemptAbortFromContext(req.Context) != nil)
+				// The retry reader reuses the sizes this attempt's producer measures.
+				startup.Attach(req.Context)
 				postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 					// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
 					// can read requestType/provider/model from the chunk or error.

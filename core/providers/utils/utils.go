@@ -28,6 +28,7 @@ import (
 	"weak"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/encoder"
 	"github.com/cespare/xxhash/v2"
 	ws "github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/network"
@@ -195,6 +196,10 @@ func ExtractReasoningItemID(payload string) (id *string, rest string, ok bool) {
 // This ensures deterministic JSON output for map[string]interface{} values,
 // which is critical for LLM prompt caching (e.g., Anthropic cache keying).
 var sortedAPI = sonic.Config{SortMapKeys: true}.Froze()
+
+// sortedAPIEncoderOptions are sortedAPI's encoder options, for encoding into a
+// caller's buffer (encoder.EncodeInto) with the same output as MarshalSorted.
+const sortedAPIEncoderOptions = encoder.SortMapKeys
 
 // MarshalSorted marshals v to JSON with map keys sorted alphabetically.
 func MarshalSorted(v interface{}) ([]byte, error) {

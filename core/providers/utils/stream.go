@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic/encoder"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -164,8 +165,17 @@ var streamPreambles sync.Map // map[streamPreambleKey]*streamPreambleBuffer
 // or the chunk cap. On false, the chunk remains unbuffered; the caller either
 // commits the stream (forwarding it after the buffered prefix) or, under a
 // TTFT deadline, ends the attempt.
-func (buffer *streamPreambleBuffer) tryAppend(chunk *schemas.BifrostStreamChunk, maxBytes int) bool {
-	size, ok := fitStreamPreamble(len(buffer.chunks), buffer.bytes, chunk, maxBytes)
+//
+// sized carries the size the attempt's producer already measured for this
+// event (StreamStartupState.sizeFor); without it the chunk is encoded here.
+func (buffer *streamPreambleBuffer) tryAppend(chunk *schemas.BifrostStreamChunk, maxBytes int, sized *StreamStartupState) bool {
+	var size int
+	var ok bool
+	if known, has := sized.sizeFor(len(buffer.chunks), chunk); has {
+		size, ok = fitSizedStreamPreamble(len(buffer.chunks), buffer.bytes, known, maxBytes)
+	} else {
+		size, ok = fitStreamPreamble(len(buffer.chunks), buffer.bytes, chunk, maxBytes)
+	}
 	if !ok {
 		return false
 	}
@@ -179,11 +189,50 @@ func fitStreamPreamble(count, bytes int, chunk *schemas.BifrostStreamChunk, maxB
 	if count+1 >= maxStreamPreambleChunks {
 		return 0, false
 	}
-	encoded, err := MarshalSorted(chunk)
-	if err != nil || len(encoded) >= maxBytes-bytes {
+	size, err := preambleEncodedSize(chunk)
+	if err != nil {
 		return 0, false
 	}
-	return len(encoded), true
+	return fitSizedStreamPreamble(count, bytes, size, maxBytes)
+}
+
+// fitSizedStreamPreamble is fitStreamPreamble for an event whose encoded size
+// is already known.
+func fitSizedStreamPreamble(count, bytes, size, maxBytes int) (int, bool) {
+	if count+1 >= maxStreamPreambleChunks || size >= maxBytes-bytes {
+		return 0, false
+	}
+	return size, true
+}
+
+// preambleEncodedSize is the size function the preamble budget uses; a var so
+// a test can count how often an event is encoded.
+var preambleEncodedSize = sortedEncodedSize
+
+// preambleSizeBufMaxPooled caps the scratch buffers sortedEncodedSize returns
+// to its pool, so one huge startup event does not pin its size in the pool.
+const preambleSizeBufMaxPooled = 64 * 1024
+
+var preambleSizeBufPool = sync.Pool{New: func() any {
+	buf := make([]byte, 0, 16*1024)
+	return &buf
+}}
+
+// sortedEncodedSize is len(MarshalSorted(v)) without keeping the encoding: v
+// is encoded into a pooled scratch buffer, not into a fresh result slice. The
+// preamble budget sizes every startup event twice (the producer's
+// StreamStartupState and the retry reader's buffer), and on the Responses
+// wire response.created / response.in_progress carry the whole response
+// object, so a fresh marshal per check was ~10 KB of garbage per stream.
+func sortedEncodedSize(v any) (int, error) {
+	bufp := preambleSizeBufPool.Get().(*[]byte)
+	*bufp = (*bufp)[:0]
+	err := encoder.EncodeInto(bufp, v, sortedAPIEncoderOptions)
+	size := len(*bufp)
+	if cap(*bufp) <= preambleSizeBufMaxPooled {
+		preambleSizeBufPool.Put(bufp)
+	}
+	return size, err
 }
 
 // isStreamStartupError reports whether err fails a stream attempt not yet committed to the client.
@@ -193,8 +242,11 @@ func isStreamStartupError(err *schemas.BifrostError) bool {
 }
 
 // StreamStartupState tracks whether the retry reader will hold an attempt's
-// startup events or release its output. Only the attempt's producer uses it;
-// it stores counters, never chunks, and needs no synchronization.
+// startup events or release its output. The attempt's producer drives it; its
+// counters need no synchronization. It also records, under mu, the encoded
+// size of each startup event it buffered, keyed by the event's payload, so
+// the retry reader (attached through the attempt's context, Attach) reuses
+// it instead of encoding every startup event a second time (BIT-2741 R3).
 type StreamStartupState struct {
 	isPreamble    func(*schemas.BifrostStreamChunk) bool
 	maxBytes      int
@@ -203,6 +255,62 @@ type StreamStartupState struct {
 	bytes         int
 	committed     bool
 	ended         bool
+
+	mu    sync.Mutex
+	sizes []preambleSize
+}
+
+// preambleSize is one startup event's encoded size, keyed by its payload
+// (the *BifrostResponsesStreamResponse the producer and the reader share).
+type preambleSize struct {
+	payload *schemas.BifrostResponsesStreamResponse
+	size    int
+}
+
+// streamStartupStateKey carries the attempt's StreamStartupState to the retry
+// reader on the request context.
+type streamStartupStateKey struct{}
+
+// Attach makes c the state the retry reader of this attempt consults. Every
+// attempt attaches its own, replacing the previous attempt's.
+func (c *StreamStartupState) Attach(ctx *schemas.BifrostContext) {
+	if c != nil && ctx != nil {
+		ctx.SetValue(streamStartupStateKey{}, c)
+	}
+}
+
+func streamStartupStateFrom(ctx context.Context) *StreamStartupState {
+	if ctx == nil {
+		return nil
+	}
+	c, _ := ctx.Value(streamStartupStateKey{}).(*StreamStartupState)
+	return c
+}
+
+// recordSize remembers the size of the startup event the producer just
+// buffered, in order.
+func (c *StreamStartupState) recordSize(chunk *schemas.BifrostStreamChunk, size int) {
+	if chunk.BifrostResponsesStreamResponse == nil {
+		return
+	}
+	c.mu.Lock()
+	c.sizes = append(c.sizes, preambleSize{payload: chunk.BifrostResponsesStreamResponse, size: size})
+	c.mu.Unlock()
+}
+
+// sizeFor returns the size the producer recorded for the reader's i-th startup
+// event, when it is the same event (same payload); a dropped or re-built event
+// does not match and is sized by the reader.
+func (c *StreamStartupState) sizeFor(i int, chunk *schemas.BifrostStreamChunk) (int, bool) {
+	if c == nil || chunk.BifrostResponsesStreamResponse == nil {
+		return 0, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if i >= len(c.sizes) || c.sizes[i].payload != chunk.BifrostResponsesStreamResponse {
+		return 0, false
+	}
+	return c.sizes[i].size, true
 }
 
 // NewStreamStartupState tracks one attempt; isPreamble is nil when only the first chunk is checked.
@@ -234,6 +342,7 @@ func (c *StreamStartupState) ObserveResult(ctx context.Context, resp *schemas.Bi
 		if size, ok := fitStreamPreamble(c.count, c.bytes, chunk, c.maxBytes); ok {
 			c.count++
 			c.bytes += size
+			c.recordSize(chunk, size)
 			return
 		}
 		if c.underDeadline {
@@ -326,6 +435,7 @@ func CheckStreamPreambleForError(
 		isPreamble = func(*schemas.BifrostStreamChunk) bool { return false }
 	}
 
+	sized := streamStartupStateFrom(ctx)
 	key := streamPreambleKey{requestID: requestID, source: stream}
 	buffer := &streamPreambleBuffer{}
 	streamPreambles.Store(key, buffer)
@@ -381,11 +491,11 @@ func CheckStreamPreambleForError(
 			}
 			if isPreamble(chunk) {
 				if abort == nil {
-					if buffer.tryAppend(chunk, maxStreamPreambleBytes) {
+					if buffer.tryAppend(chunk, maxStreamPreambleBytes, sized) {
 						continue
 					}
 				} else {
-					if buffer.tryAppend(chunk, maxStreamPreambleBytesUnderDeadline) {
+					if buffer.tryAppend(chunk, maxStreamPreambleBytesUnderDeadline, sized) {
 						continue
 					}
 					// Committing would disarm the deadline with no output, and
