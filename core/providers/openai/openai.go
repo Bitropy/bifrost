@@ -1561,7 +1561,8 @@ func HandleOpenAIChatCompletionStreaming(
 				if readErr != io.EOF {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading stream: %v", readErr)
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					// Bill what the stream consumed before the read failed.
+					providerUtils.ProcessAndSendErrorWithBilledUsage(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 					return
 				}
 				if providerUtils.SSEEndedOnComment(sseReader) {
@@ -1588,6 +1589,8 @@ func HandleOpenAIChatCompletionStreaming(
 					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
 						applyStreamErrorStatus(&bifrostErr)
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						// An in-stream error event: bill what the stream consumed before it.
+						providerUtils.AttachBilledUsageFromContext(ctx, &bifrostErr)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 						return
 					}
@@ -1765,6 +1768,9 @@ func HandleOpenAIChatCompletionStreaming(
 
 				if response.ServiceTier != nil {
 					serviceTier = response.ServiceTier
+					// Mirror the served tier onto the usage handle so a failed stream
+					// (cancel, timeout, error) bills the served tier's rate too.
+					usage.ServiceTier = response.ServiceTier
 				}
 
 				// Only usage observed at or after finish_reason ends a wait_for_usage wait. Some
@@ -2229,6 +2235,26 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	)
 }
 
+// observeResponsesStreamUsage keeps a Responses stream's running usage handle
+// current from an event carrying the response object: its usage (cumulative,
+// so the latest wins) and its served service_tier. Events without a response
+// object leave the handle as it was.
+func observeResponsesStreamUsage(handle *schemas.BifrostLLMUsage, event *schemas.BifrostResponsesStreamResponse) {
+	if handle == nil || event == nil || event.Response == nil {
+		return
+	}
+	tier := handle.ServiceTier
+	if event.Response.ServiceTier != nil {
+		tier = event.Response.ServiceTier
+	}
+	if event.Response.Usage != nil {
+		if usage := event.Response.Usage.ToBifrostLLMUsage(); usage != nil {
+			*handle = *usage
+		}
+	}
+	handle.ServiceTier = tier
+}
+
 // HandleOpenAIResponsesStreaming handles streaming for OpenAI-compatible APIs.
 // This shared function reduces code duplication between providers that use the same SSE format.
 func HandleOpenAIResponsesStreaming(
@@ -2406,6 +2432,13 @@ func HandleOpenAIResponsesStreaming(
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
+		// Running usage handle so a failed stream (cancel, timeout, error event,
+		// read error) bills what the provider reported, at the served tier. The
+		// Responses wire reports both on the events carrying the response object
+		// (response.created / in_progress / failed / incomplete / completed).
+		billedUsage := &schemas.BifrostLLMUsage{}
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, billedUsage)
+
 		lastChunkTime := startTime
 
 		for {
@@ -2421,7 +2454,7 @@ func HandleOpenAIResponsesStreaming(
 				if readErr != io.EOF {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					logger.Warn("Error reading stream: %v", readErr)
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendErrorWithBilledUsage(ctx, postHookRunner, readErr, responseChan, logger, postHookSpanFinalizer)
 					// The read error is already reported; returning (rather than
 					// breaking) keeps the post-loop truncation check from reporting
 					// the same dead stream a second time.
@@ -2498,10 +2531,13 @@ func HandleOpenAIResponsesStreaming(
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, prefix, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 
+			observeResponsesStreamUsage(billedUsage, &response)
+
 			if response.Type == schemas.ResponsesStreamResponseTypeError {
 				bifrostErr := responsesStreamError(&response)
 
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.AttachBilledUsageFromContext(ctx, bifrostErr)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 				return
 			}
@@ -2511,6 +2547,7 @@ func HandleOpenAIResponsesStreaming(
 			if response.Type == schemas.ResponsesStreamResponseTypeFailed {
 				bifrostErr := responsesStreamError(&response)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.AttachBilledUsageFromContext(ctx, bifrostErr)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, []byte(jsonData), sendBackRawRequest, sendBackRawResponse, latency), responseChan, logger, postHookSpanFinalizer)
 				return
 			}
