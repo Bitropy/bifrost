@@ -2897,8 +2897,9 @@ func TestToBifrostChatResponse_EmptyOutputTextLogProbsStayNull(t *testing.T) {
 	}
 }
 
-// Each choice built from an output message carries only that message's logprobs, even
-// when items with no chat message of their own (reasoning) sit between them.
+// Upstream's per-message logprobs on the fork's one-choice shape (BIT-2741 R2):
+// the merged choice carries each message's logprobs in output order, even when
+// items with no chat message of their own (reasoning) sit between them.
 func TestToBifrostChatResponse_LogProbsFollowTheirMessage(t *testing.T) {
 	hi := []ResponsesOutputMessageContentTextLogProb{{Bytes: []int{72, 105}, LogProb: -0.1, Token: "Hi", TopLogProbs: []LogProb{}}}
 	bye := []ResponsesOutputMessageContentTextLogProb{{Bytes: []int{66, 121, 101}, LogProb: -0.2, Token: "Bye", TopLogProbs: []LogProb{}}}
@@ -2909,22 +2910,18 @@ func TestToBifrostChatResponse_LogProbsFollowTheirMessage(t *testing.T) {
 	output = append(output, responsesTextOutputWithLogProbs("Bye", bye)...)
 
 	chatResp := (&BifrostResponsesResponse{Status: Ptr(ResponsesResponseStatusCompleted), Output: output}).ToBifrostChatResponse()
-	if chatResp == nil || len(chatResp.Choices) != 2 {
-		t.Fatalf("expected two choices, got %+v", chatResp)
+	if chatResp == nil || len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one merged choice, got %+v", chatResp)
 	}
-	for i, want := range []struct{ text, token string }{{"Hi", "Hi"}, {"Bye", "Bye"}} {
-		choice := chatResp.Choices[i]
-		if got := choice.Message.Content.ContentStr; got == nil || *got != want.text {
-			t.Fatalf("choices[%d] text = %v, want %q", i, got, want.text)
-		}
-		if choice.LogProbs == nil || len(choice.LogProbs.Content) != 1 || choice.LogProbs.Content[0].Token != want.token {
-			t.Fatalf("choices[%d] logprobs = %+v, want only token %q", i, choice.LogProbs, want.token)
-		}
+	choice := chatResp.Choices[0]
+	if got := choice.Message.Content.ContentStr; got == nil || *got != "HiBye" {
+		t.Fatalf("text = %v, want %q", got, "HiBye")
 	}
+	assertLogProbTokens(t, choice.LogProbs, "Hi", "Bye")
 }
 
-// A standalone tool call ahead of the text gets no logprobs, and a call after the text
-// merges into that text's choice without taking a later message's logprobs.
+// Tool calls carry no logprobs of their own: the merged choice keeps every call
+// in output order and only the text messages' logprobs, in order.
 func TestToBifrostChatResponse_LogProbsSurviveInterleavedToolCalls(t *testing.T) {
 	call := func(id string) ResponsesMessage {
 		return ResponsesMessage{
@@ -2940,25 +2937,28 @@ func TestToBifrostChatResponse_LogProbsSurviveInterleavedToolCalls(t *testing.T)
 	output = append(output, responsesTextOutputWithLogProbs("Bye", bye)...)
 
 	chatResp := (&BifrostResponsesResponse{Status: Ptr(ResponsesResponseStatusCompleted), Output: output}).ToBifrostChatResponse()
-	if chatResp == nil || len(chatResp.Choices) != 3 {
-		t.Fatalf("expected three choices (call_1, Hi+call_2, Bye), got %+v", chatResp)
+	if chatResp == nil || len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one merged choice, got %+v", chatResp)
 	}
-	if lp := chatResp.Choices[0].LogProbs; lp != nil {
-		t.Fatalf("standalone tool-call choice must carry no logprobs, got %+v", lp)
+	choice := chatResp.Choices[0]
+	if got := choice.Message.Content.ContentStr; got == nil || *got != "HiBye" {
+		t.Fatalf("text = %v, want %q", got, "HiBye")
 	}
-	for i, want := range []struct{ text, token, call string }{{"Hi", "Hi", "call_2"}, {"Bye", "Bye", ""}} {
-		choice := chatResp.Choices[i+1]
-		if got := choice.Message.Content.ContentStr; got == nil || *got != want.text {
-			t.Fatalf("choices[%d] text = %v, want %q", i+1, got, want.text)
-		}
-		if want.call != "" {
-			calls := choice.Message.ChatAssistantMessage.ToolCalls
-			if len(calls) != 1 || calls[0].ID == nil || *calls[0].ID != want.call {
-				t.Fatalf("choices[%d] tool calls = %+v, want %s merged", i+1, calls, want.call)
-			}
-		}
-		if choice.LogProbs == nil || len(choice.LogProbs.Content) != 1 || choice.LogProbs.Content[0].Token != want.token {
-			t.Fatalf("choices[%d] logprobs = %+v, want only token %q", i+1, choice.LogProbs, want.token)
+	calls := choice.Message.ChatAssistantMessage.ToolCalls
+	if len(calls) != 2 || calls[0].ID == nil || *calls[0].ID != "call_1" || calls[1].ID == nil || *calls[1].ID != "call_2" {
+		t.Fatalf("tool calls = %+v, want call_1, call_2", calls)
+	}
+	assertLogProbTokens(t, choice.LogProbs, "Hi", "Bye")
+}
+
+func assertLogProbTokens(t *testing.T, lp *BifrostLogProbs, tokens ...string) {
+	t.Helper()
+	if lp == nil || len(lp.Content) != len(tokens) {
+		t.Fatalf("logprobs = %+v, want tokens %q", lp, tokens)
+	}
+	for i, tok := range tokens {
+		if lp.Content[i].Token != tok {
+			t.Fatalf("logprobs[%d] = %q, want %q", i, lp.Content[i].Token, tok)
 		}
 	}
 }
@@ -3108,5 +3108,112 @@ func TestToolChoiceAllowedTools_CustomEntryNameSurvivesResponses(t *testing.T) {
 	back := rtc.ToChatToolChoice().ChatToolChoiceStruct.AllowedTools.Tools[0]
 	if back.Type != "custom" || back.Custom == nil || back.Custom.Name != "exec" || back.Function.Name != "" {
 		t.Fatalf("chat entry = %+v", back)
+	}
+}
+
+// A unary Responses answer that says something AND calls tools is ONE chat
+// choice: the message item, the reasoning item and every function_call item
+// of one response belong to the same assistant turn. Splitting them into one
+// choice per chat message left a client reading choices[0] (every OpenAI SDK)
+// with the text and none of the tool calls (BIT-2741 R2).
+func TestToBifrostChatResponse_MergesOutputItemsIntoOneChoice(t *testing.T) {
+	reasoning := "think"
+	text := "Let me check."
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: []ResponsesMessage{
+			{
+				Type: Ptr(ResponsesMessageTypeReasoning),
+				ID:   Ptr("rs_1"),
+				Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeReasoning, Text: &reasoning},
+				}},
+			},
+			{
+				Type: Ptr(ResponsesMessageTypeMessage),
+				Role: Ptr(ResponsesInputMessageRoleAssistant),
+				Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeText, Text: &text},
+				}},
+			},
+			{
+				Type: Ptr(ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID: Ptr("call_1"), Name: Ptr("get_time"), Arguments: Ptr(`{"tz":"UTC"}`),
+				},
+			},
+			{
+				Type: Ptr(ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID: Ptr("call_2"), Name: Ptr("get_weather"), Arguments: Ptr(`{}`),
+				},
+			},
+		},
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) != 1 {
+		t.Fatalf("expected exactly one choice, got %d", len(chatResp.Choices))
+	}
+	choice := chatResp.Choices[0]
+	if choice.Index != 0 || choice.FinishReason == nil || *choice.FinishReason != string(BifrostFinishReasonToolCalls) {
+		t.Fatalf("unexpected choice index/finish: %d %v", choice.Index, choice.FinishReason)
+	}
+	msg := choice.ChatNonStreamResponseChoice.Message
+	if msg.Role != ChatMessageRoleAssistant {
+		t.Fatalf("role = %q", msg.Role)
+	}
+	if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != text {
+		t.Fatalf("content = %+v, want %q", msg.Content, text)
+	}
+	am := msg.ChatAssistantMessage
+	if am == nil || am.Reasoning == nil || *am.Reasoning != reasoning {
+		t.Fatalf("reasoning not carried on the merged choice: %+v", am)
+	}
+	if len(am.ToolCalls) != 2 {
+		t.Fatalf("tool calls = %d, want 2", len(am.ToolCalls))
+	}
+	for i, want := range []string{"call_1", "call_2"} {
+		tc := am.ToolCalls[i]
+		if tc.Index != uint16(i) || tc.ID == nil || *tc.ID != want {
+			t.Fatalf("tool call %d = index %d id %v, want index %d id %s", i, tc.Index, tc.ID, i, want)
+		}
+	}
+}
+
+// Text spread over two message items joins into one content string, in
+// output order, rather than becoming a second choice.
+func TestToBifrostChatResponse_JoinsTwoMessageItems(t *testing.T) {
+	out := append(responsesTextOutput("a"), responsesTextOutput("b")...)
+	chatResp := (&BifrostResponsesResponse{Status: Ptr(ResponsesResponseStatusCompleted), Output: out}).ToBifrostChatResponse()
+	if len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one choice, got %d", len(chatResp.Choices))
+	}
+	c := chatResp.Choices[0].ChatNonStreamResponseChoice.Message.Content
+	if c == nil || c.ContentStr == nil || *c.ContentStr != "ab" {
+		t.Fatalf("content = %+v, want \"ab\"", c)
+	}
+}
+
+// An answer whose reasoning item carries only summary parts (OpenAI's shape)
+// surfaces the summary as the choice's reasoning, as the stream conversion
+// does, and keeps the summary detail.
+func TestToBifrostChatResponse_SummaryOnlyReasoningIsTheReasoning(t *testing.T) {
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: append([]ResponsesMessage{{
+			Type:               Ptr(ResponsesMessageTypeReasoning),
+			ID:                 Ptr("rs_1"),
+			ResponsesReasoning: &ResponsesReasoning{Summary: []ResponsesReasoningSummary{{Type: "summary_text", Text: "think"}}},
+		}}, responsesTextOutput("hi")...),
+	}).ToBifrostChatResponse()
+	if len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one choice, got %d", len(chatResp.Choices))
+	}
+	am := chatResp.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage
+	if am == nil || am.Reasoning == nil || *am.Reasoning != "think" {
+		t.Fatalf("reasoning = %+v, want \"think\"", am)
+	}
+	if len(am.ReasoningDetails) != 1 || am.ReasoningDetails[0].Type != BifrostReasoningDetailsTypeSummary {
+		t.Fatalf("summary detail not kept: %+v", am.ReasoningDetails)
 	}
 }
