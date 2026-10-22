@@ -118,7 +118,9 @@ func TestMistralProvider_CustomAliasChatStreamUsesBaseCompatibilityAndAliasMetad
 	require.NotNil(t, capturedRequest)
 	assert.Equal(t, float64(32), capturedRequest["max_tokens"])
 	assert.NotContains(t, capturedRequest, "max_completion_tokens")
-	assert.Equal(t, "any", capturedRequest["tool_choice"])
+	// A named function choice stays named: Mistral accepts OpenAI's object form
+	// (BIT-2741 O1; it used to be widened to "any").
+	assert.Equal(t, map[string]any{"type": "function", "function": map[string]any{"name": "lookup"}}, capturedRequest["tool_choice"])
 	assert.Equal(t, "mistral-small-latest", capturedRequest["model"])
 	assert.Equal(t, true, capturedRequest["stream"])
 	assert.Equal(t, customMistralProviderName, provider.GetProviderKey())
