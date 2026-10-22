@@ -434,46 +434,23 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	// types.go MarshalJSON); after this strip runs, that marshal-time pass
 	// becomes a safe no-op for Vertex (nothing left to strip).
 	if !features.PromptCachingScope {
-		// Top-level.
-		if req.CacheControl != nil && req.CacheControl.Scope != nil {
-			req.CacheControl.Scope = nil
-			// If scope was the only meaningful field, drop the whole CacheControl
-			// so we don't serialize an empty object.
-			if req.CacheControl.TTL == nil && req.CacheControl.Type == "" {
-				req.CacheControl = nil
-			}
-		}
-		// Per-tool cache_control.scope.
+		// Each *CacheControl is shared with the caller's request (the
+		// conversion copies the pointer), so the scope is cleared on a copy:
+		// a later failover attempt on a scope-capable provider converts the
+		// same request and must still see it (BIT-2595).
+		req.CacheControl = withoutCacheControlScope(req.CacheControl)
 		for i := range req.Tools {
-			if req.Tools[i].CacheControl != nil && req.Tools[i].CacheControl.Scope != nil {
-				req.Tools[i].CacheControl.Scope = nil
-				// Drop the parent if scope was the only meaningful field.
-				if req.Tools[i].CacheControl.TTL == nil && req.Tools[i].CacheControl.Type == "" {
-					req.Tools[i].CacheControl = nil
-				}
-			}
+			req.Tools[i].CacheControl = withoutCacheControlScope(req.Tools[i].CacheControl)
 		}
-		// System block scopes.
 		if req.System != nil {
 			for i := range req.System.ContentBlocks {
-				if req.System.ContentBlocks[i].CacheControl != nil && req.System.ContentBlocks[i].CacheControl.Scope != nil {
-					req.System.ContentBlocks[i].CacheControl.Scope = nil
-					if req.System.ContentBlocks[i].CacheControl.TTL == nil && req.System.ContentBlocks[i].CacheControl.Type == "" {
-						req.System.ContentBlocks[i].CacheControl = nil
-					}
-				}
+				req.System.ContentBlocks[i].CacheControl = withoutCacheControlScope(req.System.ContentBlocks[i].CacheControl)
 			}
 		}
-		// Message block scopes.
 		for mi := range req.Messages {
 			for ci := range req.Messages[mi].Content.ContentBlocks {
-				cc := req.Messages[mi].Content.ContentBlocks[ci].CacheControl
-				if cc != nil && cc.Scope != nil {
-					cc.Scope = nil
-					if cc.TTL == nil && cc.Type == "" {
-						req.Messages[mi].Content.ContentBlocks[ci].CacheControl = nil
-					}
-				}
+				block := &req.Messages[mi].Content.ContentBlocks[ci]
+				block.CacheControl = withoutCacheControlScope(block.CacheControl)
 			}
 		}
 	}
@@ -556,6 +533,22 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			tool.Strict = nil
 		}
 	}
+}
+
+// withoutCacheControlScope returns cc without its scope, copying before the
+// write because cc is shared with the caller's request. A cache_control whose
+// scope was its only meaningful field is dropped (nil) rather than sent as
+// an empty object; one with no scope is returned unchanged.
+func withoutCacheControlScope(cc *schemas.CacheControl) *schemas.CacheControl {
+	if cc == nil || cc.Scope == nil {
+		return cc
+	}
+	if cc.TTL == nil && cc.Type == "" {
+		return nil
+	}
+	stripped := *cc
+	stripped.Scope = nil
+	return &stripped
 }
 
 // StripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
