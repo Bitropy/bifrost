@@ -1738,6 +1738,17 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 
 		finishReason := chatFinishReasonFromResponses(responsesResp.Status, responsesResp.IncompleteDetails, responsesResp.StopReason, responsesResp.Output)
 
+		// One response is one assistant turn: its message, reasoning and
+		// function_call items all belong to a single choice, the shape every chat
+		// client reads (choices[0]). Only a conversion that yields a non-assistant
+		// message keeps one choice per message.
+		if merged, ok := mergeAssistantOutputMessages(chatMessages); ok {
+			chatMessages = []ChatMessage{merged}
+		}
+		for i := range chatMessages {
+			reasoningFromSummaries(chatMessages[i].ChatAssistantMessage)
+		}
+
 		// Create choices from chat messages
 		choices := make([]BifrostResponseChoice, 0, len(chatMessages))
 		for i, chatMsg := range chatMessages {
@@ -1766,6 +1777,119 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 	chatResp.ExtraFields.Provider = responsesResp.ExtraFields.Provider
 
 	return chatResp
+}
+
+// mergeAssistantOutputMessages folds the chat messages converted from one
+// Responses output into a single assistant message: text joined in output
+// order (as one string when every part is plain text, as content blocks
+// otherwise), reasoning and reasoning details concatenated, every tool call
+// kept and re-indexed 0..n-1. It reports false when the output yields no
+// message or any non-assistant one, leaving the caller's shape unchanged.
+func mergeAssistantOutputMessages(msgs []ChatMessage) (ChatMessage, bool) {
+	if len(msgs) == 0 {
+		return ChatMessage{}, false
+	}
+	for i := range msgs {
+		if msgs[i].Role != ChatMessageRoleAssistant {
+			return ChatMessage{}, false
+		}
+	}
+	merged := ChatMessage{Role: ChatMessageRoleAssistant, Name: msgs[0].Name}
+	var am *ChatAssistantMessage
+	var blocks []ChatContentBlock
+	var text strings.Builder
+	plain, hasContent := true, false
+	for i := range msgs {
+		if c := msgs[i].Content; c != nil && (c.ContentStr != nil || len(c.ContentBlocks) > 0) {
+			hasContent = true
+			if c.ContentStr != nil {
+				text.WriteString(*c.ContentStr)
+				blocks = append(blocks, ChatContentBlock{Type: ChatContentBlockTypeText, Text: c.ContentStr})
+			}
+			for _, b := range c.ContentBlocks {
+				if b.Type == ChatContentBlockTypeText && b.Text != nil {
+					text.WriteString(*b.Text)
+				} else {
+					plain = false
+				}
+				blocks = append(blocks, b)
+			}
+		}
+		src := msgs[i].ChatAssistantMessage
+		if src == nil {
+			continue
+		}
+		if am == nil {
+			am = &ChatAssistantMessage{}
+		}
+		mergeAssistantFields(am, src)
+	}
+	if hasContent {
+		if plain {
+			s := text.String()
+			merged.Content = &ChatMessageContent{ContentStr: &s}
+		} else {
+			merged.Content = &ChatMessageContent{ContentBlocks: blocks}
+		}
+	}
+	if am != nil {
+		for i := range am.ToolCalls {
+			am.ToolCalls[i].Index = uint16(i)
+		}
+		merged.ChatAssistantMessage = am
+	}
+	return merged, true
+}
+
+// reasoningFromSummaries gives an answer whose reasoning came only as
+// summaries (OpenAI's reasoning items carry summary parts, not text) the
+// joined summary text as its reasoning, the field chat clients read; the
+// Responses→chat stream conversion already surfaces the summary deltas there.
+// An answer that already has reasoning text keeps it.
+func reasoningFromSummaries(am *ChatAssistantMessage) {
+	if am == nil || am.Reasoning != nil {
+		return
+	}
+	var text strings.Builder
+	for _, d := range am.ReasoningDetails {
+		if d.Type != BifrostReasoningDetailsTypeSummary || d.Summary == nil {
+			continue
+		}
+		if text.Len() > 0 {
+			text.WriteByte('\n')
+		}
+		text.WriteString(*d.Summary)
+	}
+	if text.Len() > 0 {
+		joined := text.String()
+		am.Reasoning = &joined
+	}
+}
+
+// mergeAssistantFields appends src's assistant fields onto dst: the first
+// refusal and audio win, reasoning text is joined with a newline, and the
+// list fields are concatenated.
+func mergeAssistantFields(dst, src *ChatAssistantMessage) {
+	if dst.Refusal == nil {
+		dst.Refusal = src.Refusal
+	}
+	if dst.Audio == nil {
+		dst.Audio = src.Audio
+	}
+	if src.Reasoning != nil {
+		if dst.Reasoning == nil {
+			dst.Reasoning = src.Reasoning
+		} else {
+			joined := *dst.Reasoning + "\n" + *src.Reasoning
+			dst.Reasoning = &joined
+		}
+	}
+	for _, d := range src.ReasoningDetails {
+		d.Index = len(dst.ReasoningDetails)
+		dst.ReasoningDetails = append(dst.ReasoningDetails, d)
+	}
+	dst.Annotations = append(dst.Annotations, src.Annotations...)
+	dst.ToolCalls = append(dst.ToolCalls, src.ToolCalls...)
 }
 
 // ChatToResponsesStreamState tracks state during Chat-to-Responses streaming conversion

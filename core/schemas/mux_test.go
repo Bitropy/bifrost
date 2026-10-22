@@ -2357,3 +2357,110 @@ func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
 		t.Fatalf("expected the surviving message to be the user turn, got role %q", got[0].Role)
 	}
 }
+
+// A unary Responses answer that says something AND calls tools is ONE chat
+// choice: the message item, the reasoning item and every function_call item
+// of one response belong to the same assistant turn. Splitting them into one
+// choice per chat message left a client reading choices[0] (every OpenAI SDK)
+// with the text and none of the tool calls (BIT-2741 R2).
+func TestToBifrostChatResponse_MergesOutputItemsIntoOneChoice(t *testing.T) {
+	reasoning := "think"
+	text := "Let me check."
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: []ResponsesMessage{
+			{
+				Type: Ptr(ResponsesMessageTypeReasoning),
+				ID:   Ptr("rs_1"),
+				Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeReasoning, Text: &reasoning},
+				}},
+			},
+			{
+				Type: Ptr(ResponsesMessageTypeMessage),
+				Role: Ptr(ResponsesInputMessageRoleAssistant),
+				Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeText, Text: &text},
+				}},
+			},
+			{
+				Type: Ptr(ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID: Ptr("call_1"), Name: Ptr("get_time"), Arguments: Ptr(`{"tz":"UTC"}`),
+				},
+			},
+			{
+				Type: Ptr(ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID: Ptr("call_2"), Name: Ptr("get_weather"), Arguments: Ptr(`{}`),
+				},
+			},
+		},
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) != 1 {
+		t.Fatalf("expected exactly one choice, got %d", len(chatResp.Choices))
+	}
+	choice := chatResp.Choices[0]
+	if choice.Index != 0 || choice.FinishReason == nil || *choice.FinishReason != string(BifrostFinishReasonToolCalls) {
+		t.Fatalf("unexpected choice index/finish: %d %v", choice.Index, choice.FinishReason)
+	}
+	msg := choice.ChatNonStreamResponseChoice.Message
+	if msg.Role != ChatMessageRoleAssistant {
+		t.Fatalf("role = %q", msg.Role)
+	}
+	if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != text {
+		t.Fatalf("content = %+v, want %q", msg.Content, text)
+	}
+	am := msg.ChatAssistantMessage
+	if am == nil || am.Reasoning == nil || *am.Reasoning != reasoning {
+		t.Fatalf("reasoning not carried on the merged choice: %+v", am)
+	}
+	if len(am.ToolCalls) != 2 {
+		t.Fatalf("tool calls = %d, want 2", len(am.ToolCalls))
+	}
+	for i, want := range []string{"call_1", "call_2"} {
+		tc := am.ToolCalls[i]
+		if tc.Index != uint16(i) || tc.ID == nil || *tc.ID != want {
+			t.Fatalf("tool call %d = index %d id %v, want index %d id %s", i, tc.Index, tc.ID, i, want)
+		}
+	}
+}
+
+// Text spread over two message items joins into one content string, in
+// output order, rather than becoming a second choice.
+func TestToBifrostChatResponse_JoinsTwoMessageItems(t *testing.T) {
+	out := append(responsesTextOutput("a"), responsesTextOutput("b")...)
+	chatResp := (&BifrostResponsesResponse{Status: Ptr(ResponsesResponseStatusCompleted), Output: out}).ToBifrostChatResponse()
+	if len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one choice, got %d", len(chatResp.Choices))
+	}
+	c := chatResp.Choices[0].ChatNonStreamResponseChoice.Message.Content
+	if c == nil || c.ContentStr == nil || *c.ContentStr != "ab" {
+		t.Fatalf("content = %+v, want \"ab\"", c)
+	}
+}
+
+// An answer whose reasoning item carries only summary parts (OpenAI's shape)
+// surfaces the summary as the choice's reasoning, as the stream conversion
+// does, and keeps the summary detail.
+func TestToBifrostChatResponse_SummaryOnlyReasoningIsTheReasoning(t *testing.T) {
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: append([]ResponsesMessage{{
+			Type:               Ptr(ResponsesMessageTypeReasoning),
+			ID:                 Ptr("rs_1"),
+			ResponsesReasoning: &ResponsesReasoning{Summary: []ResponsesReasoningSummary{{Type: "summary_text", Text: "think"}}},
+		}}, responsesTextOutput("hi")...),
+	}).ToBifrostChatResponse()
+	if len(chatResp.Choices) != 1 {
+		t.Fatalf("expected one choice, got %d", len(chatResp.Choices))
+	}
+	am := chatResp.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage
+	if am == nil || am.Reasoning == nil || *am.Reasoning != "think" {
+		t.Fatalf("reasoning = %+v, want \"think\"", am)
+	}
+	if len(am.ReasoningDetails) != 1 || am.ReasoningDetails[0].Type != BifrostReasoningDetailsTypeSummary {
+		t.Fatalf("summary detail not kept: %+v", am.ReasoningDetails)
+	}
+}
