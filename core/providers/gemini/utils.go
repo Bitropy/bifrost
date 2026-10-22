@@ -889,6 +889,27 @@ func ConvertBifrostFinishReasonToGemini(bifrostReason string) FinishReason {
 }
 
 // ConvertGeminiUsageMetadataToChatUsage converts Gemini usage metadata to Bifrost chat LLM usage
+// observeGeminiStreamUsage overwrites a stream's running usage handle with an
+// event's cumulative usageMetadata and the tier it reports served, so a stream
+// that fails before its final chunk (error event, read error, cancel, timeout)
+// bills the tokens and the served tier the provider already reported. A nil
+// handle or metadata leaves the handle as it was.
+func observeGeminiStreamUsage(handle *schemas.BifrostLLMUsage, metadata *GenerateContentResponseUsageMetadata) {
+	if handle == nil || metadata == nil {
+		return
+	}
+	usage := ConvertGeminiUsageMetadataToChatUsage(metadata)
+	tier := handle.ServiceTier
+	if t := mapGeminiTrafficTypeToBifrost(metadata.TrafficType); t != nil {
+		tier = t
+	} else if metadata.ServiceTier != "" {
+		mapped := mapGeminiServiceTierToBifrost(metadata.ServiceTier)
+		tier = &mapped
+	}
+	*handle = *usage
+	handle.ServiceTier = tier
+}
+
 func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.BifrostLLMUsage {
 	if metadata == nil {
 		return nil

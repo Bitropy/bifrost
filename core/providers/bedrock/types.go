@@ -923,6 +923,9 @@ type BedrockStreamEvent struct {
 	Usage   *BedrockTokenUsage      `json:"usage,omitempty"`   // Usage information
 	Metrics *BedrockConverseMetrics `json:"metrics,omitempty"` // Performance metrics
 	Trace   *BedrockConverseTrace   `json:"trace,omitempty"`   // Trace information
+	// ServiceTier is the tier the converse stream's metadata event reports served
+	// (decode only: ToEncodedEvents builds the metadata payload itself).
+	ServiceTier *BedrockServiceTier `json:"serviceTier,omitempty"`
 
 	// Additional fields
 	AdditionalModelResponseFields json.RawMessage `json:"additionalModelResponseFields,omitempty"` // Native model-specific fields, kept verbatim
