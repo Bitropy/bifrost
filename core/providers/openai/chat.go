@@ -337,11 +337,7 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 		req.MaxCompletionTokens = nil
 	}
 
-	// Mistral does not support ToolChoiceStruct, only simple tool choice strings are supported
-	if req.ToolChoice != nil && req.ToolChoice.ChatToolChoiceStruct != nil {
-		req.ToolChoice.ChatToolChoiceStr = schemas.Ptr("any")
-		req.ToolChoice.ChatToolChoiceStruct = nil
-	}
+	req.applyMistralToolChoice()
 
 	// Mistral only support reasoning effort "none" and "high"
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
@@ -356,6 +352,61 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 			assistantMessage.Reasoning = nil
 		}
 	}
+}
+
+// applyMistralToolChoice maps an object tool_choice onto the forms Mistral
+// accepts: the strings "auto" / "none" / "any" / "required", and a named
+// function in OpenAI's own object form, {"type":"function","function":{"name":…}}.
+//
+//   - A named function is kept, so a forced tool stays forced (rewriting it to
+//     "any" let the model call any tool).
+//   - allowed_tools, which Mistral has no form for, becomes its mode ("any"
+//     for required, "auto" otherwise) over the allowed subset of the tools.
+//   - Any other object (a custom tool, a malformed choice) becomes "any", as
+//     before.
+//
+// The caller's choice and tools are never written: both are replaced, not
+// mutated (ChatParameters is a shallow copy of the caller's).
+func (req *OpenAIChatRequest) applyMistralToolChoice() {
+	if req.ToolChoice == nil || req.ToolChoice.ChatToolChoiceStruct == nil {
+		return
+	}
+	choice := req.ToolChoice.ChatToolChoiceStruct
+	switch {
+	case choice.Type == schemas.ChatToolChoiceTypeFunction && choice.Function != nil && choice.Function.Name != "":
+		return
+	case choice.Type == schemas.ChatToolChoiceTypeAllowedTools && choice.AllowedTools != nil:
+		mode := "auto"
+		if choice.AllowedTools.Mode == "required" {
+			mode = "any"
+		}
+		req.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(mode)}
+		req.Tools = allowedChatTools(req.Tools, choice.AllowedTools.Tools)
+	default:
+		req.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("any")}
+	}
+}
+
+// allowedChatTools returns, in a new slice, the function tools whose names
+// the allowed list holds. An allowed list naming none of the tools keeps
+// every tool, rather than sending a forced choice with no tool to call.
+func allowedChatTools(tools []schemas.ChatTool, allowed []schemas.ChatToolChoiceAllowedToolsTool) []schemas.ChatTool {
+	kept := make([]schemas.ChatTool, 0, len(allowed))
+	for _, tool := range tools {
+		if tool.Function == nil {
+			continue
+		}
+		for _, a := range allowed {
+			if a.Function.Name == tool.Function.Name {
+				kept = append(kept, tool)
+				break
+			}
+		}
+	}
+	if len(kept) == 0 {
+		return tools
+	}
+	return kept
 }
 
 // stripReasoningDetailsExceptToolCalls strips reasoning_content from assistant messages that
