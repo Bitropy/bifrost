@@ -3657,3 +3657,37 @@ func BenchmarkGroupedConversion_ToolUseBlocks(b *testing.B) {
 		_ = convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &assistant, true)
 	}
 }
+
+// A named function tool_choice with parallel_tool_calls:false on /v1/responses
+// reaches Claude as {"type":"tool","name":…,"disable_parallel_tool_use":true}:
+// OpenAI's named choice is exactly one call, Anthropic's {"type":"tool"} alone
+// only forces the first (BIT-2370). The flag is the caller's; without it
+// nothing is added, so an Anthropic-semantics caller keeps parallel use.
+func TestToAnthropicResponsesRequest_NamedChoiceParallelToolCalls(t *testing.T) {
+	named := &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+		Type: schemas.ResponsesToolChoiceTypeFunction, Name: schemas.Ptr("get_time"),
+	}}
+	for _, tc := range []struct {
+		name        string
+		parallel    *bool
+		wantDisable bool
+	}{
+		{"false disables parallel use", schemas.Ptr(false), true},
+		{"unset adds nothing", nil, false},
+		{"true adds nothing", schemas.Ptr(true), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(nil, time.Time{}), parallelToolsResponsesReq(named, tc.parallel))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.ToolChoice == nil || out.ToolChoice.Type != "tool" || out.ToolChoice.Name != "get_time" {
+				t.Fatalf("tool_choice = %+v, want {type:tool name:get_time}", out.ToolChoice)
+			}
+			got := out.ToolChoice.DisableParallelToolUse != nil && *out.ToolChoice.DisableParallelToolUse
+			if got != tc.wantDisable {
+				t.Errorf("disable_parallel_tool_use = %s, want %v", boolPtrString(out.ToolChoice.DisableParallelToolUse), tc.wantDisable)
+			}
+		})
+	}
+}
