@@ -387,6 +387,7 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	}
 
 	req.applyMistralToolChoice()
+	req.rewriteMistralToolCallIDs()
 
 	// Mistral only support reasoning effort "none" and "high"
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
