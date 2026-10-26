@@ -96,6 +96,9 @@ func (rt *ResponsesTool) ToChatTool() *ChatTool {
 		}
 	}
 
+	// The tool's cache_control (Anthropic ingress); egresses without one strip it.
+	ct.CacheControl = rt.CacheControl
+
 	// Convert custom tools
 	if rt.Type == "custom" && rt.ResponsesToolCustom != nil {
 		ct.Custom = &ChatToolCustom{}
@@ -406,6 +409,14 @@ func (tc *ResponsesToolChoice) ToChatToolChoice() *ChatToolChoice {
 // ToResponsesMessages converts a ChatMessage to one or more ResponsesMessages
 // This handles the expansion of assistant messages with tool calls into separate function_call messages
 func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
+	return cm.toResponsesMessages(false)
+}
+
+// toResponsesMessages is ToResponsesMessages; carryCacheControl also copies
+// the message blocks' and tool calls' cache_control onto the Responses items
+// (ToResponsesRequestWithCacheControl). A tool result's marker
+// (ChatToolMessage.CacheControl) is always carried.
+func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMessage {
 	if cm == nil {
 		return []ResponsesMessage{}
 	}
@@ -544,6 +555,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 					Arguments: argumentsPtr,
 				},
 			}
+			if carryCacheControl {
+				rm.CacheControl = tc.CacheControl
+			}
 
 			messages = append(messages, rm)
 		}
@@ -656,6 +670,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 					GuardContent: block.GuardContent,
 				})
 				rb := &responseBlocks[len(responseBlocks)-1]
+				if carryCacheControl {
+					rb.CacheControl = block.CacheControl
+				}
 
 				// Convert specific block types
 				if block.ImageURLStruct != nil {
@@ -705,6 +722,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		if cm.ChatToolMessage.IsError != nil && *cm.ChatToolMessage.IsError {
 			rm.Status = Ptr("incomplete")
 		}
+		rm.CacheControl = cm.ChatToolMessage.CacheControl
 
 		// If tool output content exists, add it to function_call_output
 		// For function_call_output, get content from cm.Content since rm.Content is not set
@@ -870,6 +888,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 			if rm.ResponsesToolMessage != nil {
 				tc := ChatAssistantMessageToolCall{
 					Type: Ptr("function"),
+					// A tool_use block's cache_control (Anthropic ingress) rides the
+					// item; the Anthropic chat egress puts it back on the tool_use.
+					CacheControl: rm.CacheControl,
 				}
 
 				if rm.ResponsesToolMessage.CallID != nil {
@@ -981,8 +1002,11 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		// Convert content (skip for refusal messages since refusal is already extracted)
 		if rm.Content != nil && (rm.Type == nil || *rm.Type != ResponsesMessageTypeRefusal) {
 			if rm.Content.ContentStr != nil ||
-				(len(rm.Content.ContentBlocks) == 1 &&
+				(len(rm.Content.ContentBlocks) == 1 && rm.Content.ContentBlocks[0].CacheControl == nil &&
 					(rm.Content.ContentBlocks[0].Type == ResponsesInputMessageContentBlockTypeText || rm.Content.ContentBlocks[0].Type == ResponsesOutputMessageContentTypeText)) {
+				// A single unmarked text block collapses to a string. A marked one
+				// stays a block below: a string has nowhere to carry its
+				// cache_control, and the Anthropic chat egress reads it off the block.
 				if rm.Content.ContentStr != nil {
 					cm.Content = &ChatMessageContent{
 						ContentStr: rm.Content.ContentStr,
@@ -1029,6 +1053,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 						Type:         chatBlockType,
 						Text:         block.Text,
 						GuardContent: block.GuardContent,
+						CacheControl: block.CacheControl,
 					}
 
 					// Convert specific block types
@@ -1060,6 +1085,10 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				}
 				cm.Content = &ChatMessageContent{
 					ContentBlocks: chatBlocks,
+					// A single text block kept as a block only for its marker
+					// is still a string on every chat wire.
+					TextJoinOnWire: len(chatBlocks) == 1 && chatBlocks[0].Type == ChatContentBlockTypeText &&
+						chatBlocks[0].Text != nil && chatBlocks[0].CacheControl != nil,
 				}
 			}
 		}
@@ -1091,6 +1120,13 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		if cm.Role == ChatMessageRoleTool &&
 			(cm.Content == nil || (cm.Content.ContentStr == nil && len(cm.Content.ContentBlocks) == 0)) {
 			cm.Content = &ChatMessageContent{ContentStr: Ptr("")}
+		}
+
+		// A tool_result's cache_control (Anthropic ingress) rides the
+		// function_call_output item; on the chat surface it rides the tool
+		// message, off every chat wire, for the Anthropic-family converters.
+		if cm.ChatToolMessage != nil && rm.CacheControl != nil {
+			cm.ChatToolMessage.CacheControl = rm.CacheControl
 		}
 
 		chatMessages = append(chatMessages, cm)
@@ -1279,6 +1315,33 @@ func (r *BifrostResponse) NormalizedUsage() *BifrostLLMUsage {
 
 // ToResponsesRequest converts a BifrostChatRequest to BifrostResponsesRequest format
 func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
+	return cr.toResponsesRequest(false)
+}
+
+// ToResponsesRequestWithCacheControl is ToResponsesRequest carrying every
+// cache_control of the chat request — message blocks, tool calls, tools —
+// onto the Responses request (BIT-2764). For a target whose Responses egress
+// is the Anthropic Messages wire (a Claude model served through the Responses
+// API, e.g. Azure Claude): ToResponsesRequest carries only a tool result's
+// marker, which the OpenAI Responses egress turns into its single
+// prompt_cache_breakpoint (#6290), and the other markers would become
+// breakpoints there too.
+func (cr *BifrostChatRequest) ToResponsesRequestWithCacheControl() *BifrostResponsesRequest {
+	return cr.toResponsesRequest(true)
+}
+
+// ToResponsesRequestForTarget is the chat request converted for the target it
+// is sent to through the Responses API: ToResponsesRequestWithCacheControl for
+// a Claude target (IsAnthropicModelFamily over cr.Model; its Responses egress
+// is the Anthropic Messages wire), ToResponsesRequest for any other (BIT-2764).
+func (cr *BifrostChatRequest) ToResponsesRequestForTarget(ctx *BifrostContext) *BifrostResponsesRequest {
+	if cr != nil && IsAnthropicModelFamily(ctx, cr.Model) {
+		return cr.toResponsesRequest(true)
+	}
+	return cr.toResponsesRequest(false)
+}
+
+func (cr *BifrostChatRequest) toResponsesRequest(carryCacheControl bool) *BifrostResponsesRequest {
 	if cr == nil {
 		return &BifrostResponsesRequest{}
 	}
@@ -1292,7 +1355,7 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 	// Convert Input messages using existing ChatMessage.ToResponsesMessages()
 	var allResponsesMessages []ResponsesMessage
 	for _, chatMsg := range cr.Input {
-		responsesMessages := chatMsg.ToResponsesMessages()
+		responsesMessages := chatMsg.toResponsesMessages(carryCacheControl)
 		allResponsesMessages = append(allResponsesMessages, responsesMessages...)
 	}
 	brr.Input = allResponsesMessages
@@ -1330,6 +1393,9 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 			responsesTools := make([]ResponsesTool, 0, len(cr.Params.Tools))
 			for _, chatTool := range cr.Params.Tools {
 				responsesTool := chatTool.ToResponsesTool()
+				if carryCacheControl {
+					responsesTool.CacheControl = chatTool.CacheControl
+				}
 				responsesTools = append(responsesTools, *responsesTool)
 			}
 			brr.Params.Tools = responsesTools
@@ -1465,22 +1531,34 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	return bcr
 }
 
+// sanitizeResponsesToolsForChatFallback keeps the function tools. A marker on a
+// tool it drops (a server tool, often a client's LAST tool, marking the whole
+// tool list) moves onto the nearest kept tool before it that has none: "cache
+// the tools up to here" then covers the same kept tools.
 func sanitizeResponsesToolsForChatFallback(tools []ResponsesTool) []ChatTool {
 	if len(tools) == 0 {
 		return nil
 	}
 
 	chatTools := make([]ChatTool, 0, len(tools))
+	carryCacheControl := func(cc *CacheControl) {
+		if cc != nil && len(chatTools) > 0 && chatTools[len(chatTools)-1].CacheControl == nil {
+			chatTools[len(chatTools)-1].CacheControl = cc
+		}
+	}
 	for _, responsesTool := range tools {
 		if responsesTool.Type != ResponsesToolTypeFunction {
+			carryCacheControl(responsesTool.CacheControl)
 			continue
 		}
 		if responsesTool.Name == nil || strings.TrimSpace(*responsesTool.Name) == "" {
+			carryCacheControl(responsesTool.CacheControl)
 			continue
 		}
 
 		chatTool := responsesTool.ToChatTool()
 		if chatTool == nil || chatTool.Function == nil || strings.TrimSpace(chatTool.Function.Name) == "" {
+			carryCacheControl(responsesTool.CacheControl)
 			continue
 		}
 

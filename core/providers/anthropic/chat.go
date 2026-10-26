@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -528,9 +529,17 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.Container = c
 		}
 
-		// Top-level CacheControl on the request.
+		// Top-level CacheControl on the request. The Anthropic ingress parks its
+		// request-level cache_control in ExtraParams (ToBifrostResponsesRequest),
+		// which the Responses→Chat fallback copies as is: read it there when the
+		// neutral field is unset, and consume it on a copy (the map is shared
+		// with the caller's request and its fallbacks).
 		if bifrostReq.Params.CacheControl != nil {
 			anthropicReq.CacheControl = bifrostReq.Params.CacheControl
+		} else if cc := extraParamsCacheControl(anthropicReq.ExtraParams); cc != nil {
+			anthropicReq.CacheControl = cc
+			anthropicReq.ExtraParams = maps.Clone(anthropicReq.ExtraParams)
+			delete(anthropicReq.ExtraParams, "cache_control")
 		}
 
 		// Diagnostics — cache diagnostics opt-in (Anthropic API only). Promote
@@ -1063,6 +1072,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						}
 					}
 
+					if toolResult.CacheControl == nil {
+						toolResult.CacheControl = toolMsg.ChatToolMessage.CacheControl
+					}
 					toolResults = append(toolResults, toolResult)
 				}
 				i++
@@ -2245,4 +2257,29 @@ func countFunctionTools(tools []AnthropicTool) int {
 		}
 	}
 	return n
+}
+
+// extraParamsCacheControl is the request-level cache_control a caller left in
+// ExtraParams: typed from the Anthropic ingress, decoded from anywhere else.
+// nil when absent or unparseable.
+func extraParamsCacheControl(extra map[string]interface{}) *schemas.CacheControl {
+	raw, ok := extra["cache_control"]
+	if !ok || raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case *schemas.CacheControl:
+		return v
+	case schemas.CacheControl:
+		return &v
+	}
+	data, err := providerUtils.MarshalSorted(raw)
+	if err != nil {
+		return nil
+	}
+	var cc schemas.CacheControl
+	if sonic.Unmarshal(data, &cc) != nil || cc.Type == "" {
+		return nil
+	}
+	return &cc
 }

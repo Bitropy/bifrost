@@ -78,7 +78,7 @@ func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) 
 	// Create the HuggingFace request
 	// Sanitize messages to remove unsupported fields like reasoning_details
 	hfReq := &HuggingFaceChatRequest{
-		Messages: sanitizeMessagesForHuggingFace(bifrostReq.Input),
+		Messages: sanitizeMessagesForHuggingFace(schemas.ChatMessagesWithoutCacheControl(bifrostReq.Input)),
 		Model:    bifrostReq.Model,
 	}
 
@@ -141,7 +141,7 @@ func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) 
 			}
 		}
 
-		hfReq.Tools = params.Tools
+		hfReq.Tools = schemas.ChatToolsWithoutCacheControl(params.Tools) // no cache breakpoint on this wire (BIT-2764)
 
 		// Handle tool choice
 		if params.ToolChoice != nil {

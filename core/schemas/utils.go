@@ -774,6 +774,7 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 				copy.Content.ContentBlocks[i] = deepCopyChatContentBlock(block)
 			}
 		}
+		copy.Content.TextJoinOnWire = original.Content.TextJoinOnWire
 	}
 
 	// Deep copy ChatToolMessage if present
@@ -782,6 +783,10 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 		if original.ChatToolMessage.ToolCallID != nil {
 			copyToolCallID := *original.ChatToolMessage.ToolCallID
 			copy.ChatToolMessage.ToolCallID = &copyToolCallID
+		}
+		if original.ChatToolMessage.CacheControl != nil {
+			cc := *original.ChatToolMessage.CacheControl
+			copy.ChatToolMessage.CacheControl = &cc
 		}
 	}
 

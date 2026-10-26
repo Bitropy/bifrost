@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -1277,6 +1278,14 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 type ChatMessageContent struct {
 	ContentStr    *string
 	ContentBlocks []ChatContentBlock
+
+	// TextJoinOnWire marks text the Responses→Chat fallback kept as text
+	// blocks only so a cache_control can ride a block (BIT-2764): marshalled
+	// onto a chat wire it is sent as the string it would otherwise have been,
+	// the blocks' texts joined with a newline and their markers dropped. The
+	// Anthropic-family converters read the blocks, markers included. Set only
+	// on blocks that are all text.
+	TextJoinOnWire bool
 }
 
 // MarshalJSON implements custom JSON marshalling for ChatMessageContent.
@@ -1290,11 +1299,35 @@ func (mc ChatMessageContent) MarshalJSON() ([]byte, error) {
 	if mc.ContentStr != nil {
 		return MarshalSorted(*mc.ContentStr)
 	}
+	if mc.TextJoinOnWire {
+		if text, ok := joinedText(mc.ContentBlocks); ok {
+			return MarshalSorted(text)
+		}
+	}
 	if mc.ContentBlocks != nil {
 		return MarshalSorted(mc.ContentBlocks)
 	}
 	// If both are nil, return null
 	return MarshalSorted(nil)
+}
+
+// joinedText is text blocks' texts joined with a newline; ok is false when a
+// block is not text.
+func joinedText(blocks []ChatContentBlock) (string, bool) {
+	if len(blocks) == 1 && blocks[0].Type == ChatContentBlockTypeText && blocks[0].Text != nil {
+		return *blocks[0].Text, true
+	}
+	var b strings.Builder
+	for i := range blocks {
+		if blocks[i].Type != ChatContentBlockTypeText || blocks[i].Text == nil {
+			return "", false
+		}
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(*blocks[i].Text)
+	}
+	return b.String(), len(blocks) > 0
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ChatMessageContent.
@@ -1607,6 +1640,11 @@ type ChatToolMessage struct {
 	// OpenAI-wire converters strip it before serialization so providers that
 	// reject unknown message parameters never see it.
 	IsError *bool `json:"is_error,omitempty"`
+	// CacheControl is a tool result's cache breakpoint (an Anthropic
+	// tool_result's cache_control, carried by the Responses→Chat fallback,
+	// BIT-2764). Not part of any chat wire: the Anthropic-family converters put
+	// it on the tool_result, every other converter ignores it.
+	CacheControl *CacheControl `json:"-"`
 }
 
 // ChatAssistantMessage represents a message in a chat conversation.
