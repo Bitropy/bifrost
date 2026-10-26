@@ -1202,9 +1202,14 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		authQuery := ""
 		// Determine the URL based on model type
 		var completeURL string
+		// errorConverter reads a stream-open error; nil is the OpenAI parser.
+		var errorConverter openai.ErrorConverter
 		if schemas.IsMistralModelFamily(ctx, request.Model) {
 			// Mistral models use mistralai publisher with streamRawPredict
 			completeURL = getVertexPublisherModelURL(region, "v1", projectID, "mistralai", request.Model, ":streamRawPredict")
+			// The publisher's error bodies (Mistral's API error, a validation
+			// list) are read as on the unary path.
+			errorConverter = parseVertexError
 		} else {
 			// Other models use OpenAPI endpoint for gemini models
 			if key.Value.GetValue() != "" {
@@ -1245,7 +1250,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			postHookRunner,
 			nil,
 			nil,
-			nil,
+			errorConverter,
 			nil,
 			nil,
 			nil,
@@ -2033,7 +2038,7 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 				parsedError.Error == nil ||
 				strings.TrimSpace(parsedError.Error.Message) == "" ||
 				parsedError.Error.Message == "Unknown error" ||
-				parsedError.Error.Message == schemas.ErrProviderResponseUnmarshal
+				strings.HasPrefix(parsedError.Error.Message, "provider API error: ")
 
 			if shouldOverride {
 				overridden := providerUtils.NewProviderAPIError(errorMessage, nil, resp.StatusCode(), nil, nil)
