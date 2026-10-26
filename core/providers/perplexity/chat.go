@@ -10,8 +10,9 @@ func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *
 		return nil
 	}
 
-	// Perplexity takes text only in a tool message.
-	messages := schemas.FlattenToolMessagesMedia(bifrostReq.Input)
+	// Perplexity takes text only in a tool message, and its wire has no cache
+	// breakpoint (BIT-2764).
+	messages := schemas.ChatMessagesWithoutCacheControl(schemas.FlattenToolMessagesMedia(bifrostReq.Input))
 	perplexityReq := &PerplexityChatRequest{
 		Model:    bifrostReq.Model,
 		Messages: messages,
@@ -28,7 +29,7 @@ func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *
 		perplexityReq.ResponseFormat = bifrostReq.Params.ResponseFormat
 
 		// Tool calling parameters
-		perplexityReq.Tools = bifrostReq.Params.Tools
+		perplexityReq.Tools = schemas.ChatToolsWithoutCacheControl(bifrostReq.Params.Tools)
 		perplexityReq.ToolChoice = bifrostReq.Params.ToolChoice
 		perplexityReq.ParallelToolCalls = bifrostReq.Params.ParallelToolCalls
 
