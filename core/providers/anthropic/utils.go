@@ -1177,6 +1177,21 @@ func IsSonnet5Plus(model string) bool {
 	return strings.Contains(strings.ToLower(model), "sonnet-5")
 }
 
+// IsHaiku5Plus returns true for Claude Haiku 5 (and later Haiku 5.x, currently
+// Haiku 5.5). Haiku 5.5 leaves Haiku 4.5's extended-thinking surface for the
+// Opus 4.7+ one: thinking:{type:"enabled",budget_tokens:N} is a 400 ("Use
+// "thinking.type.adaptive" and "output_config.effort""), adaptive thinking is on
+// by default, non-default temperature/top_p/top_k are a 400, effort takes
+// low-max, and thinking:{type:"disabled"} is accepted only at effort "high" or
+// below. Matching "haiku-5" excludes "haiku-4-5" and matches the
+// Bedrock/Vertex/date-suffixed forms.
+//
+// Source: https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking
+// (Claude Haiku 5.5 row of the per-model thinking table).
+func IsHaiku5Plus(model string) bool {
+	return strings.Contains(strings.ToLower(model), "haiku-5")
+}
+
 // IsSonnet55Plus returns true for Claude Sonnet 5.5, matching the
 // Bedrock/Vertex/date-suffixed forms.
 func IsSonnet55Plus(model string) bool {
@@ -1242,7 +1257,7 @@ func RejectsEnabledThinking(caps schemas.ModelCaps) bool {
 //	"budget_tokens" for extended thinking.
 //
 // Fable 5, Mythos 5, Mythos Preview and Opus 5.5 are always-on and reject it
-// outright. Opus 5 accepts it only at effort "high" or below - pairing it with
+// outright. Opus 5 and Haiku 5.5 accept it only at effort "high" or below - pairing it with
 // "xhigh" or "max" is rejected, and that is enforced per request, which is why
 // effort has to be passed in rather than inferred from the model alone. Opus
 // 4.7/4.8 and Sonnet 5 accept "disabled" at any effort.
@@ -1259,7 +1274,7 @@ func RejectsDisabledThinking(caps schemas.ModelCaps, effort *string) bool {
 	if !caps.CanDisableReasoning(DefaultCanDisableReasoning(model)) {
 		return true
 	}
-	if IsOpus5Plus(model) && effort != nil {
+	if (IsOpus5Plus(model) || IsHaiku5Plus(model)) && effort != nil {
 		switch strings.ToLower(*effort) {
 		case "xhigh", "max":
 			return true
@@ -1408,9 +1423,9 @@ func ApplyDefaultEagerInputStreamingToRawBody(jsonBody []byte, provider schemas.
 }
 
 // DefaultSupportsAdaptiveThinking: thinking.type "adaptive" is accepted on Opus
-// 4.6, Sonnet 4.6, Sonnet 5+, Opus 4.7+ and the Fable/Mythos family.
+// 4.6, Sonnet 4.6, Sonnet 5+, Opus 4.7+, Haiku 5+ and the Fable/Mythos family.
 func DefaultSupportsAdaptiveThinking(model string) bool {
-	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model) {
+	if IsOpus47Plus(model) || IsSonnet5Plus(model) || IsHaiku5Plus(model) || IsFableFamily(model) {
 		return true
 	}
 	m := strings.ToLower(model)
@@ -1421,11 +1436,11 @@ func DefaultSupportsAdaptiveThinking(model string) bool {
 }
 
 // DefaultEffortControl: the output_config.effort ladder per family, for rows that publish none.
-// Opus 4.5 takes low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+/Sonnet 5+/Fable add xhigh.
+// Opus 4.5 takes low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+/Sonnet 5+/Haiku 5+/Fable add xhigh.
 func DefaultEffortControl(model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
 	switch {
-	case IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model):
+	case IsOpus47Plus(model) || IsSonnet5Plus(model) || IsHaiku5Plus(model) || IsFableFamily(model):
 		levels = append(levels, schemas.ReasoningEffortXHigh, schemas.ReasoningEffortMax)
 	case DefaultSupportsAdaptiveThinking(model):
 		levels = append(levels, schemas.ReasoningEffortMax)
@@ -1473,7 +1488,7 @@ func fitRawThinkingBudget(jsonBody []byte, maxTokens int) ([]byte, error) {
 // DefaultAdaptiveOnlyThinking: models where budget_tokens thinking is removed
 // and temperature/top_p/top_k are rejected — adaptive is the only thinking mode.
 func DefaultAdaptiveOnlyThinking(model string) bool {
-	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsFableFamily(model)
+	return IsOpus47Plus(model) || IsSonnet5Plus(model) || IsHaiku5Plus(model) || IsFableFamily(model)
 }
 
 // DefaultCanDisableReasoning: the Fable/Mythos family, Opus 5.5 and Sonnet 5.5
@@ -1521,7 +1536,7 @@ func SupportsNativeEffort(caps schemas.ModelCaps) bool {
 // SupportsEffortParameter returns true if the model accepts the
 // output_config.effort parameter. Supported models: Claude Fable 5,
 // Claude Mythos 5, Claude Mythos Preview, Opus 5, Opus 4.8, Opus 4.7, Opus 4.6,
-// Sonnet 5, Sonnet 4.6, and Opus 4.5. All other models reject effort with a 400:
+// Sonnet 5, Sonnet 4.6, Haiku 5+, and Opus 4.5. All other models reject effort with a 400:
 //
 //	"This model does not support the effort parameter."
 //
@@ -1536,7 +1551,7 @@ func SupportsNativeEffort(caps schemas.ModelCaps) bool {
 // Source: https://platform.claude.com/docs/en/build-with-claude/effort
 func DefaultSupportsNativeEffort(model string) bool {
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) {
+	if IsFableFamily(m) || IsSonnet5Plus(m) || IsOpus5Plus(m) || IsHaiku5Plus(m) {
 		return true
 	}
 	if strings.Contains(m, "haiku") {
