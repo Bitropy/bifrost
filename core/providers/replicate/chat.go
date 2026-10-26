@@ -32,15 +32,16 @@ func ToReplicateChatRequest(bifrostReq *schemas.BifrostChatRequest) (*ReplicateP
 	if len(bifrostReq.Input) > 0 && strings.HasPrefix(bifrostReq.Model, string(schemas.OpenAI)) {
 		if isGPT5Structured {
 			responsesMessages := []schemas.ResponsesMessage{}
-			for _, msg := range bifrostReq.Input {
+			for _, msg := range schemas.ChatMessagesWithoutCacheControl(bifrostReq.Input) {
 				responsesMessages = append(responsesMessages, msg.ToResponsesMessages()...)
 			}
 			if len(responsesMessages) > 0 {
 				input.InputItemList = responsesMessages
 			}
 		} else {
-			// An OpenAI model on Replicate takes text only in a tool message, as on OpenAI.
-			input.Messages = schemas.FlattenToolMessagesMedia(bifrostReq.Input)
+			// An OpenAI model on Replicate takes text only in a tool message, as on OpenAI,
+			// and this wire has no cache breakpoint (BIT-2764).
+			input.Messages = schemas.ChatMessagesWithoutCacheControl(schemas.FlattenToolMessagesMedia(bifrostReq.Input))
 		}
 	} else {
 		// Extract system prompt and build conversation prompt

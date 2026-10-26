@@ -8840,6 +8840,7 @@ func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 
 		if msg.ResponsesToolMessage.Output != nil {
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
+			hoistToolResultCacheControl(&toolResultBlock)
 		}
 
 		// Set is_error if there's an error message or the status indicates an error
@@ -8900,6 +8901,7 @@ func convertBifrostComputerCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 		// Handle output
 		if msg.ResponsesToolMessage.Output != nil {
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
+			hoistToolResultCacheControl(&toolResultBlock)
 		}
 
 		// Set is_error if there's an error message or the status indicates an error
@@ -8935,6 +8937,7 @@ func convertBifrostMCPCallOutputToAnthropicToolResultBlock(msg *schemas.Response
 		// Handle output
 		if msg.ResponsesToolMessage.Output != nil {
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
+			hoistToolResultCacheControl(&toolResultBlock)
 		}
 
 		// Set is_error if there's an error message or the status indicates an error
@@ -9088,6 +9091,7 @@ func convertBifrostMCPCallOutputToAnthropicMessage(msg *schemas.ResponsesMessage
 
 	if msg.ResponsesToolMessage.Output != nil {
 		toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
+		hoistToolResultCacheControl(&toolResultBlock)
 	}
 
 	return &AnthropicMessage{
@@ -10130,6 +10134,7 @@ func convertBifrostComputerCallOutputToAnthropicMessage(msg *schemas.ResponsesMe
 
 		if msg.ResponsesToolMessage.Output != nil {
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
+			hoistToolResultCacheControl(&toolResultBlock)
 		}
 
 		return &AnthropicMessage{
@@ -11924,4 +11929,28 @@ func rawCaptureExtraFields(extra schemas.BifrostResponseExtraFields) *schemas.Bi
 	}
 	echo := extra
 	return &echo
+}
+
+// hoistToolResultCacheControl moves a cache_control found on a tool_result's
+// content blocks onto the tool_result itself (the first one, unless the
+// tool_result carries its own) and clears the nested ones: Anthropic rejects
+// "cache_control ... within `tool_result.content`". A chat tool message, and
+// so a Responses output block converted from one, carries its marker on a
+// content block (BIT-2764); the chat converter hoists it the same way. The
+// blocks are convertToolOutputToAnthropicContent's own, so writing them
+// aliases nothing.
+func hoistToolResultCacheControl(b *AnthropicContentBlock) {
+	if b.Content == nil {
+		return
+	}
+	for i := range b.Content.ContentBlocks {
+		nested := &b.Content.ContentBlocks[i]
+		if nested.CacheControl == nil {
+			continue
+		}
+		if b.CacheControl == nil {
+			b.CacheControl = nested.CacheControl
+		}
+		nested.CacheControl = nil
+	}
 }

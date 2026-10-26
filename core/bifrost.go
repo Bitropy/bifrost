@@ -9305,7 +9305,7 @@ func (bifrost *Bifrost) dispatchChat(ctx *schemas.BifrostContext, provider schem
 		return nil, bifrostError
 	}
 	if changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
-		responsesRequest := chatRequest.ToResponsesRequest()
+		responsesRequest := chatRequest.ToResponsesRequestForTarget(ctx)
 		if responsesRequest != nil {
 			responsesRequest, bifrostError := prepareResponsesRequest(ctx, config, provider, key, responsesRequest)
 			if bifrostError != nil {
@@ -9373,7 +9373,7 @@ func (bifrost *Bifrost) dispatchChatStream(ctx *schemas.BifrostContext, provider
 		return nil, bifrostError
 	}
 	if changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
-		responsesRequest := chatRequest.ToResponsesRequest()
+		responsesRequest := chatRequest.ToResponsesRequestForTarget(ctx)
 		if responsesRequest != nil {
 			responsesRequest, bifrostError := prepareResponsesRequest(ctx, config, provider, key, responsesRequest)
 			if bifrostError != nil {
