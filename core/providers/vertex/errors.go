@@ -1,13 +1,16 @@
 package vertex
 
 import (
+	"cmp"
 	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -76,46 +79,92 @@ func parseVertexErrorBody(resp *fasthttp.Response) *schemas.BifrostError {
 		return bifrostErr
 	}
 
-	if err := sonic.Unmarshal(decodedBody, &openAIErr); err != nil || openAIErr.Error == nil {
-		// Try Vertex error format if OpenAI format fails or is incomplete
-		if err := sonic.Unmarshal(decodedBody, &vertexErr); err != nil {
-			//try with single Vertex error format
-			var vertexErr VertexError
-			if err := sonic.Unmarshal(decodedBody, &vertexErr); err != nil {
-				// Try VertexValidationError format (validation errors from Mistral endpoint)
-				var validationErr VertexValidationError
-				if err := sonic.Unmarshal(decodedBody, &validationErr); err != nil {
-					bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
-					return bifrostErr
-				}
-				if len(validationErr.Detail) > 0 {
-					return createError(validationErr.Detail[0].Msg, "")
-				}
-				return createError("Unknown error", "")
+	// The OpenAI error envelope (Vertex's openapi endpoint, the Claude and
+	// Llama publishers), with Vertex's status as the type when it carries none.
+	if err := sonic.Unmarshal(decodedBody, &openAIErr); err == nil && openAIErr.Error != nil {
+		openAIStatus := ""
+		if openAIErr.Error.Type != nil {
+			openAIStatus = *openAIErr.Error.Type
+		}
+		var single VertexError
+		if openAIStatus == "" {
+			if err := sonic.Unmarshal(decodedBody, &single); err == nil {
+				openAIStatus = single.Error.Status
 			}
-			bifrostErr := createError(vertexErr.Error.Message, vertexErr.Error.Status)
-			gemini.ApplyRetryInfo(bifrostErr, vertexErr.Error.Details)
-			return bifrostErr
 		}
-		if len(vertexErr) > 0 {
-			bifrostErr := createError(vertexErr[0].Error.Message, vertexErr[0].Error.Status)
-			gemini.ApplyRetryInfo(bifrostErr, vertexErr[0].Error.Details)
-			return bifrostErr
+		message := openAIErr.Error.Message
+		if message == "" {
+			message = cmp.Or(publisherErrorMessage(decodedBody), "Unknown error")
 		}
-		return createError("Unknown error", "")
+		bifrostErr := createError(message, openAIStatus)
+		gemini.ApplyRetryInfo(bifrostErr, single.Error.Details)
+		return bifrostErr
 	}
-	// OpenAI error format succeeded with valid Error field.
-	openAIStatus := ""
-	if openAIErr.Error.Type != nil {
-		openAIStatus = *openAIErr.Error.Type
+	// Google's error envelope, as a list or a single object.
+	if err := sonic.Unmarshal(decodedBody, &vertexErr); err == nil && len(vertexErr) > 0 && vertexErr[0].Error.Message != "" {
+		bifrostErr := createError(vertexErr[0].Error.Message, vertexErr[0].Error.Status)
+		gemini.ApplyRetryInfo(bifrostErr, vertexErr[0].Error.Details)
+		return bifrostErr
 	}
 	var single VertexError
-	if openAIStatus == "" {
-		if err := sonic.Unmarshal(decodedBody, &single); err == nil {
-			openAIStatus = single.Error.Status
+	if err := sonic.Unmarshal(decodedBody, &single); err == nil && single.Error.Message != "" {
+		bifrostErr := createError(single.Error.Message, single.Error.Status)
+		gemini.ApplyRetryInfo(bifrostErr, single.Error.Details)
+		return bifrostErr
+	}
+	// A Google envelope without a message (a 429 RESOURCE_EXHAUSTED carrying
+	// only RetryInfo) keeps its status type and retry hint below.
+	status, details := single.Error.Status, single.Error.Details
+	if len(vertexErr) > 0 && status == "" && len(details) == 0 {
+		status, details = vertexErr[0].Error.Status, vertexErr[0].Error.Details
+	}
+	// A publisher's own error body (BIT-2765: Mistral's flat
+	// {"object":"error","message":"…"}, its validation list) carries no Google
+	// envelope; read its message rather than answering with an empty one.
+	if message := publisherErrorMessage(decodedBody); message != "" {
+		bifrostErr := createError(message, status)
+		gemini.ApplyRetryInfo(bifrostErr, details)
+		return bifrostErr
+	}
+	if gjson.ValidBytes(decodedBody) {
+		bifrostErr := createError("Unknown error", status)
+		gemini.ApplyRetryInfo(bifrostErr, details)
+		return bifrostErr
+	}
+	// Not JSON at all: the upstream status and its text (capped) still reach
+	// the caller, as the shared OpenAI-wire stream parser does, rather than a
+	// status-less decode failure (which the client sees as a 500).
+	return createError("provider API error: "+capErrorText(trimmed), "")
+}
+
+// maxErrorTextBytes caps the raw upstream text an error message carries.
+const maxErrorTextBytes = 1024
+
+// capErrorText is s cut to maxErrorTextBytes on a rune boundary, marked when cut.
+func capErrorText(s string) string {
+	if len(s) <= maxErrorTextBytes {
+		return s
+	}
+	cut := maxErrorTextBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// publisherErrorMessage reads the message of an error body none of the Google
+// or OpenAI envelopes describe: a root "message" string (Mistral's API error,
+// {"object":"error","message":"…","type":"…","code":"…"}), a root "error"
+// string, or the first "msg" of a FastAPI validation list, at the root
+// ({"detail":[{"msg":…}]}) or under "message" (Mistral's 422). "" when none
+// is present.
+func publisherErrorMessage(body []byte) string {
+	for _, path := range [...]string{"message", "error", "message.detail.0.msg", "detail.0.msg", "detail"} {
+		if v := gjson.GetBytes(body, path); v.Type == gjson.String {
+			if message := strings.TrimSpace(v.Str); message != "" {
+				return message
+			}
 		}
 	}
-	bifrostErr := createError(openAIErr.Error.Message, openAIStatus)
-	gemini.ApplyRetryInfo(bifrostErr, single.Error.Details)
-	return bifrostErr
+	return ""
 }
