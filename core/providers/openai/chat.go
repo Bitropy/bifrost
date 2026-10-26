@@ -395,6 +395,7 @@ func (req *OpenAIChatRequest) applyMistralCompatibility(caps schemas.ModelCaps) 
 	}
 
 	req.applyMistralToolChoice()
+	req.rewriteMistralToolCallIDs()
 
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
 		req.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(*req.Reasoning.Effort, mistralLegacyEffortControl))
