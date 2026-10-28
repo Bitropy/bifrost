@@ -244,6 +244,14 @@ func TestSonic_ToolFunctionParameters_CarriesDialectSchema(t *testing.T) {
 	inputKeys := ExtractTopLevelKeyOrder([]byte(input))
 	outputKeys := ExtractTopLevelKeyOrder(output)
 	assert.Equal(t, inputKeys, outputKeys, "top-level key order should be preserved")
+
+	// The Anthropic chat egress converts a deep copy of the parameters
+	// (DeepCopyToolFunctionParameters); the dialect id must survive it.
+	cp := DeepCopyToolFunctionParameters(&params)
+	require.NotNil(t, cp.Schema, "the deep copy keeps $schema")
+	cpOutput, err := Marshal(*cp)
+	require.NoError(t, err)
+	assert.JSONEq(t, input, string(cpOutput), "$schema survives the deep copy")
 }
 
 func TestSonic_ToolFunctionParameters_DialectOnlyTypelessRoot(t *testing.T) {
