@@ -1277,6 +1277,10 @@ func DeepCopyToolFunctionParameters(original *ToolFunctionParameters) *ToolFunct
 		ref := *original.Ref
 		copyParams.Ref = &ref
 	}
+	if original.Schema != nil {
+		schema := *original.Schema
+		copyParams.Schema = &schema
+	}
 	if original.Items != nil {
 		copyParams.Items = deepCopyOrderedMap(original.Items)
 	}
