@@ -224,6 +224,46 @@ func TestSonic_ToolFunctionParameters_PreservesDefsPosition(t *testing.T) {
 	assert.Equal(t, "$defs", keys[0], "$defs should be first key in output, got keys: %v", keys)
 }
 
+func TestSonic_ToolFunctionParameters_CarriesDialectSchema(t *testing.T) {
+	// $schema (the JSON Schema dialect identifier) at the parameters root:
+	// legal JSON Schema emitted by many generators. It must survive
+	// decode -> marshal unchanged, in the client's key order (BIT-2820).
+	input := `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}`
+
+	var params ToolFunctionParameters
+	err := Unmarshal([]byte(input), &params)
+	require.NoError(t, err)
+
+	require.NotNil(t, params.Schema, "$schema must decode into the typed struct")
+	assert.Equal(t, "https://json-schema.org/draft/2020-12/schema", *params.Schema)
+
+	output, err := Marshal(params)
+	require.NoError(t, err)
+	assert.JSONEq(t, input, string(output), "$schema must round-trip")
+
+	inputKeys := ExtractTopLevelKeyOrder([]byte(input))
+	outputKeys := ExtractTopLevelKeyOrder(output)
+	assert.Equal(t, inputKeys, outputKeys, "top-level key order should be preserved")
+}
+
+func TestSonic_ToolFunctionParameters_DialectOnlyTypelessRoot(t *testing.T) {
+	// A root carrying only $schema counts as a populated schema: it stays
+	// typeless and is emitted as sent, without a forced "properties":{}.
+	input := `{"$schema":"https://json-schema.org/draft/2020-12/schema"}`
+
+	var params ToolFunctionParameters
+	err := Unmarshal([]byte(input), &params)
+	require.NoError(t, err)
+	require.NotNil(t, params.Schema)
+
+	output, err := Marshal(params)
+	require.NoError(t, err)
+	assert.JSONEq(t, input, string(output), "a $schema-only root round-trips unchanged")
+
+	norm := params.Normalized()
+	require.NotNil(t, norm.Schema, "Normalized keeps $schema")
+}
+
 func TestSonic_ToolFunctionParameters_FullSchemaRoundTrip(t *testing.T) {
 	// A realistic tool schema with $defs at top, specific property order
 	input := `{"$defs":{"Citation":{"type":"object","properties":{"url":{"type":"string"},"text":{"type":"string"}},"required":["url","text"]}},"properties":{"answer":{"type":"string","description":"The answer"},"chain_of_thought":{"type":"string","description":"Reasoning"},"citations":{"type":"array","items":{"$ref":"#/$defs/Citation"}},"is_unanswered":{"type":"boolean"}},"required":["answer","is_unanswered"],"type":"object"}`

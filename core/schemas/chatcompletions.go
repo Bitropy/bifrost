@@ -636,6 +636,7 @@ type ToolFunctionParameters struct {
 	Enum                 []string                    `json:"enum,omitempty"`                 // Enum values for the parameters
 
 	// JSON Schema definition fields
+	Schema      *string     `json:"$schema,omitempty"`     // JSON Schema dialect identifier (e.g. https://json-schema.org/draft/2020-12/schema)
 	Defs        *OrderedMap `json:"$defs,omitempty"`       // JSON Schema draft 2019-09+ definitions
 	Definitions *OrderedMap `json:"definitions,omitempty"` // Legacy JSON Schema draft-07 definitions
 	Ref         *string     `json:"$ref,omitempty"`        // Reference to definition
@@ -837,7 +838,7 @@ func (t *ToolFunctionParameters) hasDefinedSchemaFields() bool {
 	if t.Type != "" || t.Description != nil || len(t.Required) > 0 || t.AdditionalProperties != nil || len(t.Enum) > 0 {
 		return true
 	}
-	if t.Properties != nil || t.Defs != nil || t.Definitions != nil || t.Ref != nil {
+	if t.Properties != nil || t.Schema != nil || t.Defs != nil || t.Definitions != nil || t.Ref != nil {
 		return true
 	}
 	if t.Items != nil || t.MinItems != nil || t.MaxItems != nil {
