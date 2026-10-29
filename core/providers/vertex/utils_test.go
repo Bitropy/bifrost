@@ -1161,6 +1161,10 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 		// Model calls keep v1: Google's v1beta1 streamRawPredict answers 500 for Claude.
 		{"v1beta1", claudeStream, "/v1/projects/proj/locations/global/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict"},
 		{"v1beta1", geminiGenerate, "/v1/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"},
+		// BIT-2838: a version in the path is the caller's choice and wins, model calls included.
+		{"", "/v1beta1" + geminiGenerate, "/v1beta1/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"},
+		{"v1", "/v1beta1" + geminiGenerate, "/v1beta1/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"},
+		{"", "/v1" + geminiGenerate, "/v1/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"},
 	} {
 		mu.Lock()
 		paths = nil
