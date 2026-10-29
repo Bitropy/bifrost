@@ -197,6 +197,20 @@ func getVertexAPIBaseURL(region string, apiVersion string) string {
 	return fmt.Sprintf("https://%s/%s", getVertexAPIHost(region), apiVersion)
 }
 
+// cutVertexV1Beta1 strips a leading "/v1beta1" from a pass-through path. A path
+// that names v1beta1 itself is served on v1beta1, model calls included: unlike
+// req.APIVersion, which the /genai_passthrough router fills from the SDK's default
+// and model calls therefore ignore, a version in the path is one the caller chose
+// (BIT-2838: Vertex accepts a video part's mediaProcessing only on v1beta1).
+// Without it the path was appended to the v1 base as /v1/v1beta1/....
+func cutVertexV1Beta1(path string) (string, bool) {
+	rest, ok := strings.CutPrefix(path, "/v1beta1/")
+	if !ok {
+		return path, false
+	}
+	return "/" + rest, true
+}
+
 // getVertexModelAwareAPIBaseURL is like getVertexAPIBaseURL but uses model-aware
 // host selection for multi-region endpoints.
 func getVertexModelAwareAPIBaseURL(region string, apiVersion string, model string, forceSingleRegion bool, logger schemas.Logger) string {

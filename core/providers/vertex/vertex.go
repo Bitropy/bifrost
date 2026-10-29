@@ -4702,6 +4702,9 @@ func (provider *VertexProvider) Passthrough(
 			path = "/" + path
 		}
 	}
+	if rest, ok := cutVertexV1Beta1(path); ok {
+		path, baseURL = rest, getVertexAPIBaseURL(keyRegion, "v1beta1")
+	}
 
 	// Replace region in path with key's configured region (client path may have different region)
 	if strings.Contains(path, "/locations/") {
@@ -4867,6 +4870,9 @@ func (provider *VertexProvider) PassthroughStream(
 		if path != "" && !strings.HasPrefix(path, "/") {
 			path = "/" + path
 		}
+	}
+	if rest, ok := cutVertexV1Beta1(path); ok {
+		path, baseURL = rest, getVertexAPIBaseURL(keyRegion, "v1beta1")
 	}
 
 	// Replace region and project in path with key's configured values.
