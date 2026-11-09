@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -27,7 +28,7 @@ func toolMediaContent() *ChatMessageContent {
 // With no media kept, a tool result becomes one string with each medium named, never its base64.
 func TestFlattenToolResultMedia_TextOnly(t *testing.T) {
 	original := toolMediaContent()
-	flattened := FlattenToolResultMedia(original, nil)
+	flattened := FlattenToolResultMedia(nil, original, nil)
 	require.NotNil(t, flattened.ContentStr)
 	assert.Equal(t, "chart below\n[image/png, 3 KB returned by the tool, not shown]\n[audio/mp3, 3 KB returned by the tool, not shown]\n[application/pdf report.pdf, 3 KB returned by the tool, not shown]", *flattened.ContentStr)
 	assert.Len(t, original.ContentBlocks, 4, "the caller's content is not mutated")
@@ -36,16 +37,16 @@ func TestFlattenToolResultMedia_TextOnly(t *testing.T) {
 // A file carried as a data URL is sized by its payload, not the URL's prefix.
 func TestToolResultMediaPlaceholder_DataURLFileSizedByPayload(t *testing.T) {
 	data, plain, name := "data:text/plain;base64,SGVsbG8=", "text/plain", "hello.txt"
-	placeholder := ToolResultMediaPlaceholder(ChatContentBlock{Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileData: &data, FileType: &plain, Filename: &name}})
+	placeholder := ToolResultMediaPlaceholder(nil, ChatContentBlock{Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileData: &data, FileType: &plain, Filename: &name}})
 	assert.Equal(t, "[text/plain hello.txt, 6 bytes returned by the tool, not shown]", placeholder)
-	placeholder, ok := ResponsesToolResultMediaPlaceholder(ResponsesMessageContentBlock{ResponsesInputMessageContentBlockFile: &ResponsesInputMessageContentBlockFile{FileData: &data, FileType: &plain, Filename: &name}})
+	placeholder, ok := ResponsesToolResultMediaPlaceholder(nil, ResponsesMessageContentBlock{ResponsesInputMessageContentBlockFile: &ResponsesInputMessageContentBlockFile{FileData: &data, FileType: &plain, Filename: &name}})
 	require.True(t, ok)
 	assert.Equal(t, "[text/plain hello.txt, 6 bytes returned by the tool, not shown]", placeholder)
 }
 
 // Kept media stays a block; the rest becomes placeholders beside it.
 func TestFlattenToolResultMedia_KeepsImages(t *testing.T) {
-	flattened := FlattenToolResultMedia(toolMediaContent(), IsImageBlock)
+	flattened := FlattenToolResultMedia(nil, toolMediaContent(), IsImageBlock)
 	require.Len(t, flattened.ContentBlocks, 4)
 	assert.Equal(t, ChatContentBlockTypeImage, flattened.ContentBlocks[1].Type)
 	assert.Equal(t, ChatContentBlockTypeText, flattened.ContentBlocks[2].Type)
@@ -58,13 +59,13 @@ func TestFlattenToolResultMedia_KeepsCacheMarkers(t *testing.T) {
 	marker := &CacheControl{Type: CacheControlTypeEphemeral}
 	onText := toolMediaContent()
 	onText.ContentBlocks[0].CacheControl = marker
-	flattened := FlattenToolResultMedia(onText, nil)
+	flattened := FlattenToolResultMedia(nil, onText, nil)
 	require.Len(t, flattened.ContentBlocks, 4, "a marked result is not joined into a string")
 	assert.Same(t, marker, flattened.ContentBlocks[0].CacheControl)
 
 	onMedia := toolMediaContent()
 	onMedia.ContentBlocks[3].CacheControl = marker
-	flattened = FlattenToolResultMedia(onMedia, IsImageBlock)
+	flattened = FlattenToolResultMedia(nil, onMedia, IsImageBlock)
 	require.Len(t, flattened.ContentBlocks, 4)
 	assert.Equal(t, ChatContentBlockTypeText, flattened.ContentBlocks[3].Type)
 	assert.Same(t, marker, flattened.ContentBlocks[3].CacheControl, "the placeholder carries the replaced block's marker")
@@ -75,13 +76,13 @@ func TestFlattenToolResultMedia_KeepsPromptCacheBreakpoints(t *testing.T) {
 	breakpoint := &PromptCacheBreakpoint{Mode: Ptr("explicit")}
 	onText := toolMediaContent()
 	onText.ContentBlocks[0].PromptCacheBreakpoint = breakpoint
-	flattened := FlattenToolResultMedia(onText, nil)
+	flattened := FlattenToolResultMedia(nil, onText, nil)
 	require.Len(t, flattened.ContentBlocks, 4, "a marked result is not joined into a string")
 	assert.Same(t, breakpoint, flattened.ContentBlocks[0].PromptCacheBreakpoint)
 
 	onMedia := toolMediaContent()
 	onMedia.ContentBlocks[2].PromptCacheBreakpoint = breakpoint
-	flattened = FlattenToolResultMedia(onMedia, IsImageBlock)
+	flattened = FlattenToolResultMedia(nil, onMedia, IsImageBlock)
 	require.Len(t, flattened.ContentBlocks, 4)
 	assert.Same(t, breakpoint, flattened.ContentBlocks[2].PromptCacheBreakpoint, "the placeholder carries the replaced block's breakpoint")
 }
@@ -117,7 +118,7 @@ func TestToolResultForResponses_KeepsOnlyPortableMedia(t *testing.T) {
 		file("application/zip"),
 		{Type: ChatContentBlockTypeImage, ImageURLStruct: &ChatInputImage{URL: "data:image/svg+xml;base64,PHN2"}},
 	}}}
-	blocks := ToolResultForResponses(message).Content.ContentBlocks
+	blocks := ToolResultForResponses(nil, message).Content.ContentBlocks
 	require.Len(t, blocks, 4)
 	assert.Equal(t, ChatContentBlockTypeFile, blocks[0].Type)
 	assert.Equal(t, ChatContentBlockTypeFile, blocks[1].Type)
@@ -127,7 +128,7 @@ func TestToolResultForResponses_KeepsOnlyPortableMedia(t *testing.T) {
 
 	// The function_call_output Bifrost answers with: the PDF as an input_file, the zip named.
 	message.ChatToolMessage = &ChatToolMessage{ToolCallID: Ptr("call_archive")}
-	wire, err := json.Marshal(ToolResultForResponses(message).ToResponsesToolMessage())
+	wire, err := json.Marshal(ToolResultForResponses(nil, message).ToResponsesToolMessage())
 	require.NoError(t, err)
 	assert.Contains(t, string(wire), `"input_file"`)
 	assert.Contains(t, string(wire), "[application/zip")
@@ -138,22 +139,22 @@ func TestToolResultForResponses_KeepsOnlyPortableMedia(t *testing.T) {
 func TestFlattenToolResultMedia_Unchanged(t *testing.T) {
 	text := "plain"
 	str := &ChatMessageContent{ContentStr: &text}
-	assert.Same(t, str, FlattenToolResultMedia(str, nil))
-	assert.Nil(t, FlattenToolResultMedia(nil, nil))
+	assert.Same(t, str, FlattenToolResultMedia(nil, str, nil))
+	assert.Nil(t, FlattenToolResultMedia(nil, nil, nil))
 	onlyImages := &ChatMessageContent{ContentBlocks: toolMediaContent().ContentBlocks[:2]}
-	assert.Same(t, onlyImages, FlattenToolResultMedia(onlyImages, IsImageBlock))
+	assert.Same(t, onlyImages, FlattenToolResultMedia(nil, onlyImages, IsImageBlock))
 }
 
 // The Responses wire takes images and files in a function output, not audio.
 func TestToolResultForResponses(t *testing.T) {
 	message := &ChatMessage{Role: ChatMessageRoleTool, Content: toolMediaContent()}
-	adapted := ToolResultForResponses(message)
+	adapted := ToolResultForResponses(nil, message)
 	require.Len(t, adapted.Content.ContentBlocks, 4)
 	assert.Equal(t, ChatContentBlockTypeImage, adapted.Content.ContentBlocks[1].Type)
 	assert.Equal(t, ChatContentBlockTypeText, adapted.Content.ContentBlocks[2].Type)
 	assert.Equal(t, ChatContentBlockTypeFile, adapted.Content.ContentBlocks[3].Type)
 	assert.Equal(t, ChatContentBlockTypeInputAudio, message.Content.ContentBlocks[2].Type, "the original message is untouched")
-	assert.Nil(t, ToolResultForResponses(nil))
+	assert.Nil(t, ToolResultForResponses(nil, nil))
 }
 
 // A chat request routed to Responses (reasoning.mode, compat) sends a function_call_output with only
@@ -183,7 +184,7 @@ func TestFlattenToolMessagesMedia(t *testing.T) {
 	user := ChatMessage{Role: ChatMessageRoleUser, Content: toolMediaContent()}
 	tool := ChatMessage{Role: ChatMessageRoleTool, Content: toolMediaContent()}
 	messages := []ChatMessage{user, tool}
-	flattened := FlattenToolMessagesMedia(messages)
+	flattened := FlattenToolMessagesMedia(nil, messages)
 	require.Len(t, flattened, 2)
 	assert.Same(t, user.Content, flattened[0].Content, "non-tool messages are untouched")
 	require.NotNil(t, flattened[1].Content.ContentStr)
@@ -191,7 +192,7 @@ func TestFlattenToolMessagesMedia(t *testing.T) {
 	assert.Len(t, messages[1].Content.ContentBlocks, 4, "the caller's messages are not mutated")
 
 	plain := []ChatMessage{{Role: ChatMessageRoleTool, Content: &ChatMessageContent{ContentStr: Ptr("ok")}}}
-	assert.Equal(t, &plain[0], &FlattenToolMessagesMedia(plain)[0], "nothing to flatten returns the same slice")
+	assert.Equal(t, &plain[0], &FlattenToolMessagesMedia(nil, plain)[0], "nothing to flatten returns the same slice")
 }
 
 // BenchmarkToResponsesRequest_ToolResult measures converting a chat request with one tool result:
@@ -284,4 +285,54 @@ func TestPromptAndResourceForLog(t *testing.T) {
 	assert.Equal(t, placeholder, blobs[0].(mcp.BlobResourceContents).Blob)
 	assert.Equal(t, placeholder, blobs[1].(mcp.BlobResourceContents).Blob)
 	assert.Equal(t, MediaPlaceholder(MCPAppsMimeType, len("not base64!")), blobs[2].(mcp.BlobResourceContents).Blob)
+}
+
+// BIT-2906: a placeholder states the size unless a request-body rewriter is on the context; a nil
+// context and a nil *BifrostContext carry none.
+func TestToolResultMediaSized_OnlyARewriterDropsTheSize(t *testing.T) {
+	var nilBifrostCtx *BifrostContext
+	rewriterCtx := NewBifrostContext(context.Background(), NoDeadline)
+	rewriterCtx.SetValue(BifrostContextKeyRequestBodyRewriter, func([]byte) {})
+	audio := ChatContentBlock{Type: ChatContentBlockTypeInputAudio, InputAudio: &ChatInputAudio{Data: "AAAAAAAAAAAA", Format: Ptr("wav")}}
+	for _, row := range []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{"nil context", nil, "[audio/wav, 9 bytes returned by the tool, not shown]"},
+		{"nil BifrostContext", nilBifrostCtx, "[audio/wav, 9 bytes returned by the tool, not shown]"},
+		{"no rewriter", NewBifrostContext(context.Background(), NoDeadline), "[audio/wav, 9 bytes returned by the tool, not shown]"},
+		{"rewriter", rewriterCtx, "[audio/wav returned by the tool, not shown]"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			assert.Equal(t, row.want, ToolResultMediaPlaceholder(row.ctx, audio))
+			got := FlattenToolResultMedia(row.ctx, &ChatMessageContent{ContentBlocks: []ChatContentBlock{audio}}, nil)
+			assert.Equal(t, row.want, *got.ContentStr)
+			placeholder, isMedia := ResponsesToolResultMediaPlaceholder(row.ctx, ResponsesMessageContentBlock{Audio: &ResponsesInputMessageContentBlockAudio{Format: "wav", Data: "AAAAAAAAAAAA"}})
+			assert.True(t, isMedia)
+			assert.Equal(t, row.want, placeholder)
+		})
+	}
+}
+
+// BIT-2906: ToResponsesRequestFor, the conversion a caller that picks the cache_control treatment
+// itself uses, names a function_call_output's unportable media without a size under a rewriter.
+func TestToResponsesRequestFor_ToolResultPlaceholderSizeFreeUnderRewriter(t *testing.T) {
+	rewriterCtx := NewBifrostContext(context.Background(), NoDeadline)
+	rewriterCtx.SetValue(BifrostContextKeyRequestBodyRewriter, func([]byte) {})
+	req := &BifrostChatRequest{Model: "gpt-4o", Input: []ChatMessage{{
+		Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1")},
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{Type: ChatContentBlockTypeInputAudio, InputAudio: &ChatInputAudio{Data: "AAAAAAAAAAAA", Format: Ptr("wav")}}}},
+	}}}
+	output := func(r *BifrostResponsesRequest) string {
+		require.Len(t, r.Input, 1)
+		require.NotNil(t, r.Input[0].ResponsesToolMessage.Output.ResponsesToolCallOutputStr)
+		return *r.Input[0].ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+	}
+	for _, carry := range []bool{false, true} {
+		assert.Equal(t, "[audio/wav, 9 bytes returned by the tool, not shown]", output(req.ToResponsesRequestFor(nil, carry)))
+		assert.Equal(t, "[audio/wav returned by the tool, not shown]", output(req.ToResponsesRequestFor(rewriterCtx, carry)))
+	}
+	assert.Equal(t, output(req.ToResponsesRequest()), output(req.ToResponsesRequestFor(nil, false)))
+	assert.Equal(t, "[audio/wav returned by the tool, not shown]", output(req.ToResponsesRequestForTarget(rewriterCtx)))
 }

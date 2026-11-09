@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/internal/wirecapture"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -3165,4 +3166,16 @@ func TestBuildAnthropicChatRequestBody_InvalidToolArgumentsReplayAsEmptyObject(t
 			})
 		}
 	}
+}
+
+// BIT-2906: an image Anthropic cannot read in a tool_result (bmp) is named by a placeholder: without
+// a size under a request-body rewriter, upstream's sized text without one.
+func TestToAnthropicChatRequest_ToolResultMediaPlaceholderOmitsSizeUnderRewriter(t *testing.T) {
+	wirecapture.AssertPlaceholderSizeFreeUnderRewriter(t, "[image/bmp, 9 bytes returned by the tool, not shown]", "[image/bmp returned by the tool, not shown]", func(ctx *schemas.BifrostContext) []byte {
+		req, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Input: wirecapture.ChatToolResultImage("data:image/bmp;base64,AAAAAAAAAAAA")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return wirecapture.JSON(t, req)
+	})
 }

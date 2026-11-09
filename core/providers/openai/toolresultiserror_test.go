@@ -27,7 +27,7 @@ func TestToolResultIsErrorStrippedFromOpenAIWire(t *testing.T) {
 		},
 	}
 
-	converted := ConvertBifrostMessagesToOpenAIMessages(messages)
+	converted := ConvertBifrostMessagesToOpenAIMessages(nil, messages)
 	if len(converted) != 1 {
 		t.Fatalf("expected 1 converted message, got %d", len(converted))
 	}
@@ -144,7 +144,7 @@ func TestToolResultMediaFlattenedOnOpenAIWire(t *testing.T) {
 		{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: "data:image/png;base64,iVBORw0KGgo="}},
 		{Type: schemas.ChatContentBlockTypeInputAudio, InputAudio: &schemas.ChatInputAudio{Data: "SUQz", Format: schemas.Ptr("mp3")}},
 	}}
-	converted := ConvertBifrostMessagesToOpenAIMessages([]schemas.ChatMessage{{
+	converted := ConvertBifrostMessagesToOpenAIMessages(nil, []schemas.ChatMessage{{
 		Role:            schemas.ChatMessageRoleTool,
 		ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
 		Content:         content,

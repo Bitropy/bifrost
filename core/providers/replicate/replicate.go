@@ -801,7 +801,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (*ReplicatePredictionRequest, error) { return ToReplicateChatRequest(request) })
+		func() (*ReplicatePredictionRequest, error) { return ToReplicateChatRequest(ctx, request) })
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -890,7 +890,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		ctx,
 		request,
 		func() (*ReplicatePredictionRequest, error) {
-			replicateReq, err := ToReplicateChatRequest(request)
+			replicateReq, err := ToReplicateChatRequest(ctx, request)
 			if err != nil {
 				return nil, err
 			}

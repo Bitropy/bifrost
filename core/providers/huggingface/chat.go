@@ -14,7 +14,7 @@ import (
 // like reasoning_details, reasoning, annotations, audio, and refusal.
 // Only ToolCalls is preserved from ChatAssistantMessage.
 // Tool messages also lose is_error, which has no OpenAI-wire equivalent.
-func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.ChatMessage {
+func sanitizeMessagesForHuggingFace(ctx *schemas.BifrostContext, messages []schemas.ChatMessage) []schemas.ChatMessage {
 	sanitized := make([]schemas.ChatMessage, len(messages))
 	for i, msg := range messages {
 		sanitized[i] = schemas.ChatMessage{
@@ -24,7 +24,7 @@ func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.Ch
 			ChatToolMessage: msg.ChatToolMessage,
 		}
 		if msg.Role == schemas.ChatMessageRoleTool {
-			sanitized[i].Content = schemas.FlattenToolResultMedia(msg.Content, nil)
+			sanitized[i].Content = schemas.FlattenToolResultMedia(ctx, msg.Content, nil)
 		}
 		// The OpenAI-compatible wire has no tool-error field; strip is_error.
 		// Clone first — ChatToolMessage is shared with the caller's input.
@@ -54,8 +54,8 @@ func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.Ch
 // only reads top-level usage, so the stream completes with zero tokens and
 // therefore zero cost. Defaulted rather than forced, so an explicit stream_options
 // from the caller still wins.
-func ToHuggingFaceChatCompletionStreamRequest(bifrostReq *schemas.BifrostChatRequest) (*HuggingFaceChatRequest, error) {
-	reqBody, err := ToHuggingFaceChatCompletionRequest(bifrostReq)
+func ToHuggingFaceChatCompletionStreamRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*HuggingFaceChatRequest, error) {
+	reqBody, err := ToHuggingFaceChatCompletionRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func ToHuggingFaceChatCompletionStreamRequest(bifrostReq *schemas.BifrostChatReq
 	return reqBody, nil
 }
 
-func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*HuggingFaceChatRequest, error) {
+func ToHuggingFaceChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*HuggingFaceChatRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil, nil
 	}
@@ -81,7 +81,7 @@ func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) 
 	// Create the HuggingFace request
 	// Sanitize messages to remove unsupported fields like reasoning_details
 	hfReq := &HuggingFaceChatRequest{
-		Messages: sanitizeMessagesForHuggingFace(schemas.ChatMessagesWithoutCacheControl(bifrostReq.Input)),
+		Messages: sanitizeMessagesForHuggingFace(ctx, schemas.ChatMessagesWithoutCacheControl(bifrostReq.Input)),
 		Model:    bifrostReq.Model,
 	}
 

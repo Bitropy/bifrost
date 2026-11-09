@@ -5,14 +5,14 @@ import (
 )
 
 // ToPerplexityChatCompletionRequest converts a Bifrost request to Perplexity chat completion request
-func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *PerplexityChatRequest {
+func ToPerplexityChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *PerplexityChatRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
 
 	// Perplexity takes text only in a tool message, and its wire has no cache
 	// breakpoint (BIT-2764).
-	messages := schemas.ChatMessagesWithoutCacheControl(schemas.FlattenToolMessagesMedia(bifrostReq.Input))
+	messages := schemas.ChatMessagesWithoutCacheControl(schemas.FlattenToolMessagesMedia(ctx, bifrostReq.Input))
 	perplexityReq := &PerplexityChatRequest{
 		Model:    bifrostReq.Model,
 		Messages: messages,

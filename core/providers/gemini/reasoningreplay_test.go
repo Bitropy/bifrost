@@ -131,7 +131,7 @@ func TestNonStreamReasoningItemHasID(t *testing.T) {
 	// A text-only thought replays to Gemini through the content-block path; giving it an
 	// empty ResponsesReasoning would route it to the summary path and drop the text.
 	t.Run("text-only thought still replays to Gemini", func(t *testing.T) {
-		contents, _, err := convertResponsesMessagesToGeminiContents(responsesMessagesForThoughtPart(t, &Part{Thought: true, Text: "thinking"}), "gemini-2.5-flash", schemas.Gemini)
+		contents, _, err := convertResponsesMessagesToGeminiContents(nil, responsesMessagesForThoughtPart(t, &Part{Thought: true, Text: "thinking"}), "gemini-2.5-flash", schemas.Gemini)
 		require.NoError(t, err)
 		wire, err := json.Marshal(contents)
 		require.NoError(t, err)
@@ -354,7 +354,7 @@ func TestIngressSendsThoughtTextForStandaloneReasoning(t *testing.T) {
 	const summary = "Breaking the problem into two steps."
 	encoded := base64.StdEncoding.EncodeToString([]byte{0x44, 0x55})
 
-	contents, _, err := convertResponsesMessagesToGeminiContents([]schemas.ResponsesMessage{
+	contents, _, err := convertResponsesMessagesToGeminiContents(nil, []schemas.ResponsesMessage{
 		{
 			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
 			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),

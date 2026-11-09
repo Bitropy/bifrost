@@ -69,7 +69,7 @@ func TestConvertBifrostMessagesToGemini_DerivesFileMimeFromURL(t *testing.T) {
 		},
 	}}
 
-	contents, _, err := convertBifrostMessagesToGemini(msgs)
+	contents, _, err := convertBifrostMessagesToGemini(nil, msgs)
 	require.NoError(t, err)
 	require.NotEmpty(t, contents)
 	require.NotEmpty(t, contents[0].Parts)
@@ -93,7 +93,7 @@ func TestConvertBifrostMessagesToGemini_CallerFileTypeWins(t *testing.T) {
 		},
 	}}
 
-	contents, _, err := convertBifrostMessagesToGemini(msgs)
+	contents, _, err := convertBifrostMessagesToGemini(nil, msgs)
 	require.NoError(t, err)
 	require.NotEmpty(t, contents)
 	require.NotNil(t, contents[0].Parts[0].FileData)

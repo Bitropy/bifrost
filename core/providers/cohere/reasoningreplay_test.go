@@ -365,7 +365,7 @@ func TestCohereReplayKeepsThinkingBeforeText(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out := ConvertBifrostMessagesToCohereMessages(tc.input, nil)
+			out := ConvertBifrostMessagesToCohereMessages(nil, tc.input, nil)
 			var gotTexts []string
 			var gotThinking []string
 			for i, m := range out {
@@ -397,7 +397,7 @@ func TestCohereReplayKeepsThinkingBeforeText(t *testing.T) {
 		secondCall.ResponsesToolMessage = &schemas.ResponsesToolMessage{
 			CallID: schemas.Ptr("call_2"), Name: schemas.Ptr("add"), Arguments: schemas.Ptr(`{"a":1,"b":2}`),
 		}
-		out := ConvertBifrostMessagesToCohereMessages([]schemas.ResponsesMessage{
+		out := ConvertBifrostMessagesToCohereMessages(nil, []schemas.ResponsesMessage{
 			user, reasoning("r1"), assistantText("391"), reasoning("r2"), functionCall, secondCall, functionOutput,
 		}, nil)
 		require.Len(t, out, 4, "want user, assistant(r1+text), assistant(r2+tool_calls), tool")
@@ -413,7 +413,7 @@ func TestCohereReplayKeepsThinkingBeforeText(t *testing.T) {
 	})
 
 	t.Run("text then tool call stays ahead of the tool result", func(t *testing.T) {
-		out := ConvertBifrostMessagesToCohereMessages([]schemas.ResponsesMessage{
+		out := ConvertBifrostMessagesToCohereMessages(nil, []schemas.ResponsesMessage{
 			user, assistantText("let me add"), functionCall, functionOutput,
 		}, nil)
 		require.Len(t, out, 3, "want user, assistant(text+tool_calls), tool")

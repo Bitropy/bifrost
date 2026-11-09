@@ -548,7 +548,7 @@ func TestCohereResponsesStreamReasoningItemReplayable(t *testing.T) {
 	var replayed schemas.ResponsesMessage
 	require.NoError(t, json.Unmarshal(echoed, &replayed))
 
-	cohereMessages := ConvertBifrostMessagesToCohereMessages([]schemas.ResponsesMessage{replayed}, nil)
+	cohereMessages := ConvertBifrostMessagesToCohereMessages(nil, []schemas.ResponsesMessage{replayed}, nil)
 	require.Len(t, cohereMessages, 1)
 	assert.Equal(t, "assistant", cohereMessages[0].Role)
 	require.NotNil(t, cohereMessages[0].Content)
