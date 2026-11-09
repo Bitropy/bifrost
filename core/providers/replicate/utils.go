@@ -213,6 +213,23 @@ var (
 	inputTokenPatterns = []*regexp.Regexp{inputTokenCountPattern, inputTextTokenCountPattern}
 )
 
+// predictionTokenUsage is a prediction's token usage: metrics.input_token_count
+// and output_token_count where present, else the counts in its log lines. A
+// prediction may report its counts in metrics only, with empty logs (BIT-2752).
+func predictionTokenUsage(metrics *ReplicateMetrics, logs *string, requestType schemas.RequestType) (inputTokens, outputTokens, totalTokens int, found bool) {
+	inputTokens, outputTokens, totalTokens, found = parseTokenUsageFromLogs(logs, requestType)
+	if metrics == nil || (metrics.InputTokenCount == nil && metrics.OutputTokenCount == nil) {
+		return inputTokens, outputTokens, totalTokens, found
+	}
+	if metrics.InputTokenCount != nil {
+		inputTokens = *metrics.InputTokenCount
+	}
+	if metrics.OutputTokenCount != nil {
+		outputTokens = *metrics.OutputTokenCount
+	}
+	return inputTokens, outputTokens, inputTokens + outputTokens, true
+}
+
 // parseTokenUsageFromLogs extracts token counts from Replicate's logs field
 // Handles multiple log formats with varying levels of detail
 func parseTokenUsageFromLogs(logs *string, requestType schemas.RequestType) (inputTokens, outputTokens, totalTokens int, found bool) {
