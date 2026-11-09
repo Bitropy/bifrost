@@ -600,17 +600,15 @@ func TestContextTransport_ChunkedStreamReleasesConnForReuse(t *testing.T) {
 	}
 }
 
-// TestContextTransport_TruncatedChunkedStreamReadsAsEOFAndDiscardsConn pins the
-// contract every provider read loop and the semantic truncation check (#5546) are
-// built on: fasthttp reports an upstream that closes on a chunk boundary as a plain
-// io.EOF and leaves "was the stream complete?" to the caller's terminal-marker
-// check, which turns a missing marker into the retryable 502 truncation error. The
-// standard-library chunked reader says io.ErrUnexpectedEOF for the same close, and
-// the loops route any non-EOF error to a generic stream failure instead. The
-// half-read connection must still be closed, never returned to the pool: a POST
-// (non-idempotent, so fasthttp will not silently retry it) must get a fresh
-// connection and succeed.
-func TestContextTransport_TruncatedChunkedStreamReadsAsEOFAndDiscardsConn(t *testing.T) {
+// TestContextTransport_TruncatedChunkedStreamReportsBodyCutAndDiscardsConn: an
+// upstream that closes a chunked body on a chunk boundary, without the
+// terminating 0-length chunk, is reported as ErrStreamBodyCut (an
+// io.ErrUnexpectedEOF), never as a clean io.EOF: a proxy whose upstream resets
+// mid-stream closes exactly like this, and a plain io.EOF made every pass-through
+// stream finalize the cut as a success (BIT-2784). The half-read connection must
+// still be closed, never returned to the pool: a POST (non-idempotent, so
+// fasthttp will not silently retry it) must get a fresh connection and succeed.
+func TestContextTransport_TruncatedChunkedStreamReportsBodyCutAndDiscardsConn(t *testing.T) {
 	srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
 		if !readRequest(br) {
 			return
@@ -626,8 +624,8 @@ func TestContextTransport_TruncatedChunkedStreamReadsAsEOFAndDiscardsConn(t *tes
 	if got := string(body); got != "data: a\n\n" {
 		t.Fatalf("body before the drop = %q, want %q", got, "data: a\n\n")
 	}
-	if err != nil {
-		t.Fatalf("truncated chunked body read error = %v, want a plain io.EOF (io.ReadAll returns nil on EOF)", err)
+	if !errors.Is(err, ErrStreamBodyCut) || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("truncated chunked body read error = %v, want ErrStreamBodyCut (an io.ErrUnexpectedEOF)", err)
 	}
 	if err := resp.CloseBodyStream(); err != nil {
 		t.Fatalf("CloseBodyStream: %v", err)
