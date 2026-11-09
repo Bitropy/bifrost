@@ -1365,7 +1365,7 @@ func (r *BifrostResponse) NormalizedUsage() *BifrostLLMUsage {
 
 // ToResponsesRequest converts a BifrostChatRequest to BifrostResponsesRequest format
 func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
-	return cr.toResponsesRequest(false)
+	return cr.toResponsesRequest(nil, false)
 }
 
 // ToResponsesRequestWithCacheControl is ToResponsesRequest carrying every
@@ -1377,7 +1377,15 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 // prompt_cache_breakpoint (#6290), and the other markers would become
 // breakpoints there too.
 func (cr *BifrostChatRequest) ToResponsesRequestWithCacheControl() *BifrostResponsesRequest {
-	return cr.toResponsesRequest(true)
+	return cr.toResponsesRequest(nil, true)
+}
+
+// ToResponsesRequestFor is ToResponsesRequestWithCacheControl when carryCacheControl, else
+// ToResponsesRequest, for the request on ctx: under a request-body rewriter a tool result's
+// media placeholders leave the size out (ToolResultForResponses, BIT-2906). For a caller that
+// picks the cache_control treatment itself (bitrouter's engine reads the family off the wire model).
+func (cr *BifrostChatRequest) ToResponsesRequestFor(ctx *BifrostContext, carryCacheControl bool) *BifrostResponsesRequest {
+	return cr.toResponsesRequest(ctx, carryCacheControl)
 }
 
 // ToResponsesRequestForTarget is the chat request converted for the target it
@@ -1385,13 +1393,10 @@ func (cr *BifrostChatRequest) ToResponsesRequestWithCacheControl() *BifrostRespo
 // a Claude target (IsAnthropicModelFamily over cr.Model; its Responses egress
 // is the Anthropic Messages wire), ToResponsesRequest for any other (BIT-2764).
 func (cr *BifrostChatRequest) ToResponsesRequestForTarget(ctx *BifrostContext) *BifrostResponsesRequest {
-	if cr != nil && IsAnthropicModelFamily(ctx, cr.Model) {
-		return cr.toResponsesRequest(true)
-	}
-	return cr.toResponsesRequest(false)
+	return cr.toResponsesRequest(ctx, cr != nil && IsAnthropicModelFamily(ctx, cr.Model))
 }
 
-func (cr *BifrostChatRequest) toResponsesRequest(carryCacheControl bool) *BifrostResponsesRequest {
+func (cr *BifrostChatRequest) toResponsesRequest(ctx *BifrostContext, carryCacheControl bool) *BifrostResponsesRequest {
 	if cr == nil {
 		return &BifrostResponsesRequest{}
 	}
@@ -1408,7 +1413,7 @@ func (cr *BifrostChatRequest) toResponsesRequest(carryCacheControl bool) *Bifros
 		msg := &chatMsg
 		if chatMsg.Role == ChatMessageRoleTool {
 			// A function_call_output carries only the media every Responses provider reads.
-			msg = ToolResultForResponses(msg)
+			msg = ToolResultForResponses(ctx, msg)
 		}
 		responsesMessages := msg.toResponsesMessages(carryCacheControl)
 		allResponsesMessages = append(allResponsesMessages, responsesMessages...)

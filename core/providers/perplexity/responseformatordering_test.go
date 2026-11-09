@@ -16,7 +16,7 @@ func TestResponseFormatOrderSurvivesPerplexityChat(t *testing.T) {
 	var params schemas.ChatParameters
 	require.NoError(t, schemas.Unmarshal([]byte(schemaorder.ChatBody), &params))
 
-	out := ToPerplexityChatCompletionRequest(&schemas.BifrostChatRequest{
+	out := ToPerplexityChatCompletionRequest(nil, &schemas.BifrostChatRequest{
 		Provider: schemas.Perplexity,
 		Model:    "sonar",
 		Input: []schemas.ChatMessage{{
@@ -40,7 +40,7 @@ func TestResponseFormatSchemaBytesReachPerplexityVerbatim(t *testing.T) {
 	var params schemas.ChatParameters
 	require.NoError(t, schemas.Unmarshal([]byte(schemaorder.ByteExactChatBody), &params))
 
-	out := ToPerplexityChatCompletionRequest(&schemas.BifrostChatRequest{
+	out := ToPerplexityChatCompletionRequest(nil, &schemas.BifrostChatRequest{
 		Provider: schemas.Perplexity,
 		Model:    "sonar",
 		Input: []schemas.ChatMessage{{

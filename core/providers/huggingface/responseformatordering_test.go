@@ -15,7 +15,7 @@ func TestResponseFormatOrderSurvivesHuggingFaceChat(t *testing.T) {
 	var params schemas.ChatParameters
 	require.NoError(t, schemas.Unmarshal([]byte(schemaorder.ChatBody), &params))
 
-	out, err := ToHuggingFaceChatCompletionRequest(&schemas.BifrostChatRequest{
+	out, err := ToHuggingFaceChatCompletionRequest(nil, &schemas.BifrostChatRequest{
 		Provider: schemas.HuggingFace,
 		Model:    "meta-llama/Llama-3.3-70B-Instruct",
 		Input: []schemas.ChatMessage{{
@@ -40,7 +40,7 @@ func TestResponseFormatSchemaBytesReachHuggingFaceVerbatim(t *testing.T) {
 	var params schemas.ChatParameters
 	require.NoError(t, schemas.Unmarshal([]byte(schemaorder.ByteExactChatBody), &params))
 
-	out, err := ToHuggingFaceChatCompletionRequest(&schemas.BifrostChatRequest{
+	out, err := ToHuggingFaceChatCompletionRequest(nil, &schemas.BifrostChatRequest{
 		Provider: schemas.HuggingFace,
 		Model:    "meta-llama/Llama-3.3-70B-Instruct",
 		Input: []schemas.ChatMessage{{
@@ -61,7 +61,7 @@ func TestResponseFormatOrderSurvivesHuggingFaceResponses(t *testing.T) {
 	var params schemas.ResponsesParameters
 	require.NoError(t, schemas.Unmarshal([]byte(schemaorder.ResponsesBody), &params))
 
-	out, err := ToHuggingFaceResponsesRequest(&schemas.BifrostResponsesRequest{
+	out, err := ToHuggingFaceResponsesRequest(nil, &schemas.BifrostResponsesRequest{
 		Provider: schemas.HuggingFace,
 		Model:    "meta-llama/Llama-3.3-70B-Instruct",
 		Input: []schemas.ResponsesMessage{{

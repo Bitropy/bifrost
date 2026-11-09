@@ -165,7 +165,7 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToPerplexityChatCompletionRequest(request), nil
+			return ToPerplexityChatCompletionRequest(ctx, request), nil
 		})
 	if err != nil {
 		return nil, err
@@ -211,7 +211,7 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	customRequestConverter := func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
-		reqBody := ToPerplexityChatCompletionRequest(request)
+		reqBody := ToPerplexityChatCompletionRequest(ctx, request)
 		reqBody.Stream = schemas.Ptr(true)
 		return reqBody, nil
 	}

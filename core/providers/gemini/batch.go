@@ -40,7 +40,8 @@ func ToGeminiBatchGenerateContentRequest(body map[string]interface{}) (GeminiBat
 		if err := sonic.Unmarshal(messagesBytes, &chatMessages); err != nil {
 			return geminiReq, fmt.Errorf("failed to unmarshal messages: %w", err)
 		}
-		contents, systemInstruction, err := convertBifrostMessagesToGemini(chatMessages)
+		// no request context: the size is kept (no rewriter can be set here)
+		contents, systemInstruction, err := convertBifrostMessagesToGemini(nil, chatMessages)
 		if err != nil {
 			return geminiReq, fmt.Errorf("failed to convert messages: %w", err)
 		}

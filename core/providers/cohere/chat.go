@@ -10,7 +10,7 @@ import (
 )
 
 // ToCohereChatCompletionRequest converts a Bifrost request to Cohere v2 format
-func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*CohereChatRequest, error) {
+func ToCohereChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*CohereChatRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil, fmt.Errorf("bifrost request is nil")
 	}
@@ -36,7 +36,7 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 		// Convert content
 		content := msg.Content
 		if msg.Role == schemas.ChatMessageRoleTool {
-			content = schemas.FlattenToolResultMedia(content, nil)
+			content = schemas.FlattenToolResultMedia(ctx, content, nil)
 		}
 		if content != nil && content.ContentStr != nil {
 			cohereMsg.Content = NewStringContent(*content.ContentStr)

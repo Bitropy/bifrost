@@ -18,7 +18,7 @@ var unsupportedSystemPromptModels = []string{
 	"xai/grok-4",
 }
 
-func ToReplicateChatRequest(bifrostReq *schemas.BifrostChatRequest) (*ReplicatePredictionRequest, error) {
+func ToReplicateChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*ReplicatePredictionRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil, fmt.Errorf("bifrost request is nil or input is nil")
 	}
@@ -41,7 +41,7 @@ func ToReplicateChatRequest(bifrostReq *schemas.BifrostChatRequest) (*ReplicateP
 		} else {
 			// An OpenAI model on Replicate takes text only in a tool message, as on OpenAI,
 			// and this wire has no cache breakpoint (BIT-2764).
-			input.Messages = schemas.ChatMessagesWithoutCacheControl(schemas.FlattenToolMessagesMedia(bifrostReq.Input))
+			input.Messages = schemas.ChatMessagesWithoutCacheControl(schemas.FlattenToolMessagesMedia(ctx, bifrostReq.Input))
 		}
 	} else {
 		// Extract system prompt and build conversation prompt

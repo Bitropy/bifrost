@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/internal/wirecapture"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -569,4 +570,16 @@ func TestToGeminiChatCompletionRequest_ToolResultNamesMedia(t *testing.T) {
 	assert.Contains(t, response, "chart below")
 	assert.Contains(t, response, "[image/png")
 	assert.Contains(t, response, "[audio/mp3")
+}
+
+// BIT-2906: a tool-result image reaches Gemini's functionResponse as a placeholder: without a size
+// under a request-body rewriter, upstream's sized text without one.
+func TestToGeminiChatCompletionRequest_ToolResultMediaPlaceholderOmitsSizeUnderRewriter(t *testing.T) {
+	wirecapture.AssertPlaceholderSizeFreeUnderRewriter(t, wirecapture.SizedPNG, wirecapture.SizeFreePNG, func(ctx *schemas.BifrostContext) []byte {
+		req, err := gemini.ToGeminiChatCompletionRequest(ctx, &schemas.BifrostChatRequest{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Input: wirecapture.ChatToolResultImage(wirecapture.PNGDataURL)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return wirecapture.JSON(t, req)
+	})
 }

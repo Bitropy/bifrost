@@ -1237,7 +1237,7 @@ func convertResponsesTextFormatToCohere(textFormat *schemas.ResponsesTextConfigF
 }
 
 // ToCohereResponsesRequest converts a BifrostRequest (Responses structure) to CohereChatRequest
-func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*CohereChatRequest, error) {
+func ToCohereResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (*CohereChatRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -1366,7 +1366,7 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 
 	// Process ResponsesInput (which contains the Responses items)
 	if bifrostReq.Input != nil {
-		cohereReq.Messages = ConvertBifrostMessagesToCohereMessages(bifrostReq.Input, bifrostReq.Params)
+		cohereReq.Messages = ConvertBifrostMessagesToCohereMessages(ctx, bifrostReq.Input, bifrostReq.Params)
 	}
 
 	return cohereReq, nil
@@ -1421,7 +1421,7 @@ func (response *CohereChatResponse) ToBifrostResponsesResponse() *schemas.Bifros
 
 // ConvertBifrostMessagesToCohereMessages converts an array of Bifrost ResponsesMessage to Cohere message format
 // This is the main conversion method from Bifrost to Cohere - handles all message types and returns messages
-func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesMessage, params *schemas.ResponsesParameters) []CohereMessage {
+func ConvertBifrostMessagesToCohereMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, params *schemas.ResponsesParameters) []CohereMessage {
 	// If only a single system / developer message is present, convert it to a user message.
 	// Cohere requires a user message to be present in the conversation.
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
@@ -1530,7 +1530,7 @@ func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesM
 
 		case schemas.ResponsesMessageTypeFunctionCallOutput:
 			// Handle function call outputs
-			toolMsg := convertBifrostFunctionCallOutputToCohereMessage(&msg)
+			toolMsg := convertBifrostFunctionCallOutputToCohereMessage(ctx, &msg)
 			if toolMsg != nil {
 				flushAssistant()
 				cohereMessages = append(cohereMessages, *toolMsg)
@@ -1816,7 +1816,7 @@ func convertBifrostFunctionCallToCohereMessage(msg *schemas.ResponsesMessage) *C
 }
 
 // convertBifrostFunctionCallOutputToCohereMessage converts a Bifrost function call output to Cohere message
-func convertBifrostFunctionCallOutputToCohereMessage(msg *schemas.ResponsesMessage) *CohereMessage {
+func convertBifrostFunctionCallOutputToCohereMessage(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage) *CohereMessage {
 	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
 		toolMsg := CohereMessage{
 			Role: "tool",
@@ -1831,7 +1831,7 @@ func convertBifrostFunctionCallOutputToCohereMessage(msg *schemas.ResponsesMessa
 				content.ContentStr = msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
 			} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 				// Cohere tool messages take text only; media becomes a placeholder.
-				content.ContentBlocks, _ = schemas.FlattenResponsesToolResultMedia(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+				content.ContentBlocks, _ = schemas.FlattenResponsesToolResultMedia(ctx, msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
 			}
 		}
 

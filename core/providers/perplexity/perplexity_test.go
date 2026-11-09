@@ -16,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 
+	"github.com/maximhq/bifrost/core/internal/wirecapture"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -266,7 +267,7 @@ func TestWebSearchOption_JSONSerialization(t *testing.T) {
 			},
 		}
 
-		result := perplexity.ToPerplexityChatCompletionRequest(bifrostReq)
+		result := perplexity.ToPerplexityChatCompletionRequest(nil, bifrostReq)
 
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -403,7 +404,7 @@ func TestToPerplexityChatCompletionRequest_ToolCalling(t *testing.T) {
 			},
 		}
 
-		result := perplexity.ToPerplexityChatCompletionRequest(bifrostReq)
+		result := perplexity.ToPerplexityChatCompletionRequest(nil, bifrostReq)
 
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -443,7 +444,7 @@ func TestToPerplexityChatCompletionRequest_ToolCalling(t *testing.T) {
 			Params: &schemas.ChatParameters{},
 		}
 
-		result := perplexity.ToPerplexityChatCompletionRequest(bifrostReq)
+		result := perplexity.ToPerplexityChatCompletionRequest(nil, bifrostReq)
 
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -476,7 +477,7 @@ func TestToPerplexityChatCompletionRequest_NewFields(t *testing.T) {
 			},
 		}
 
-		result := perplexity.ToPerplexityChatCompletionRequest(bifrostReq)
+		result := perplexity.ToPerplexityChatCompletionRequest(nil, bifrostReq)
 
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -520,7 +521,7 @@ func TestToPerplexityChatCompletionRequest_NewFields(t *testing.T) {
 			},
 		}
 
-		result := perplexity.ToPerplexityChatCompletionRequest(bifrostReq)
+		result := perplexity.ToPerplexityChatCompletionRequest(nil, bifrostReq)
 
 		if result == nil {
 			t.Fatal("expected non-nil result")
@@ -868,7 +869,7 @@ func TestDecision_PassesPerplexityErrorsThrough(t *testing.T) {
 
 // A tool result's media is named instead of sent: Perplexity takes text only in a tool message.
 func TestToPerplexityChatCompletionRequest_FlattensToolResultMedia(t *testing.T) {
-	req := perplexity.ToPerplexityChatCompletionRequest(&schemas.BifrostChatRequest{
+	req := perplexity.ToPerplexityChatCompletionRequest(nil, &schemas.BifrostChatRequest{
 		Model: "sonar",
 		Input: []schemas.ChatMessage{
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Plot it.")}},
@@ -885,4 +886,20 @@ func TestToPerplexityChatCompletionRequest_FlattensToolResultMedia(t *testing.T)
 	if text == nil || !strings.Contains(*text, "[image/png") {
 		t.Fatalf("the tool message must be text naming the image; got %+v", req.Messages[1].Content)
 	}
+}
+
+// BIT-2906: a tool-result image reaches Perplexity's text-only tool message as a placeholder: without a size under a
+// request-body rewriter, upstream's sized text without one. Unary and streaming alike.
+func TestPerplexityChat_ToolResultMediaPlaceholderOmitsSizeUnderRewriter(t *testing.T) {
+	server := wirecapture.NewServer(t)
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30}}
+	provider, err := perplexity.NewPerplexityProvider(config, wirecapture.Logger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+	request := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: schemas.Perplexity, Model: "sonar-pro", Input: wirecapture.ChatToolResultImage(wirecapture.PNGDataURL)}
+	}
+	wirecapture.AssertChatPlaceholderSizeFreeUnderRewriter(t, server, provider, key, request)
 }

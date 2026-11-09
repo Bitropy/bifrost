@@ -15,7 +15,7 @@ func TestResponseFormatOrderSurvivesCohereChat(t *testing.T) {
 	var params schemas.ChatParameters
 	require.NoError(t, schemas.Unmarshal([]byte(schemaorder.ChatBody), &params))
 
-	out, err := ToCohereChatCompletionRequest(&schemas.BifrostChatRequest{
+	out, err := ToCohereChatCompletionRequest(nil, &schemas.BifrostChatRequest{
 		Provider: schemas.Cohere,
 		Model:    "command-r-plus",
 		Input: []schemas.ChatMessage{{
@@ -40,7 +40,7 @@ func TestResponseFormatSchemaBytesReachCohereVerbatim(t *testing.T) {
 	var params schemas.ChatParameters
 	require.NoError(t, schemas.Unmarshal([]byte(schemaorder.ByteExactChatBody), &params))
 
-	out, err := ToCohereChatCompletionRequest(&schemas.BifrostChatRequest{
+	out, err := ToCohereChatCompletionRequest(nil, &schemas.BifrostChatRequest{
 		Provider: schemas.Cohere,
 		Model:    "command-r-plus",
 		Input: []schemas.ChatMessage{{
@@ -61,7 +61,7 @@ func TestResponseFormatOrderSurvivesCohereResponses(t *testing.T) {
 	var params schemas.ResponsesParameters
 	require.NoError(t, schemas.Unmarshal([]byte(schemaorder.ResponsesBody), &params))
 
-	out, err := ToCohereResponsesRequest(&schemas.BifrostResponsesRequest{
+	out, err := ToCohereResponsesRequest(nil, &schemas.BifrostResponsesRequest{
 		Provider: schemas.Cohere,
 		Model:    "command-r-plus",
 		Input: []schemas.ResponsesMessage{{

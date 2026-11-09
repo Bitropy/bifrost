@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/internal/wirecapture"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
@@ -3618,4 +3619,13 @@ func TestOpenAIChatRequest_TypelessToolSchemaRootRoundTrips(t *testing.T) {
 			require.Equal(t, tt.parameters, string(decoded.Tools[0].Function.Parameters))
 		})
 	}
+}
+
+// BIT-2906: a tool-result image reaches the OpenAI wire (every OpenAI-compatible provider converts
+// through ToOpenAIChatRequest) as a placeholder: without a size under a request-body rewriter,
+// upstream's sized text without one.
+func TestToOpenAIChatRequest_ToolResultMediaPlaceholderOmitsSizeUnderRewriter(t *testing.T) {
+	wirecapture.AssertPlaceholderSizeFreeUnderRewriter(t, wirecapture.SizedPNG, wirecapture.SizeFreePNG, func(ctx *schemas.BifrostContext) []byte {
+		return wirecapture.JSON(t, ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Input: wirecapture.ChatToolResultImage(wirecapture.PNGDataURL)}))
+	})
 }

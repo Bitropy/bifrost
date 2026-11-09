@@ -328,7 +328,7 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 // reasoning signatures, and tool messages lose is_error so providers that reject
 // unknown message parameters never see it.
 // The caller's messages are never mutated: shared pointers are cloned before edit.
-func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []OpenAIMessage {
+func ConvertBifrostMessagesToOpenAIMessages(ctx *schemas.BifrostContext, messages []schemas.ChatMessage) []OpenAIMessage {
 	openaiMessages := make([]OpenAIMessage, len(messages))
 	for i, message := range messages {
 		openaiMessages[i] = OpenAIMessage{
@@ -339,7 +339,7 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 		}
 		// A tool message takes text only on the OpenAI wire.
 		if message.Role == schemas.ChatMessageRoleTool {
-			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, nil)
+			openaiMessages[i].Content = schemas.FlattenToolResultMedia(ctx, message.Content, nil)
 		}
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
 		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it

@@ -80,7 +80,7 @@ func TestConvertBifrostMessagesToGemini_OmitsFileMimeWhenUnset(t *testing.T) {
 			}},
 		},
 	}}
-	contents, _, err := convertBifrostMessagesToGemini(msgs)
+	contents, _, err := convertBifrostMessagesToGemini(nil, msgs)
 	require.NoError(t, err)
 	require.Len(t, contents, 1)
 	require.Len(t, contents[0].Parts, 1)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/internal/wirecapture"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -120,7 +121,7 @@ func TestToHuggingFaceChatCompletionRequest_ResponseFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := makeReq(tt.responseFormat)
-			result, err := ToHuggingFaceChatCompletionRequest(req)
+			result, err := ToHuggingFaceChatCompletionRequest(nil, req)
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -170,7 +171,7 @@ func TestToHuggingFaceChatCompletionStreamRequest_StreamOptions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := ToHuggingFaceChatCompletionStreamRequest(makeReq(tt.streamOptions))
+			result, err := ToHuggingFaceChatCompletionStreamRequest(nil, makeReq(tt.streamOptions))
 			require.NoError(t, err)
 			require.NotNil(t, result)
 
@@ -184,7 +185,7 @@ func TestToHuggingFaceChatCompletionStreamRequest_StreamOptions(t *testing.T) {
 	}
 
 	t.Run("include_usage_reaches_the_wire", func(t *testing.T) {
-		result, err := ToHuggingFaceChatCompletionStreamRequest(makeReq(nil))
+		result, err := ToHuggingFaceChatCompletionStreamRequest(nil, makeReq(nil))
 		require.NoError(t, err)
 
 		body, err := json.Marshal(result)
@@ -193,7 +194,7 @@ func TestToHuggingFaceChatCompletionStreamRequest_StreamOptions(t *testing.T) {
 	})
 
 	t.Run("nil_request", func(t *testing.T) {
-		result, err := ToHuggingFaceChatCompletionStreamRequest(nil)
+		result, err := ToHuggingFaceChatCompletionStreamRequest(nil, nil)
 		require.NoError(t, err)
 		assert.Nil(t, result)
 	})
@@ -207,4 +208,17 @@ func TestToHuggingFaceChatCompletionStreamRequest_StreamOptions(t *testing.T) {
 func TestHuggingFaceSendsDoneMarker(t *testing.T) {
 	assert.True(t, providerUtils.ProviderSendsDoneMarker(nil, schemas.HuggingFace),
 		"HuggingFace sends [DONE]; breaking on finish_reason drops the trailing usage chunk")
+}
+
+// BIT-2906: a tool-result image reaches HuggingFace's text-only tool message as a placeholder: without a size under a
+// request-body rewriter, upstream's sized text without one. Unary and streaming alike.
+func TestHuggingFaceChat_ToolResultMediaPlaceholderOmitsSizeUnderRewriter(t *testing.T) {
+	server := wirecapture.NewServer(t)
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30}}
+	provider := NewHuggingFaceProvider(config, wirecapture.Logger{})
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+	request := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: schemas.HuggingFace, Model: "together/meta-llama/Llama-3.3-70B-Instruct", Input: wirecapture.ChatToolResultImage(wirecapture.PNGDataURL)}
+	}
+	wirecapture.AssertChatPlaceholderSizeFreeUnderRewriter(t, server, provider, key, request)
 }

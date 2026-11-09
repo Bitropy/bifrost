@@ -423,7 +423,7 @@ func (provider *CohereProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToCohereChatCompletionRequest(request)
+			return ToCohereChatCompletionRequest(ctx, request)
 		})
 	if err != nil {
 		return nil, err
@@ -493,7 +493,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody, err := ToCohereChatCompletionRequest(request)
+			reqBody, err := ToCohereChatCompletionRequest(ctx, request)
 			if err != nil {
 				return nil, err
 			}
@@ -721,7 +721,7 @@ func (provider *CohereProvider) Responses(ctx *schemas.BifrostContext, key schem
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToCohereResponsesRequest(request)
+			return ToCohereResponsesRequest(ctx, request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -793,7 +793,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody, err := ToCohereResponsesRequest(request)
+			reqBody, err := ToCohereResponsesRequest(ctx, request)
 			if err != nil {
 				return nil, err
 			}

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	"github.com/maximhq/bifrost/core/internal/wirecapture"
 	"github.com/maximhq/bifrost/core/providers/replicate"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -678,7 +679,7 @@ func TestBifrostToReplicateChatRequestConversion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			actual, err := replicate.ToReplicateChatRequest(tt.input)
+			actual, err := replicate.ToReplicateChatRequest(nil, tt.input)
 			if tt.wantErr {
 				assert.Error(t, err)
 				assert.Nil(t, actual)
@@ -1831,7 +1832,7 @@ func TestReplicateSystemPromptReadsDatasheet(t *testing.T) {
 
 	build := func(t *testing.T, model string) *replicate.ReplicatePredictionRequest {
 		t.Helper()
-		result, err := replicate.ToReplicateChatRequest(&schemas.BifrostChatRequest{
+		result, err := replicate.ToReplicateChatRequest(nil, &schemas.BifrostChatRequest{
 			Model: model,
 			Input: []schemas.ChatMessage{
 				{
@@ -1912,7 +1913,7 @@ func BenchmarkFileListPagination(b *testing.B) {
 
 // On an OpenAI model's message input, a tool result's media is named instead of sent.
 func TestToReplicateChatRequest_FlattensToolResultMedia(t *testing.T) {
-	req, err := replicate.ToReplicateChatRequest(&schemas.BifrostChatRequest{
+	req, err := replicate.ToReplicateChatRequest(nil, &schemas.BifrostChatRequest{
 		Model: "openai/gpt-4o",
 		Input: []schemas.ChatMessage{
 			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Plot it.")}},
@@ -2053,4 +2054,20 @@ func TestReplicateResponsesStreamErrorRawCarriesOnlyTheErrorEvent(t *testing.T) 
 	require.NotNil(t, streamErr)
 	assert.Equal(t, []interface{}{replicate.ReplicateSSEEvent{Event: "error", Data: "model crashed"}}, streamErr.ExtraFields.RawResponse,
 		"the error carries only the error event, not the output events before it")
+}
+
+// BIT-2906: a tool-result image reaches Replicate's text-only tool message as a placeholder: without a size under a
+// request-body rewriter, upstream's sized text without one. Unary and streaming alike.
+func TestReplicateChat_ToolResultMediaPlaceholderOmitsSizeUnderRewriter(t *testing.T) {
+	server := wirecapture.NewServer(t)
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30}}
+	provider, err := replicate.NewReplicateProvider(config, &testLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+	request := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: schemas.Replicate, Model: "openai/gpt-4o", Input: wirecapture.ChatToolResultImage(wirecapture.PNGDataURL)}
+	}
+	wirecapture.AssertChatPlaceholderSizeFreeUnderRewriter(t, server, provider, key, request)
 }

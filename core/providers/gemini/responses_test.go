@@ -14,6 +14,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/internal/memtest"
+	"github.com/maximhq/bifrost/core/internal/wirecapture"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -517,7 +518,7 @@ func TestConvertResponsesMessagesToGeminiContents_FunctionOutputRefKeyStaysOpaqu
 
 	functionResponse := func(t *testing.T, msgs []schemas.ResponsesMessage) []byte {
 		t.Helper()
-		contents, _, err := convertResponsesMessagesToGeminiContents(msgs, "gemini-flash-latest", schemas.Gemini)
+		contents, _, err := convertResponsesMessagesToGeminiContents(nil, msgs, "gemini-flash-latest", schemas.Gemini)
 		if err != nil {
 			t.Fatalf("convert: %v", err)
 		}
@@ -715,7 +716,7 @@ func TestConvertResponsesMessagesToGeminiContents_FunctionResponsesFollowCallOrd
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			contents, _, err := convertResponsesMessagesToGeminiContents(tt.messages, "gemini-2.5-pro", schemas.Vertex)
+			contents, _, err := convertResponsesMessagesToGeminiContents(nil, tt.messages, "gemini-2.5-pro", schemas.Vertex)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1173,7 +1174,7 @@ func TestGeminiCodeInterpreterCallReplaysAsCodeParts(t *testing.T) {
 			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)}}
 	}
 	replay := func(t *testing.T, call schemas.ResponsesMessage) []*Part {
-		contents, _, err := convertResponsesMessagesToGeminiContents([]schemas.ResponsesMessage{user("run it"), call, user("what did it print?")}, "gemini-2.5-flash", schemas.Gemini)
+		contents, _, err := convertResponsesMessagesToGeminiContents(nil, []schemas.ResponsesMessage{user("run it"), call, user("what did it print?")}, "gemini-2.5-flash", schemas.Gemini)
 		if err != nil {
 			t.Fatalf("convert: %v", err)
 		}
@@ -1301,7 +1302,7 @@ func TestGeminiCodeExecutionThroughIntegrations(t *testing.T) {
 			{Role: "model", Parts: codeParts},
 			{Role: "user", Parts: []*Part{{Text: "what did it print?"}}},
 		}}).ToBifrostResponsesRequest(ctx)
-		contents, _, err := convertResponsesMessagesToGeminiContents(req.Input, "gemini-2.5-flash", schemas.Gemini)
+		contents, _, err := convertResponsesMessagesToGeminiContents(nil, req.Input, "gemini-2.5-flash", schemas.Gemini)
 		if err != nil {
 			t.Fatalf("convert: %v", err)
 		}
@@ -2458,4 +2459,16 @@ func TestGenAIFunctionResponseSiblingFieldsSurviveRoundTrip(t *testing.T) {
 			assert.JSONEq(t, tt.want, got[0])
 		})
 	}
+}
+
+// BIT-2906: a function_call_output image on a model without multimodal tool output reaches Gemini as
+// a placeholder: without a size under a request-body rewriter, upstream's sized text without one.
+func TestToGeminiResponsesRequest_ToolResultMediaPlaceholderOmitsSizeUnderRewriter(t *testing.T) {
+	wirecapture.AssertPlaceholderSizeFreeUnderRewriter(t, wirecapture.SizedPNG, wirecapture.SizeFreePNG, func(ctx *schemas.BifrostContext) []byte {
+		req, err := ToGeminiResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Input: wirecapture.ResponsesToolOutputImage(wirecapture.PNGDataURL)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return wirecapture.JSON(t, req)
+	})
 }

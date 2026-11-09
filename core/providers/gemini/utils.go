@@ -2357,7 +2357,7 @@ func inlineGeminiChatSystemReminder(message schemas.ChatMessage) *Content {
 }
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
+func convertBifrostMessagesToGemini(ctx *schemas.BifrostContext, messages []schemas.ChatMessage, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
 	if len(allowedImageURLSchemes) == 0 {
 		allowedImageURLSchemes = defaultGeminiImageURLSchemes
 	}
@@ -2451,7 +2451,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 			var responseData json.RawMessage
 			var contentStr string
 
-			if content := schemas.FlattenToolResultMedia(message.Content, nil); content != nil {
+			if content := schemas.FlattenToolResultMedia(ctx, message.Content, nil); content != nil {
 				// Extract content string from ContentStr or ContentBlocks
 				if content.ContentStr != nil && *content.ContentStr != "" {
 					contentStr = *content.ContentStr

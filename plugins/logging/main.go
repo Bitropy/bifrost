@@ -308,11 +308,11 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 
 // responsesToolResultWithoutMedia is message with each image, file and audio block of its tool output
 // replaced by a placeholder naming it; message itself is never mutated.
-func responsesToolResultWithoutMedia(message *schemas.ResponsesMessage) *schemas.ResponsesMessage {
+func responsesToolResultWithoutMedia(ctx *schemas.BifrostContext, message *schemas.ResponsesMessage) *schemas.ResponsesMessage {
 	if message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Output == nil {
 		return message
 	}
-	flattened, changed := schemas.FlattenResponsesToolResultMedia(message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+	flattened, changed := schemas.FlattenResponsesToolResultMedia(ctx, message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
 	if !changed {
 		return message
 	}
@@ -3912,7 +3912,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 			// Media a tool returned is logged as a placeholder, not as base64.
 			if resp.ChatMessage != nil {
 				message := *resp.ChatMessage
-				message.Content = schemas.FlattenToolResultMedia(resp.ChatMessage.Content, nil)
+				message.Content = schemas.FlattenToolResultMedia(ctx, resp.ChatMessage.Content, nil)
 				result = &message
 				if message.Content != nil && message.Content.ContentStr != nil {
 					var parsedContent interface{}
@@ -3921,7 +3921,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 					}
 				}
 			} else if resp.ResponsesMessage != nil {
-				result = responsesToolResultWithoutMedia(resp.ResponsesMessage)
+				result = responsesToolResultWithoutMedia(ctx, resp.ResponsesMessage)
 			} else if resp.BifrostMCPGetPromptResponse != nil {
 				result = schemas.PromptForLog(resp.BifrostMCPGetPromptResponse.Prompt)
 			} else if resp.BifrostMCPReadResourceResponse != nil {

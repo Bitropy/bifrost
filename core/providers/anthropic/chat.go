@@ -1038,7 +1038,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 
 					// Convert tool result content; images are sent as images.
-					if content := schemas.FlattenToolResultMedia(toolMsg.Content, schemas.IsImageBlock); content != nil {
+					if content := schemas.FlattenToolResultMedia(ctx, toolMsg.Content, schemas.IsImageBlock); content != nil {
 						if content.ContentStr != nil && *content.ContentStr != "" {
 							toolResult.Content = &AnthropicContent{ContentStr: content.ContentStr}
 						} else if content.ContentBlocks != nil {

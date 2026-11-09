@@ -231,7 +231,7 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 
 	// Convert ResponsesInput messages to Gemini contents
 	if bifrostReq.Input != nil {
-		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(bifrostReq.Input, capModel, bifrostReq.Provider, allowedImageURLSchemes...)
+		contents, systemInstruction, err := convertResponsesMessagesToGeminiContents(ctx, bifrostReq.Input, capModel, bifrostReq.Provider, allowedImageURLSchemes...)
 		if err != nil {
 			return nil, err
 		}
@@ -4959,7 +4959,7 @@ func inlineGeminiSystemReminder(msg *schemas.ResponsesMessage, allowedImageURLSc
 	return content, nil
 }
 
-func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
+func convertResponsesMessagesToGeminiContents(ctx *schemas.BifrostContext, messages []schemas.ResponsesMessage, model string, provider schemas.ModelProvider, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
 	if len(allowedImageURLSchemes) == 0 {
 		allowedImageURLSchemes = defaultGeminiImageURLSchemes
 	}
@@ -5286,7 +5286,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							}
 							if !supportsMultimodalToolOutput {
 								// Older models reject media here; name it instead.
-								if placeholder, isMedia := schemas.ResponsesToolResultMediaPlaceholder(block); isMedia {
+								if placeholder, isMedia := schemas.ResponsesToolResultMediaPlaceholder(ctx, block); isMedia {
 									textParts = append(textParts, placeholder)
 								}
 								continue

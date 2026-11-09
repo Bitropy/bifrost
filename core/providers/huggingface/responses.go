@@ -8,7 +8,7 @@ import (
 
 // ToHuggingFaceResponsesRequest converts a Bifrost Responses request into the Hugging Face
 // chat-completions payload that the provider already understands.
-func ToHuggingFaceResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*HuggingFaceChatRequest, error) {
+func ToHuggingFaceResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (*HuggingFaceChatRequest, error) {
 	if bifrostReq == nil {
 		return nil, nil
 	}
@@ -18,7 +18,7 @@ func ToHuggingFaceResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) 
 		return nil, fmt.Errorf("failed to convert responses request to chat request")
 	}
 
-	hfReq, err := ToHuggingFaceChatCompletionRequest(chatReq)
+	hfReq, err := ToHuggingFaceChatCompletionRequest(ctx, chatReq)
 	if err != nil {
 		return nil, err
 	}

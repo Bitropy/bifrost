@@ -325,7 +325,8 @@ func toolResultSummaryBlocks(contentBlocks []schemas.ChatContentBlock) []map[str
 		case block.Text != nil:
 			blockMap["text"] = *block.Text
 		case block.ImageURLStruct != nil || block.InputAudio != nil || block.File != nil:
-			blockMap["text"] = schemas.ToolResultMediaPlaceholder(block)
+			// no request context: the size is kept (no rewriter can be set here)
+			blockMap["text"] = schemas.ToolResultMediaPlaceholder(nil, block)
 		}
 		blocks = append(blocks, blockMap)
 	}
@@ -491,7 +492,8 @@ func (r *responsesAPIAdapter) addAssistantMessage(conversation []interface{}, re
 func (r *responsesAPIAdapter) addToolResults(conversation []interface{}, toolResults []*schemas.ChatMessage) []interface{} {
 	for _, toolResult := range toolResults {
 		// Convert using existing converter
-		responsesMessages := schemas.ToolResultForResponses(toolResult).ToResponsesMessages()
+		// no request context: the size is kept (no rewriter can be set here)
+		responsesMessages := schemas.ToolResultForResponses(nil, toolResult).ToResponsesMessages()
 		for _, respMsg := range responsesMessages {
 			conversation = append(conversation, respMsg)
 		}

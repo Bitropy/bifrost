@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 
+	"github.com/maximhq/bifrost/core/internal/wirecapture"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
@@ -150,7 +151,7 @@ func TestToCohereResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := cohere.ToCohereResponsesRequest(&schemas.BifrostResponsesRequest{
+			out, err := cohere.ToCohereResponsesRequest(nil, &schemas.BifrostResponsesRequest{
 				Provider: schemas.Cohere,
 				Model:    "command-a-03-2025",
 				Input:    tc.input,
@@ -169,7 +170,7 @@ func TestToCohereResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
 
 // Media in a Responses tool output reaches Cohere as a placeholder, as on the Chat path.
 func TestToCohereResponsesRequest_ToolOutputNamesMedia(t *testing.T) {
-	req, err := cohere.ToCohereResponsesRequest(&schemas.BifrostResponsesRequest{
+	req, err := cohere.ToCohereResponsesRequest(nil, &schemas.BifrostResponsesRequest{
 		Provider: schemas.Cohere,
 		Model:    "command-a-03-2025",
 		Input: []schemas.ResponsesMessage{
@@ -271,4 +272,20 @@ func TestCohereResponsesStreamAttachesEachRawEventOnce(t *testing.T) {
 	synced, err := schemas.SyncRawResponseText(textCarrier.ExtraFields.RawResponse, textCarrier.ExtraFields.RawResponseFormat, textCarrier, &redacted)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"mail [EMAIL]"}}}}`, synced.(string))
+}
+
+// BIT-2906: a tool-result image reaches Cohere's text-only tool message (function_call_output) as a placeholder: without a size under a
+// request-body rewriter, upstream's sized text without one. Unary and streaming alike.
+func TestCohereResponses_ToolResultMediaPlaceholderOmitsSizeUnderRewriter(t *testing.T) {
+	server := wirecapture.NewServer(t)
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30}}
+	provider, err := cohere.NewCohereProvider(config, wirecapture.Logger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+	request := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Provider: schemas.Cohere, Model: "command-a-03-2025", Input: wirecapture.ResponsesToolOutputImage(wirecapture.PNGDataURL)}
+	}
+	wirecapture.AssertResponsesPlaceholderSizeFreeUnderRewriter(t, server, provider, key, request)
 }

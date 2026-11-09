@@ -230,7 +230,7 @@ func TestTextBlobToolResult_ReachesProvidersDecoded(t *testing.T) {
 	}
 
 	t.Run("openai responses", func(t *testing.T) {
-		input := openai.OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{*schemas.ToolResultForResponses(message).ToResponsesToolMessage()}}
+		input := openai.OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{*schemas.ToolResultForResponses(nil, message).ToResponsesToolMessage()}}
 		body, err := input.MarshalJSON()
 		require.NoError(t, err)
 		fileData := gjson.GetBytes(body, `0.output.#(type=="input_file").file_data`).String()
@@ -243,7 +243,7 @@ func TestTextBlobToolResult_ReachesProvidersDecoded(t *testing.T) {
 		assistant := schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{call}}}
 		input := []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("read it")}}}
 		input = append(input, assistant.ToResponsesMessages()...)
-		input = append(input, *schemas.ToolResultForResponses(message).ToResponsesToolMessage())
+		input = append(input, *schemas.ToolResultForResponses(nil, message).ToResponsesToolMessage())
 		out, err := anthropic.ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: "claude-sonnet-5-5", Input: input, Params: &schemas.ResponsesParameters{}})
 		require.NoError(t, err)
 		body, err := schemas.MarshalSorted(out)

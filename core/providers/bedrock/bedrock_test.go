@@ -15,6 +15,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	"github.com/maximhq/bifrost/core/internal/wirecapture"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -9033,4 +9034,16 @@ func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
 			}
 		})
 	}
+}
+
+// BIT-2906: an image Converse cannot read in a toolResult (bmp) is named by a placeholder: without a
+// size under a request-body rewriter, upstream's sized text without one.
+func TestToBedrockChatCompletionRequest_ToolResultMediaPlaceholderOmitsSizeUnderRewriter(t *testing.T) {
+	wirecapture.AssertPlaceholderSizeFreeUnderRewriter(t, "[image/bmp, 9 bytes returned by the tool, not shown]", "[image/bmp returned by the tool, not shown]", func(ctx *schemas.BifrostContext) []byte {
+		req, err := bedrock.ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: "anthropic.claude-sonnet-4-5-20250929-v1:0", Input: wirecapture.ChatToolResultImage("data:image/bmp;base64,AAAAAAAAAAAA")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return wirecapture.JSON(t, req)
+	})
 }

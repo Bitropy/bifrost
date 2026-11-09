@@ -844,7 +844,7 @@ func (m *ToolsManager) ExecuteTool(
 		if chatResult == nil {
 			return nil, fmt.Errorf("chat result cannot be nil for ResponsesToolCall request type")
 		}
-		responsesMessage := schemas.ToolResultForResponses(chatResult).ToResponsesToolMessage()
+		responsesMessage := schemas.ToolResultForResponses(ctx, chatResult).ToResponsesToolMessage()
 		if responsesMessage == nil {
 			return nil, fmt.Errorf("failed to convert tool result to Responses format")
 		}

@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -12,10 +13,30 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
+// toolResultMediaSized reports whether a placeholder for the request on ctx states the media's size.
+// It does not under a request-body rewriter: core then maps a request whose large strings are
+// stand-ins the rewriter splices back on the wire, so the size core sees is the stand-in's, not the
+// media's (BIT-2906). A nil ctx, including a nil *BifrostContext, has no rewriter.
+func toolResultMediaSized(ctx context.Context) bool {
+	if bc, isBifrost := ctx.(*BifrostContext); ctx == nil || (isBifrost && bc == nil) {
+		return true
+	}
+	return ctx.Value(BifrostContextKeyRequestBodyRewriter) == nil
+}
+
+// mediaPlaceholder is MediaPlaceholder, without the size unless sized.
+func mediaPlaceholder(kind string, base64Len int, sized bool) string {
+	if !sized {
+		base64Len = 0
+	}
+	return MediaPlaceholder(kind, base64Len)
+}
+
 // FlattenToolResultMedia replaces every block keep rejects with a placeholder naming it, for providers
 // that cannot take that media in a tool result. A nil keep keeps text only, joined into one string.
-// Unchanged content is returned as is; the caller's is never mutated.
-func FlattenToolResultMedia(content *ChatMessageContent, keep func(ChatContentBlock) bool) *ChatMessageContent {
+// Unchanged content is returned as is; the caller's is never mutated. ctx is the request's: under a
+// request-body rewriter the placeholders leave the size out (toolResultMediaSized).
+func FlattenToolResultMedia(ctx context.Context, content *ChatMessageContent, keep func(ChatContentBlock) bool) *ChatMessageContent {
 	if content == nil || len(content.ContentBlocks) == 0 {
 		return content
 	}
@@ -40,13 +61,14 @@ func FlattenToolResultMedia(content *ChatMessageContent, keep func(ChatContentBl
 	if !changed {
 		return content
 	}
+	sized := toolResultMediaSized(ctx)
 	blocks := make([]ChatContentBlock, 0, len(content.ContentBlocks))
 	for _, block := range content.ContentBlocks {
 		if kept(block) {
 			blocks = append(blocks, block)
 			continue
 		}
-		placeholder := ToolResultMediaPlaceholder(block)
+		placeholder := toolResultMediaPlaceholder(block, sized)
 		blocks = append(blocks, ChatContentBlock{Type: ChatContentBlockTypeText, Text: &placeholder, CacheControl: block.CacheControl, PromptCacheBreakpoint: block.PromptCacheBreakpoint})
 	}
 	if !textOnly {
@@ -66,13 +88,13 @@ func FlattenToolResultMedia(content *ChatMessageContent, keep func(ChatContentBl
 
 // FlattenToolMessagesMedia is messages with every tool message's media named instead of sent, for a
 // provider that takes text only in a tool result. Unchanged messages are returned as is.
-func FlattenToolMessagesMedia(messages []ChatMessage) []ChatMessage {
+func FlattenToolMessagesMedia(ctx context.Context, messages []ChatMessage) []ChatMessage {
 	var out []ChatMessage
 	for i, message := range messages {
 		if message.Role != ChatMessageRoleTool {
 			continue
 		}
-		content := FlattenToolResultMedia(message.Content, nil)
+		content := FlattenToolResultMedia(ctx, message.Content, nil)
 		if content == message.Content {
 			continue
 		}
@@ -133,11 +155,11 @@ func isPortableFile(block ChatContentBlock) bool {
 
 // ToolResultForResponses is message with only the media every Responses provider reads in a
 // function_call_output (IsImageBlock images, PDF and plain-text files); the rest become placeholders.
-func ToolResultForResponses(message *ChatMessage) *ChatMessage {
+func ToolResultForResponses(ctx context.Context, message *ChatMessage) *ChatMessage {
 	if message == nil {
 		return nil
 	}
-	content := FlattenToolResultMedia(message.Content, func(block ChatContentBlock) bool {
+	content := FlattenToolResultMedia(ctx, message.Content, func(block ChatContentBlock) bool {
 		return IsImageBlock(block) || isPortableFile(block)
 	})
 	if content == message.Content {
@@ -149,7 +171,11 @@ func ToolResultForResponses(message *ChatMessage) *ChatMessage {
 }
 
 // ToolResultMediaPlaceholder names a media block a tool returned that is not shown
-func ToolResultMediaPlaceholder(block ChatContentBlock) string {
+func ToolResultMediaPlaceholder(ctx context.Context, block ChatContentBlock) string {
+	return toolResultMediaPlaceholder(block, toolResultMediaSized(ctx))
+}
+
+func toolResultMediaPlaceholder(block ChatContentBlock, sized bool) string {
 	kind, data := string(block.Type), ""
 	switch {
 	case block.ImageURLStruct != nil:
@@ -174,11 +200,15 @@ func ToolResultMediaPlaceholder(block ChatContentBlock) string {
 			data = base64Payload(*block.File.FileData)
 		}
 	}
-	return MediaPlaceholder(kind, len(data))
+	return mediaPlaceholder(kind, len(data), sized)
 }
 
 // ResponsesToolResultMediaPlaceholder names a Responses media block (image, file or audio); false if block is not media.
-func ResponsesToolResultMediaPlaceholder(block ResponsesMessageContentBlock) (string, bool) {
+func ResponsesToolResultMediaPlaceholder(ctx context.Context, block ResponsesMessageContentBlock) (string, bool) {
+	return responsesToolResultMediaPlaceholder(block, toolResultMediaSized(ctx))
+}
+
+func responsesToolResultMediaPlaceholder(block ResponsesMessageContentBlock, sized bool) (string, bool) {
 	switch {
 	case block.ResponsesInputMessageContentBlockImage != nil:
 		kind, data := "image", ""
@@ -187,7 +217,7 @@ func ResponsesToolResultMediaPlaceholder(block ResponsesMessageContentBlock) (st
 				kind, data = mimeType, payload
 			}
 		}
-		return MediaPlaceholder(kind, len(data)), true
+		return mediaPlaceholder(kind, len(data), sized), true
 	case block.ResponsesInputMessageContentBlockFile != nil:
 		file, kind, data := block.ResponsesInputMessageContentBlockFile, "file", ""
 		if file.FileType != nil {
@@ -199,25 +229,27 @@ func ResponsesToolResultMediaPlaceholder(block ResponsesMessageContentBlock) (st
 		if file.FileData != nil {
 			data = base64Payload(*file.FileData)
 		}
-		return MediaPlaceholder(kind, len(data)), true
+		return mediaPlaceholder(kind, len(data), sized), true
 	case block.Audio != nil:
-		return MediaPlaceholder("audio/"+block.Audio.Format, len(block.Audio.Data)), true
+		return mediaPlaceholder("audio/"+block.Audio.Format, len(block.Audio.Data), sized), true
 	}
 	return "", false
 }
 
 // FlattenResponsesToolResultMedia replaces each media block with a placeholder and reports whether any
 // was replaced. blocks is not mutated.
-func FlattenResponsesToolResultMedia(blocks []ResponsesMessageContentBlock) ([]ResponsesMessageContentBlock, bool) {
+func FlattenResponsesToolResultMedia(ctx context.Context, blocks []ResponsesMessageContentBlock) ([]ResponsesMessageContentBlock, bool) {
 	var flattened []ResponsesMessageContentBlock
+	sized := true
 	for i, block := range blocks {
-		placeholder, isMedia := ResponsesToolResultMediaPlaceholder(block)
-		if !isMedia {
-			continue
+		if block.ResponsesInputMessageContentBlockImage == nil && block.ResponsesInputMessageContentBlockFile == nil && block.Audio == nil {
+			continue // not media (the cases responsesToolResultMediaPlaceholder names)
 		}
 		if flattened == nil {
 			flattened = slices.Clone(blocks)
+			sized = toolResultMediaSized(ctx) // read once, on the first media block
 		}
+		placeholder, _ := responsesToolResultMediaPlaceholder(block, sized)
 		flattened[i] = ResponsesMessageContentBlock{Type: ResponsesInputMessageContentBlockTypeText, Text: &placeholder}
 	}
 	if flattened == nil {

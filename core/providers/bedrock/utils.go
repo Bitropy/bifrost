@@ -2278,7 +2278,7 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 		var toolResultContent []BedrockContentBlock
 		// Converse ignores a cachePoint inside toolResult content, so the last marker trails the block.
 		var cacheControl *schemas.CacheControl
-		if content := schemas.FlattenToolResultMedia(msg.Content, schemas.IsImageBlock); content != msg.Content {
+		if content := schemas.FlattenToolResultMedia(ctx, msg.Content, schemas.IsImageBlock); content != msg.Content {
 			flattened := msg
 			flattened.Content = content
 			msg = flattened

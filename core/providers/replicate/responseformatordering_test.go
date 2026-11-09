@@ -19,7 +19,7 @@ func TestResponseFormatReachesReplicateChat(t *testing.T) {
 	var params schemas.ChatParameters
 	require.NoError(t, schemas.Unmarshal([]byte(schemaorder.ChatBody), &params))
 
-	out, err := ToReplicateChatRequest(&schemas.BifrostChatRequest{
+	out, err := ToReplicateChatRequest(nil, &schemas.BifrostChatRequest{
 		Provider: schemas.Replicate,
 		Model:    gpt5StructuredModel,
 		Input: []schemas.ChatMessage{{
@@ -77,7 +77,7 @@ func TestSchemalessResponseFormatDoesNotReachReplicateJsonSchema(t *testing.T) {
 			var params schemas.ChatParameters
 			require.NoError(t, schemas.Unmarshal([]byte(tc.body), &params))
 
-			out, err := ToReplicateChatRequest(&schemas.BifrostChatRequest{
+			out, err := ToReplicateChatRequest(nil, &schemas.BifrostChatRequest{
 				Provider: schemas.Replicate,
 				Model:    gpt5StructuredModel,
 				Input: []schemas.ChatMessage{{
