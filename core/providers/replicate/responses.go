@@ -287,15 +287,13 @@ func (response *ReplicatePredictionResponse) ToBifrostResponsesResponse() *schem
 		}
 	}
 
-	// Extract usage information from logs
-	if response.Logs != nil {
-		inputTokens, outputTokens, totalTokens, found := parseTokenUsageFromLogs(response.Logs, schemas.ResponsesRequest)
-		if found {
-			bifrostResponse.Usage = &schemas.ResponsesResponseUsage{
-				InputTokens:  inputTokens,
-				OutputTokens: outputTokens,
-				TotalTokens:  totalTokens,
-			}
+	// Usage from the prediction's metrics, else its logs
+	inputTokens, outputTokens, totalTokens, found := predictionTokenUsage(response.Metrics, response.Logs, schemas.ResponsesRequest)
+	if found {
+		bifrostResponse.Usage = &schemas.ResponsesResponseUsage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  totalTokens,
 		}
 	}
 

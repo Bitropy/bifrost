@@ -302,6 +302,8 @@ type ReplicateMetrics struct {
 	ImageCount       *int     `json:"image_count,omitempty"`         // Number of images generated
 	TimeToFirstToken *float64 `json:"time_to_first_token,omitempty"` // Time to first token (seconds)
 	TokensPerSecond  *float64 `json:"tokens_per_second,omitempty"`   // Tokens generated per second
+	InputTokenCount  *int     `json:"input_token_count,omitempty"`   // Input tokens (language models)
+	OutputTokenCount *int     `json:"output_token_count,omitempty"`  // Output tokens (language models)
 	// ResolutionTarget is reported by some image models (e.g. upscalers run in
 	// "factor" mode, where output size depends on the input image and isn't
 	// known from the request alone) as a megapixel band string like "8-16MP",
