@@ -3,6 +3,7 @@ package bifrost
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -156,6 +157,55 @@ func TestLargePayloadRequestIsNeverResent(t *testing.T) {
 			t.Fatalf("want key A's message, got %+v", bifrostErr.Error)
 		}
 	})
+
+	// Core's fail-soft strip answers an encrypted-reasoning 400 by removing the replayed
+	// token and sending the request once more on the same key. One case per refusal the
+	// strip heals (Anthropic thinking signature, Gemini thought signature, Bedrock
+	// reasoningContent signature, and v1.15.1's Codex encrypted_content block): the
+	// control shows the strip re-sends that request without large-payload mode, the
+	// large-payload request is sent once and keeps the upstream's 400 (BIT-2906 B-5).
+	for _, rejection := range []struct{ name, message string }{
+		{"anthropic thinking signature", "messages.1.content.0: Invalid `signature` in `thinking` block"},
+		{"gemini thought signature", "Corrupted thought signature."},
+		{"bedrock reasoningContent signature", "This model doesn't support the reasoningContent.reasoningText.signature field. Remove reasoningContent.reasoningText.signature and try again."},
+		{"codex encrypted_content block", "Missing required parameter: 'input[2].content[1].encrypted_content'."},
+	} {
+		t.Run("encrypted-reasoning 400 is not re-sent: "+rejection.name, func(t *testing.T) {
+			errBody, err := json.Marshal(map[string]any{"error": map[string]any{"message": rejection.message, "type": "invalid_request_error"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := func() *schemas.BifrostResponsesRequest {
+				req := newCodexSubagentRequest().ResponsesRequest
+				req.Provider, req.Model = schemas.OpenAI, "gpt-4o"
+				return req
+			}
+
+			control, controlSrv := newKeyedUpstream(t, http.StatusBadRequest, string(errBody))
+			controlClient := newTwoKeyClient(t, controlSrv.URL, 0)
+			_, _ = controlClient.ResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request())
+			if hits := control.snapshot(); len(hits) != 2 {
+				t.Fatalf("control: upstream hits = %v, want the strip's re-send (2); the case would be vacuous", hits)
+			}
+
+			upstream, srv := newKeyedUpstream(t, http.StatusBadRequest, string(errBody))
+			client := newTwoKeyClient(t, srv.URL, 0)
+			ctx := largePayloadContext()
+			_, bifrostErr := client.ResponsesRequest(ctx, request())
+			if trail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); len(trail) != 1 {
+				t.Fatalf("attempt trail has %d record(s), want 1: %+v", len(trail), trail)
+			}
+			if hits := upstream.snapshot(); len(hits) != 1 || hits[0] != "key-a" {
+				t.Fatalf("upstream hits = %v, want exactly one on key-a", hits)
+			}
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("want the upstream's 400, got %+v", bifrostErr)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != rejection.message {
+				t.Fatalf("want the upstream's message, got %+v", bifrostErr.Error)
+			}
+		})
+	}
 
 	t.Run("a normal request still rotates past the rejected key", func(t *testing.T) {
 		upstream, srv := newKeyedUpstream(t, http.StatusUnauthorized, invalidKey)

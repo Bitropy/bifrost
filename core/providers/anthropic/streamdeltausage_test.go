@@ -1444,3 +1444,60 @@ func BenchmarkStreamDeltaPromptUsageLedger(b *testing.B) {
 		applyAnthropicStreamDeltaPromptUsage(ctx, 7, usage)
 	}
 }
+
+// TestPromptUsageLedgersOfCancelledStreamsAreSweptOnNextOpen pins the bound bitrouter relies on for
+// core's per-stream prompt-usage ledger (BIT-2906 B-4): ledgers whose streams were abandoned without
+// a release (no terminal frame, no error callback) are held only while their requests run. Once every
+// owning request is cancelled, the next stream open leaves none of them in the store, so the store is
+// bounded by in-flight streams. The sweep's one-second throttle is cleared in-package; nothing sleeps.
+func TestPromptUsageLedgersOfCancelledStreamsAreSweptOnNextOpen(t *testing.T) {
+	const streams = 64
+	owners := make(map[*schemas.BifrostContext]struct{}, streams)
+	ctxs := make([]*schemas.BifrostContext, 0, streams)
+	cancels := make([]context.CancelFunc, 0, streams)
+	for i := 0; i < streams; i++ {
+		parent, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		ledger := openAnthropicStreamDeltaPromptUsageLedger(ctx)
+		ledger.record(i, anthropicPromptCounterInputTokens)
+		owners[ctx.Root()] = struct{}{}
+		ctxs = append(ctxs, ctx)
+		cancels = append(cancels, cancel)
+	}
+	owned := func() int {
+		n := 0
+		anthropicStreamDeltaPromptUsageLedgers.Range(func(_, value any) bool {
+			if ledger, _ := value.(*anthropicStreamDeltaPromptUsageLedger); ledger != nil {
+				if _, ok := owners[ledger.owner]; ok {
+					n++
+				}
+			}
+			return true
+		})
+		return n
+	}
+	if got := owned(); got != streams {
+		t.Fatalf("%d of %d streams hold a ledger before cancellation; the test would be vacuous", got, streams)
+	}
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	deadline := time.After(5 * time.Second)
+	for _, ctx := range ctxs {
+		select {
+		case <-ctx.Done():
+		case <-deadline:
+			t.Fatal("a request context never observed its parent's cancellation")
+		}
+	}
+
+	anthropicStreamDeltaPromptUsageLastSweep.Store(0)
+	next := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	openAnthropicStreamDeltaPromptUsageLedger(next)
+	t.Cleanup(func() { ReleaseStreamPromptUsage(next) })
+	if got := owned(); got != 0 {
+		t.Fatalf("%d ledgers of cancelled streams survived the next stream open; want 0", got)
+	}
+}
