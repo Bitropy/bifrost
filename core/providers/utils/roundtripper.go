@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http/httputil"
@@ -347,6 +348,10 @@ func newStreamBodyReader(resp *fasthttp.Response, br *bufio.Reader) io.Reader {
 	}
 }
 
+// ErrStreamBodyCut is a streamed chunked body that ended before its
+// terminating chunk. It wraps io.ErrUnexpectedEOF.
+var ErrStreamBodyCut = fmt.Errorf("upstream closed the chunked body before its terminating chunk: %w", io.ErrUnexpectedEOF)
+
 type eofReader struct{}
 
 func (eofReader) Read([]byte) (int, error) { return 0, io.EOF }
@@ -419,17 +424,17 @@ func (s *streamBody) Read(p []byte) (int, error) {
 	if errors.Is(err, io.EOF) {
 		s.fullyRead = true
 	} else if errors.Is(err, io.ErrUnexpectedEOF) {
-		// The peer closed before the terminating 0-length chunk. fasthttp's own
-		// streaming reader reports that as a plain io.EOF, and every provider read
-		// loop plus the semantic truncation check (#5546) is built on that contract:
-		// an EOF without a terminal marker becomes the retryable 502 truncation
-		// error, while any other read error is a generic stream failure. The
-		// standard-library chunked reader says io.ErrUnexpectedEOF for the same
-		// close, so restore that contract only for chunked bodies. Fixed-length
-		// bodies must preserve the truncation error. fullyRead stays false: the
-		// half-read connection is closed on release, never returned to the pool.
+		// The peer closed a chunked body before its terminating 0-length chunk.
+		// A proxy (Envoy, a provider LB) whose upstream resets mid-stream closes
+		// the client side cleanly without that chunk, so this is the only sign
+		// of the cut: it is reported as ErrStreamBodyCut, never as a clean
+		// io.EOF (BIT-2784). processAndSendError turns it into the retryable
+		// 502 truncation error the loops' terminal-marker check (#5546) sends.
+		// fullyRead stays false: the half-read connection is closed on release,
+		// never returned to the pool. A short Content-Length body keeps its own
+		// truncation error.
 		if _, chunked := s.reader.(*chunkedBody); chunked {
-			err = io.EOF
+			err = ErrStreamBodyCut
 		}
 	}
 	return n, err
