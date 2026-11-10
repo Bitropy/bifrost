@@ -295,15 +295,13 @@ func (response *ReplicatePredictionResponse) ToBifrostChatResponse() *schemas.Bi
 
 	bifrostResponse.Choices = []schemas.BifrostResponseChoice{choice}
 
-	// Extract usage information from logs
-	if response.Logs != nil {
-		inputTokens, outputTokens, totalTokens, found := parseTokenUsageFromLogs(response.Logs, schemas.ChatCompletionRequest)
-		if found {
-			bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-				PromptTokens:     inputTokens,
-				CompletionTokens: outputTokens,
-				TotalTokens:      totalTokens,
-			}
+	// Usage from the prediction's metrics, else its logs
+	inputTokens, outputTokens, totalTokens, found := predictionTokenUsage(response.Metrics, response.Logs, schemas.ChatCompletionRequest)
+	if found {
+		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
+			PromptTokens:     inputTokens,
+			CompletionTokens: outputTokens,
+			TotalTokens:      totalTokens,
 		}
 	}
 
