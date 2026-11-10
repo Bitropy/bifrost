@@ -4353,6 +4353,13 @@ func processAndSendError(
 			return
 		}
 	}
+	// A chunked body cut before its terminating chunk (BIT-2784) is the same
+	// upstream failure as a stream without its terminal marker: report it as
+	// the retryable truncation error, billed, whichever loop read it.
+	if errors.Is(err, ErrStreamBodyCut) {
+		SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+		return
+	}
 	// Send scanner error through channel
 	bifrostError := &schemas.BifrostError{
 		IsBifrostError: true,
