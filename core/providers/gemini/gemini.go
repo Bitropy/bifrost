@@ -4440,7 +4440,9 @@ func (provider *GeminiProvider) Passthrough(
 
 	setGeminiAuthHeader(fasthttpReq, key.Value.GetValue())
 
-	fasthttpReq.SetBody(req.Body)
+	if err := providerUtils.SetPassthroughRequestBody(fasthttpReq, req); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
+	}
 
 	var latency time.Duration
 	var bifrostErr *schemas.BifrostError

@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"path"
@@ -149,6 +150,12 @@ type BifrostPassthroughRequest struct {
 	Form         *multipart.Form     // parsed multipart form (fields, file headers) behind BodySource; valid during the request
 	FormTypes    map[string][]string // Content-Type of each Form.Value part, by name and index; nil when unknown
 	SafeHeaders  map[string]string   // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
+
+	// BodyReader, when set, is sent instead of Body as it is read, so a body of any size costs
+	// only I/O buffers. It can be read once, so the request gets exactly one attempt; a read
+	// error other than io.EOF aborts the upstream request before it is complete.
+	BodyReader io.Reader
+	BodySize   int64 // BodyReader's length; negative means unknown, sent with Transfer-Encoding: chunked
 }
 
 // PassthroughBodySourceSender is implemented by providers whose Passthrough and

@@ -84,11 +84,23 @@ type multipartUploadReader struct {
 
 func (r multipartUploadReader) Close() error { return r.file.Close() }
 
-// SetPassthroughRequestBody sets the outgoing body of a passthrough request: BodySource as a
-// stream with its exact length when the transport passed one (a multipart upload), else Body.
+// SetPassthroughRequestBody sets the outgoing body of a passthrough request: BodyReader as a
+// stream when set (BIT-2923), else BodySource as a stream with its exact length when the
+// transport passed one (a multipart upload), else Body.
 // Call it after copying the client's headers, so the streamed length wins over theirs.
 // ReleaseRequest closes the stream.
 func SetPassthroughRequestBody(req *fasthttp.Request, passthrough *schemas.BifrostPassthroughRequest) error {
+	if passthrough.BodyReader != nil {
+		size := int(passthrough.BodySize)
+		if passthrough.BodySize < 0 {
+			// fasthttp reads -2 as "identity until close", which a request cannot use.
+			size = -1
+		}
+		// fasthttp writes no terminating chunk when the reader fails, so the upstream sees an
+		// incomplete request instead of a shorter, valid one.
+		req.SetBodyStream(passthrough.BodyReader, size)
+		return nil
+	}
 	if passthrough.BodySource == nil || len(passthrough.Body) > 0 {
 		req.SetBody(passthrough.Body)
 		return nil

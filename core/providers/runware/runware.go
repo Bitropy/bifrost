@@ -867,7 +867,9 @@ func (provider *RunwareProvider) Passthrough(
 	if key.Value.GetValue() != "" {
 		fasthttpReq.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	fasthttpReq.SetBody(req.Body)
+	if err := providerUtils.SetPassthroughRequestBody(fasthttpReq, req); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
+	}
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
