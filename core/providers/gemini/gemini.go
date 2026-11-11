@@ -4278,6 +4278,10 @@ func (provider *GeminiProvider) Passthrough(
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
 	}
+	// The :download redirect is followed on a buffered response only.
+	if err := providerUtils.RejectStreamedPassthroughResponse(req, provider.GetProviderKey()); err != nil {
+		return nil, err
+	}
 	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL, req.Path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())

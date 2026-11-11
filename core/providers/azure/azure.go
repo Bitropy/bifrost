@@ -3785,6 +3785,10 @@ func (provider *AzureProvider) Passthrough(
 
 	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
 
+	if req.StreamResponseBody {
+		return providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, req.Path, provider.networkConfig.StreamIdleTimeoutInSeconds)
+	}
+
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
 	if bifrostErr != nil {

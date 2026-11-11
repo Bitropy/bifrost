@@ -3284,8 +3284,8 @@ func (bifrost *Bifrost) PassthroughStream(
 		}
 	}
 
-	if req.BodyReader != nil {
-		return nil, providerUtils.NewBifrostBadRequestError("passthrough streams take a byte body; BodyReader is for Passthrough")
+	if req.BodyReader != nil || req.StreamResponseBody {
+		return nil, providerUtils.NewBifrostBadRequestError("passthrough streams take a byte body; BodyReader and StreamResponseBody are for Passthrough")
 	}
 
 	req.Provider = provider

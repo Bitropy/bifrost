@@ -844,6 +844,9 @@ func (provider *RunwareProvider) Passthrough(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	if err := providerUtils.RejectStreamedPassthroughResponse(req, provider.GetProviderKey()); err != nil {
+		return nil, err
+	}
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 

@@ -152,6 +152,9 @@ type BifrostPassthroughRequest struct {
 	// error other than io.EOF aborts the upstream request before it is complete.
 	BodyReader io.Reader
 	BodySize   int64 // BodyReader's length; negative means unknown, sent with Transfer-Encoding: chunked
+	// StreamResponseBody returns a 2xx body as BifrostPassthroughResponse.BodyStream instead of
+	// reading it into Body. Any other status is returned with Body read as usual.
+	StreamResponseBody bool
 }
 
 // BifrostPassthroughUsage carries usage data extracted by the provider at stream
@@ -201,6 +204,9 @@ type BifrostPassthroughResponse struct {
 	PassthroughUsage *BifrostPassthroughUsage // usage extracted by the provider for billing — set on the unary response (non-streaming) or the final streaming chunk; nil when no billable usage could be extracted
 	ServedModel      string                   // model or agent the upstream reports running, for requests that named none (an Interactions poll)
 	ProviderJob      *BifrostPassthroughJob   // provider-side run the response reports on; its usage is billed at settlement, not on this request
+	// BodyStream is the 2xx body of a StreamResponseBody request, nil otherwise. The caller must
+	// Close it: Close frees the upstream connection, and closing before EOF abandons it.
+	BodyStream io.ReadCloser
 }
 
 // BifrostPassthroughJob is a run the provider keeps and reports on every read, such as a Gemini

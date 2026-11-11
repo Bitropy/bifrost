@@ -3466,6 +3466,14 @@ func (provider *AnthropicProvider) Passthrough(
 
 	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
 
+	if req.StreamResponseBody {
+		streamed, bifrostErr := providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, req.Path, provider.networkConfig.StreamIdleTimeoutInSeconds)
+		if bifrostErr == nil {
+			provider.dropRejectedToken(key, streamed.StatusCode)
+		}
+		return streamed, bifrostErr
+	}
+
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
 	if bifrostErr != nil {
