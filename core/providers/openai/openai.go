@@ -8646,6 +8646,10 @@ func (provider *OpenAIProvider) Passthrough(
 		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
 	}
 
+	if req.StreamResponseBody {
+		return providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, req.Path, provider.networkConfig.StreamIdleTimeoutInSeconds)
+	}
+
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
 	if bifrostErr != nil {

@@ -1,7 +1,9 @@
 package bifrost
 
 import (
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +19,10 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/runware"
 	"github.com/maximhq/bifrost/core/providers/sagemaker"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -263,9 +269,166 @@ func TestStreamedPassthroughBodyAbortSendsNoTerminalChunk(t *testing.T) {
 	}
 }
 
-// Providers whose passthrough must hold the whole body refuse a BodyReader instead of sending
-// something else: Vertex rewrites a JSON body's project and location (BIT-2941 keeps Vertex
-// batch out), Bedrock and SageMaker sign the body.
+// F2: StreamResponseBody hands back status and headers before the body is read, the body
+// itself as BodyStream, and nothing in Body.
+func TestStreamedPassthroughResponseBody(t *testing.T) {
+	first := bytes.Repeat([]byte(`{"custom_id":"a","response":{}}`+"\n"), 64)
+	second := bytes.Repeat([]byte(`{"custom_id":"b","response":{}}`+"\n"), 64)
+	for _, p := range streamedPassthroughProviders {
+		t.Run(string(p.provider), func(t *testing.T) {
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("X-Upstream", "yes")
+				_, _ = w.Write(first)
+				w.(http.Flusher).Flush()
+				// The rest waits for the test: Passthrough returning at all proves it did not
+				// read the body first.
+				select {
+				case <-release:
+				case <-r.Context().Done():
+					return
+				}
+				_, _ = w.Write(second)
+			}))
+			t.Cleanup(srv.Close)
+			client := newStreamedPassthroughClient(t, p.provider, srv.URL, 0)
+
+			resp, bifrostErr := client.Passthrough(newPassthroughContext(t), p.provider, &schemas.BifrostPassthroughRequest{
+				Method: http.MethodGet, Path: p.path + "/file-1/content", StreamResponseBody: true,
+			})
+			if bifrostErr != nil {
+				t.Fatalf("Passthrough: %+v", bifrostErr.Error)
+			}
+			if resp.StatusCode != http.StatusOK || resp.BodyStream == nil || resp.Body != nil {
+				t.Fatalf("status %d, BodyStream %v, Body %d bytes", resp.StatusCode, resp.BodyStream != nil, len(resp.Body))
+			}
+			if resp.Headers["X-Upstream"] != "yes" {
+				t.Fatalf("headers = %v", resp.Headers)
+			}
+			got := make([]byte, len(first))
+			if _, err := io.ReadFull(resp.BodyStream, got); err != nil || !bytes.Equal(got, first) {
+				t.Fatalf("first part: %v", err)
+			}
+			close(release)
+			rest, err := io.ReadAll(resp.BodyStream)
+			if err != nil || !bytes.Equal(rest, second) {
+				t.Fatalf("rest: %d bytes, %v", len(rest), err)
+			}
+			if err := resp.BodyStream.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// F2: a gzip body is decoded, and the returned headers no longer claim the encoding.
+func TestStreamedPassthroughResponseBodyGzip(t *testing.T) {
+	payload := bytes.Repeat([]byte(`{"custom_id":"a"}`+"\n"), 1000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write(payload)
+		_ = gz.Close()
+	}))
+	t.Cleanup(srv.Close)
+	client := newStreamedPassthroughClient(t, schemas.OpenAI, srv.URL, 0)
+
+	resp, bifrostErr := client.Passthrough(newPassthroughContext(t), schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+		Method: http.MethodGet, Path: "/v1/files/file-1/content", StreamResponseBody: true,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %+v", bifrostErr.Error)
+	}
+	t.Cleanup(func() { _ = resp.BodyStream.Close() })
+	got, err := io.ReadAll(resp.BodyStream)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("decoded body: %d bytes, %v", len(got), err)
+	}
+	for k := range resp.Headers {
+		if strings.EqualFold(k, "Content-Encoding") {
+			t.Fatalf("headers still carry %s", k)
+		}
+	}
+}
+
+// F2: a non-2xx answer comes back in Body as today, read up to the bound, with no BodyStream.
+func TestStreamedPassthroughResponseErrorBodyIsBounded(t *testing.T) {
+	big := bytes.Repeat([]byte("e"), 3*providerUtils.PassthroughErrorBodyLimit)
+	for _, p := range streamedPassthroughProviders {
+		t.Run(string(p.provider), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write(big)
+			}))
+			t.Cleanup(srv.Close)
+			client := newStreamedPassthroughClient(t, p.provider, srv.URL, 0)
+
+			resp, bifrostErr := client.Passthrough(newPassthroughContext(t), p.provider, &schemas.BifrostPassthroughRequest{
+				Method: http.MethodGet, Path: p.path + "/file-1/content", StreamResponseBody: true,
+			})
+			if bifrostErr != nil {
+				t.Fatalf("Passthrough: %+v", bifrostErr.Error)
+			}
+			if resp.StatusCode != http.StatusNotFound || resp.BodyStream != nil {
+				t.Fatalf("status %d, BodyStream %v", resp.StatusCode, resp.BodyStream != nil)
+			}
+			if !bytes.Equal(resp.Body, big[:providerUtils.PassthroughErrorBodyLimit]) {
+				t.Fatalf("Body has %d bytes, want the first %d", len(resp.Body), providerUtils.PassthroughErrorBodyLimit)
+			}
+		})
+	}
+}
+
+// F2: closing BodyStream before EOF abandons the connection instead of draining the rest of a
+// body that can be hundreds of megabytes.
+func TestStreamedPassthroughResponseEarlyCloseDoesNotDrain(t *testing.T) {
+	chunk := bytes.Repeat([]byte("x"), 32*1024)
+	for _, p := range streamedPassthroughProviders {
+		t.Run(string(p.provider), func(t *testing.T) {
+			handlerDone := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(handlerDone)
+				// Endless body: only a closed connection ends this handler.
+				for {
+					if _, err := w.Write(chunk); err != nil {
+						return
+					}
+					w.(http.Flusher).Flush()
+				}
+			}))
+			t.Cleanup(srv.Close)
+			client := newStreamedPassthroughClient(t, p.provider, srv.URL, 0)
+
+			resp, bifrostErr := client.Passthrough(newPassthroughContext(t), p.provider, &schemas.BifrostPassthroughRequest{
+				Method: http.MethodGet, Path: p.path + "/file-1/content", StreamResponseBody: true,
+			})
+			if bifrostErr != nil {
+				t.Fatalf("Passthrough: %+v", bifrostErr.Error)
+			}
+			if _, err := io.ReadFull(resp.BodyStream, make([]byte, 1024)); err != nil {
+				t.Fatal(err)
+			}
+			closed := make(chan struct{})
+			go func() {
+				_ = resp.BodyStream.Close()
+				close(closed)
+			}()
+			for _, ch := range []chan struct{}{closed, handlerDone} {
+				select {
+				case <-ch:
+				case <-time.After(10 * time.Second):
+					t.Fatal("Close drained the body instead of abandoning the connection")
+				}
+			}
+		})
+	}
+}
+
+// Providers whose passthrough must hold the whole body refuse the streamed fields instead of
+// sending something else: Vertex rewrites a JSON body's project and location (BIT-2941 keeps
+// Vertex batch out), Bedrock and SageMaker sign the body. Gemini and Runware stream a request
+// body but read the response whole.
 func TestStreamedPassthroughRefusedWhereUnsupported(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -273,8 +436,11 @@ func TestStreamedPassthroughRefusedWhereUnsupported(t *testing.T) {
 		req      *schemas.BifrostPassthroughRequest
 	}{
 		{"vertex body reader", schemas.Vertex, &schemas.BifrostPassthroughRequest{BodyReader: strings.NewReader("x"), BodySize: -1}},
+		{"vertex response stream", schemas.Vertex, &schemas.BifrostPassthroughRequest{StreamResponseBody: true}},
 		{"bedrock body reader", schemas.Bedrock, &schemas.BifrostPassthroughRequest{BodyReader: strings.NewReader("x"), BodySize: -1}},
-		{"sagemaker body reader", schemas.SageMaker, &schemas.BifrostPassthroughRequest{BodyReader: strings.NewReader("x"), BodySize: -1}},
+		{"sagemaker response stream", schemas.SageMaker, &schemas.BifrostPassthroughRequest{StreamResponseBody: true}},
+		{"gemini response stream", schemas.Gemini, &schemas.BifrostPassthroughRequest{StreamResponseBody: true}},
+		{"runware response stream", schemas.Runware, &schemas.BifrostPassthroughRequest{StreamResponseBody: true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -294,11 +460,12 @@ func TestStreamedPassthroughRefusedWhereUnsupported(t *testing.T) {
 	}
 }
 
-// PassthroughStream frames SSE from a byte body; BodyReader belongs to Passthrough.
+// PassthroughStream frames SSE from a byte body; the streamed fields belong to Passthrough.
 func TestPassthroughStreamRefusesStreamedFields(t *testing.T) {
 	client := newStreamedPassthroughClient(t, schemas.OpenAI, "http://127.0.0.1:1", 0)
 	for _, req := range []*schemas.BifrostPassthroughRequest{
 		{Method: http.MethodPost, Path: "/v1/responses", BodyReader: strings.NewReader("x"), BodySize: -1},
+		{Method: http.MethodPost, Path: "/v1/responses", StreamResponseBody: true},
 	} {
 		_, bifrostErr := client.PassthroughStream(newPassthroughContext(t), schemas.OpenAI, req)
 		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
@@ -307,13 +474,25 @@ func TestPassthroughStreamRefusesStreamedFields(t *testing.T) {
 	}
 }
 
-// Benchmarks the streamed upload through a real Bifrost: B/op and allocs/op must not grow with
-// the body (compare the sizes), since the body is never held whole.
+// Benchmarks the streamed upload and download through a real Bifrost: B/op and allocs/op
+// must not grow with the body (compare the sizes), since the body is never held whole.
 func BenchmarkStreamedPassthrough(b *testing.B) {
 	for _, size := range []int{1 << 20, 32 << 20} {
+		chunk := bytes.Repeat([]byte("y"), 64*1024)
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = io.Copy(io.Discard, r.Body)
-			_, _ = io.WriteString(w, `{"id":"file-1"}`)
+			if r.Method == http.MethodPost {
+				_, _ = io.Copy(io.Discard, r.Body)
+				_, _ = io.WriteString(w, `{"id":"file-1"}`)
+				return
+			}
+			// A fixed length keeps net/http's per-chunk framing allocations, which are the
+			// server's, out of the client's B/op.
+			w.Header().Set("Content-Length", strconv.Itoa(size))
+			bw := bufio.NewWriter(w)
+			for sent := 0; sent < size; sent += len(chunk) {
+				_, _ = bw.Write(chunk)
+			}
+			_ = bw.Flush()
 		}))
 		account := NewMockAccount()
 		configureUpstream(account, schemas.OpenAI, "key-openai", srv.URL, 0)
@@ -334,6 +513,24 @@ func BenchmarkStreamedPassthrough(b *testing.B) {
 				if bifrostErr != nil {
 					b.Fatal(bifrostErr.Error)
 				}
+			}
+		})
+		b.Run("download/"+sizeLabel(size), func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			buf := make([]byte, 32*1024)
+			for i := 0; i < b.N; i++ {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				resp, bifrostErr := client.Passthrough(ctx, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+					Method: http.MethodGet, Path: "/v1/files/file-1/content", StreamResponseBody: true,
+				})
+				if bifrostErr != nil {
+					b.Fatal(bifrostErr.Error)
+				}
+				if _, err := io.CopyBuffer(io.Discard, struct{ io.Reader }{resp.BodyStream}, buf); err != nil {
+					b.Fatal(err)
+				}
+				_ = resp.BodyStream.Close()
 			}
 		})
 		client.Shutdown()
@@ -374,6 +571,10 @@ func newPassthroughProvider(t *testing.T, provider schemas.ModelProvider, url st
 		p, err = bedrock.NewBedrockProvider(config, logger)
 	case schemas.SageMaker:
 		p, err = sagemaker.NewSageMakerProvider(config, logger)
+	case schemas.Gemini:
+		p = gemini.NewGeminiProvider(config, logger)
+	case schemas.Runware:
+		p, err = runware.NewRunwareProvider(config, logger)
 	default:
 		t.Fatalf("no constructor for %s", provider)
 	}
