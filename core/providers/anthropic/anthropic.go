@@ -3464,7 +3464,7 @@ func (provider *AnthropicProvider) Passthrough(
 	}
 	fasthttpReq.Header.Set("anthropic-version", provider.apiVersion)
 
-	fasthttpReq.SetBody(req.Body)
+	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()

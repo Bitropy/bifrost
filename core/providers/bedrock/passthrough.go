@@ -212,6 +212,10 @@ func (provider *BedrockProvider) Passthrough(ctx *schemas.BifrostContext, key sc
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
 	}
+	// SigV4 signs a hash of the whole body.
+	if err := providerUtils.RejectStreamedPassthrough(req, provider.GetProviderKey()); err != nil {
+		return nil, err
+	}
 	httpReq, route, bifrostErr := provider.buildPassthroughRequest(ctx, key, req)
 	if bifrostErr != nil {
 		return nil, bifrostErr

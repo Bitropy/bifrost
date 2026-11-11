@@ -3783,7 +3783,7 @@ func (provider *AzureProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()

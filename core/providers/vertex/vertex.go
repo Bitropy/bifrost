@@ -4676,6 +4676,10 @@ func (provider *VertexProvider) Passthrough(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	// rewritePassthroughBody needs the whole JSON body; Vertex batch is BIT-2941.
+	if err := providerUtils.RejectStreamedPassthrough(req, provider.GetProviderKey()); err != nil {
+		return nil, err
+	}
 	projectID := strings.TrimSpace(resolveVertexProjectID(ctx, key))
 	if projectID == "" {
 		return nil, providerUtils.NewConfigurationError("project ID is not set")

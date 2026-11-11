@@ -218,6 +218,12 @@ func isLargePayloadPassthrough(ctx *schemas.BifrostContext) bool {
 	return reader != nil
 }
 
+// hasPassthroughBodyReader reports a passthrough whose body is a one-shot reader, which the
+// retry loop treats like a large payload: the first attempt drains it, so it is never re-sent.
+func hasPassthroughBodyReader(req *schemas.BifrostRequest) bool {
+	return req != nil && req.PassthroughRequest != nil && req.PassthroughRequest.BodyReader != nil
+}
+
 // signalClosing signals the closing of the provider queue.
 // This is lock-free: uses atomic store and sync.Once to safely signal shutdown.
 func (pq *ProviderQueue) signalClosing() {
@@ -3276,6 +3282,10 @@ func (bifrost *Bifrost) PassthroughStream(
 			StatusCode:     &sc,
 			Error:          &schemas.ErrorField{Message: "passthrough request is nil"},
 		}
+	}
+
+	if req.BodyReader != nil {
+		return nil, providerUtils.NewBifrostBadRequestError("passthrough streams take a byte body; BodyReader is for Passthrough")
 	}
 
 	req.Provider = provider
@@ -7892,7 +7902,7 @@ func executeRequestWithRetries[T any](
 		// without a body and fail locally, and that local failure would replace the
 		// provider's real answer. The first attempt's error is the answer. The check sits
 		// before the encrypted-reasoning strip because that also re-sends.
-		if isLargePayloadPassthrough(ctx) {
+		if isLargePayloadPassthrough(ctx) || hasPassthroughBodyReader(req) {
 			break
 		}
 

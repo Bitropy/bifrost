@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"path"
 	"strings"
@@ -145,6 +146,12 @@ type BifrostPassthroughRequest struct {
 	UpstreamURL  string // optional base URL override for host-backed passthrough routes
 	Body         []byte
 	SafeHeaders  map[string]string // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
+
+	// BodyReader, when set, is sent instead of Body as it is read, so a body of any size costs
+	// only I/O buffers. It can be read once, so the request gets exactly one attempt; a read
+	// error other than io.EOF aborts the upstream request before it is complete.
+	BodyReader io.Reader
+	BodySize   int64 // BodyReader's length; negative means unknown, sent with Transfer-Encoding: chunked
 }
 
 // BifrostPassthroughUsage carries usage data extracted by the provider at stream
