@@ -487,6 +487,25 @@ When a full URL (with scheme and host) is provided in `request_path_overrides`, 
 
 In this example, instead of using OpenAI's default `/v1/chat/completions` path, requests will be sent to `https://custom-endpoint.example.com/api/v2/chat`.
 
+**File and batch calls addressed by an id.** For `file_retrieve`, `file_delete`, `file_content`, `batch_retrieve` and `batch_cancel` on an `openai` base, the override is the **collection** path. Bifrost appends `/{id}` and, where the call needs it, `/content` or `/cancel`. The output-file download of `batch_results` uses the `file_content` override. For a base that already carries its version segment, such as an Azure OpenAI v1 endpoint:
+
+```json
+{
+    "network_config": { "base_url": "https://<resource>.openai.azure.com/openai/v1" },
+    "custom_provider_config": {
+        "base_provider_type": "openai",
+        "request_path_overrides": {
+            "file_upload": "/files", "file_list": "/files", "file_retrieve": "/files",
+            "file_delete": "/files", "file_content": "/files",
+            "batch_create": "/batches", "batch_list": "/batches",
+            "batch_retrieve": "/batches", "batch_cancel": "/batches"
+        }
+    }
+}
+```
+
+A file's content then goes to `https://<resource>.openai.azure.com/openai/v1/files/{id}/content`. Without these keys the calls use `/v1/files/...` and `/v1/batches/...` under `base_url`. A Go SDK `BifrostContextKeyURLPath` on these calls is likewise the collection path.
+
 ### TLS for Self-Signed or Internal Certificates
 
 When connecting to providers with HTTPS endpoints that use self-signed certificates or internal CAs (e.g., air-gapped environments, internal services), you can configure TLS in `network_config`:
