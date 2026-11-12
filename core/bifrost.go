@@ -226,18 +226,20 @@ func hasOneShotRequestBody(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		(req != nil && req.PassthroughRequest != nil && req.PassthroughRequest.BodyReader != nil)
 }
 
-// streamedPassthroughSupport reports, by base provider type, whose Passthrough sends a BodyReader
-// as it is read and returns a 2xx body as BodyStream. Every other provider holds the whole body:
-// Vertex rewrites a JSON body's project and location, Bedrock and SageMaker sign it, Gemini follows
-// its :download redirect on a buffered response, and Runware reads the response whole.
-func streamedPassthroughSupport(base schemas.ModelProvider) (requestBody, responseBody bool) {
-	switch base {
-	case schemas.OpenAI, schemas.Azure, schemas.Anthropic:
-		return true, true
-	case schemas.Gemini, schemas.Runware:
-		return true, false
+// checkStreamedPassthrough refuses streamed-body fields the provider does not declare
+// (schemas.StreamedPassthroughProvider), and a request that carries both Body and BodyReader.
+func (bifrost *Bifrost) checkStreamedPassthrough(provider schemas.ModelProvider, req *schemas.BifrostPassthroughRequest) *schemas.BifrostError {
+	if req.BodyReader != nil && len(req.Body) > 0 {
+		return providerUtils.NewBifrostBadRequestError("passthrough request sets both Body and BodyReader")
 	}
-	return false, false
+	var requestBody, responseBody bool
+	if p, ok := bifrost.getProviderByKey(provider).(schemas.StreamedPassthroughProvider); ok {
+		requestBody, responseBody = p.StreamedPassthroughSupport()
+	}
+	if (req.BodyReader != nil && !requestBody) || (req.StreamResponseBody && !responseBody) {
+		return providerUtils.NewBifrostBadRequestError(fmt.Sprintf("streamed passthrough bodies are not supported by the %s provider", provider))
+	}
+	return nil
 }
 
 // signalClosing signals the closing of the provider queue.
@@ -3253,8 +3255,8 @@ func (bifrost *Bifrost) CachedContentDeleteRequest(ctx *schemas.BifrostContext, 
 
 // Passthrough forwards req to provider verbatim and returns the upstream status, headers and body.
 //
-// Streamed bodies (OpenAI, Azure and Anthropic, and custom providers built on them; Gemini and
-// Runware take BodyReader only; any other provider answers 400 before an upstream call):
+// Streamed bodies, on a provider that declares them (schemas.StreamedPassthroughProvider; any
+// other answers 400 before an upstream call):
 //   - BodyReader is sent instead of Body as it is read, with Content-Length when BodySize is known
 //     and chunked when it is negative. A reader can be read once, so the request gets exactly one
 //     attempt and no fallback. A read error other than io.EOF aborts the upstream request before
@@ -3280,9 +3282,8 @@ func (bifrost *Bifrost) Passthrough(
 		}
 	}
 	if req.BodyReader != nil || req.StreamResponseBody {
-		requestBody, responseBody := streamedPassthroughSupport(bifrost.baseProviderType(provider))
-		if (req.BodyReader != nil && !requestBody) || (req.StreamResponseBody && !responseBody) {
-			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("streamed passthrough bodies are not supported by the %s provider", provider))
+		if err := bifrost.checkStreamedPassthrough(provider, req); err != nil {
+			return nil, err
 		}
 	}
 

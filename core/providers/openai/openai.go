@@ -8597,6 +8597,11 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 	return nil, lastErr
 }
 
+// StreamedPassthroughSupport declares which streamed passthrough bodies Passthrough honours.
+func (provider *OpenAIProvider) StreamedPassthroughSupport() (requestBody, responseBody bool) {
+	return true, true
+}
+
 func (provider *OpenAIProvider) Passthrough(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,

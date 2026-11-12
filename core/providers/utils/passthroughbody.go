@@ -44,8 +44,8 @@ func DoPassthroughStreamResponse(
 	resp := fasthttp.AcquireResponse()
 	resp.StreamBody = true
 	latency, bifrostErr, wait := MakeRequestWithContext(ctx, streamingClient, fasthttpReq, resp)
+	wait()
 	if bifrostErr != nil {
-		wait()
 		ReleaseStreamingResponse(ctx, resp)
 		return nil, bifrostErr
 	}

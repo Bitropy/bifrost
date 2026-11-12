@@ -542,6 +542,48 @@ func TestStreamedPassthroughSkipsUsageExtraction(t *testing.T) {
 	}
 }
 
+// Usage skipped for a reader body is only what reads the request bytes: a Gemini Interactions
+// create reports its run (job and served model) from the response alone, and the run is settled
+// from that job, so it must survive a BodyReader.
+func TestStreamedPassthroughKeepsInteractionsJob(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"int_run","agent":"deep-research-preview-04-2026","status":"in_progress"}`)
+	}))
+	t.Cleanup(srv.Close)
+	client := newStreamedPassthroughClient(t, schemas.Gemini, srv.URL, 0)
+
+	resp, bifrostErr := client.Passthrough(newPassthroughContext(t), schemas.Gemini, &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/interactions", APIVersion: "v1beta",
+		BodyReader: strings.NewReader(`{"agent":"deep-research-preview-04-2026","background":true}`), BodySize: -1,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %+v", bifrostErr.Error)
+	}
+	if resp.ProviderJob == nil || resp.ProviderJob.ID != "int_run" || resp.ServedModel != "deep-research-preview-04-2026" {
+		t.Fatalf("job %+v, served model %q", resp.ProviderJob, resp.ServedModel)
+	}
+}
+
+// Body and BodyReader are two sources for one body; a request with both would be sent from one
+// and billed or logged from the other, so it is refused before any upstream call.
+func TestStreamedPassthroughRefusesBodyAndBodyReader(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	t.Cleanup(srv.Close)
+	client := newStreamedPassthroughClient(t, schemas.OpenAI, srv.URL, 0)
+	_, bifrostErr := client.Passthrough(newPassthroughContext(t), schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/files", Body: []byte("a"), BodyReader: strings.NewReader("b"), BodySize: -1,
+	})
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want a 400, got %+v", bifrostErr)
+	}
+	if hits.Load() != 0 {
+		t.Fatal("the upstream was called")
+	}
+}
+
 // Fallbacks would re-send a drained BodyReader. A passthrough request carries none and no hook
 // can attach any, so shouldTryFallbacks always sees an empty list.
 func TestPassthroughHasNoFallbacks(t *testing.T) {

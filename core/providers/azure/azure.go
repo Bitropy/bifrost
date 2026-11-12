@@ -3750,6 +3750,11 @@ func (provider *AzureProvider) ContainerFileDelete(ctx *schemas.BifrostContext, 
 	return nil, lastErr
 }
 
+// StreamedPassthroughSupport declares which streamed passthrough bodies Passthrough honours.
+func (provider *AzureProvider) StreamedPassthroughSupport() (requestBody, responseBody bool) {
+	return true, true
+}
+
 // Passthrough forwards a raw request to Azure's API without any transformation.
 func (provider *AzureProvider) Passthrough(
 	ctx *schemas.BifrostContext,

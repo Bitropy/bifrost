@@ -3427,6 +3427,11 @@ func (provider *AnthropicProvider) ContainerFileDelete(_ *schemas.BifrostContext
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
 }
 
+// StreamedPassthroughSupport declares which streamed passthrough bodies Passthrough honours.
+func (provider *AnthropicProvider) StreamedPassthroughSupport() (requestBody, responseBody bool) {
+	return true, true
+}
+
 func (provider *AnthropicProvider) Passthrough(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
