@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
@@ -14,64 +15,75 @@ import (
 
 // LargeResponseReader wraps an io.Reader and releases the fasthttp response on Close.
 // Used by providers to keep the response alive while the transport streams it to the client.
-// ctx is held to check BifrostContextKeyConnectionClosed in Close, so a mid-stream
+// ctx is held to claim BifrostContextKeyConnectionClosed in Close, so a mid-stream
 // cancellation that already tore down the underlying fasthttp conn does not double-release.
 type LargeResponseReader struct {
 	io.Reader
 	Resp     *fasthttp.Response
 	ctx      *schemas.BifrostContext
 	cleanup  func()
-	consumed bool // true after Read returns io.EOF, body fully consumed through Reader chain
+	consumed atomic.Bool // Read returned io.EOF; Close may run on another goroutine than Read
 }
 
-// Read delegates to the wrapped Reader and tracks EOF so Close() can skip
-// a redundant (and potentially blocking) drain of the body stream.
+// Read delegates to the wrapped Reader and tracks EOF so Close knows the body was read whole.
 func (r *LargeResponseReader) Read(p []byte) (int, error) {
 	n, err := r.Reader.Read(p)
 	if err == io.EOF {
-		r.consumed = true
+		r.consumed.Store(true)
 	}
 	return n, err
 }
 
-// Close drains any unconsumed body stream and releases the underlying fasthttp
-// response back to the pool. Draining prevents "whitespace in header" errors on
-// connection reuse when the client disconnects before the full response is consumed
-// (see: fasthttp#1743).
-//
-// When the body was already fully consumed through the Reader chain (consumed == true),
-// the drain is skipped. For identity-encoded responses (no Content-Length), the body
-// stream is a fasthttp closeReader that blocks until the TCP connection closes — which
-// can take minutes if the upstream server keeps the connection alive.
+// Close releases the underlying fasthttp response. A body read to EOF is released through
+// ReleaseStreamingResponse, which returns the connection to the pool. A body closed before EOF
+// is abandoned instead of drained: the reader stopped early (client gone, error, bounded read),
+// and draining would read the rest of a body nobody wants, possibly hundreds of megabytes or
+// an identity-encoded body that only ends when the upstream closes the connection. Closing
+// with an error keeps the half-read connection out of the idle pool (fasthttp#1743).
 func (r *LargeResponseReader) Close() error {
 	if r == nil || r.Resp == nil {
 		return nil
 	}
 	// Run cleanup first so SetupStreamCancellation's goroutine settles (close(done); <-closed)
-	// before we read BifrostContextKeyConnectionClosed. The goroutine's done-branch can set the
-	// flag when ctx.Err() != nil, so checking it before cleanup would miss that interleaving and
-	// fall through to fasthttp.ReleaseResponse on an already-torn-down conn (nil-deref in connsCleaner).
+	// before the close is claimed. The goroutine's done-branch can claim it when ctx.Err() != nil,
+	// so claiming before cleanup would miss that interleaving and release an already-torn-down conn.
 	if r.cleanup != nil {
 		r.cleanup()
 		r.cleanup = nil
 	}
-	if r.ctx != nil {
-		if closed, ok := r.ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && closed {
-			r.Resp = nil
-			return nil
-		}
-	}
-	if !r.consumed {
-		if bodyStream := r.Resp.BodyStream(); bodyStream != nil {
-			_, _ = io.Copy(io.Discard, bodyStream)
-			if closer, ok := bodyStream.(io.Closer); ok {
-				_ = closer.Close()
-			}
-		}
-	}
-	fasthttp.ReleaseResponse(r.Resp)
+	resp := r.Resp
 	r.Resp = nil
+	if bodyStream := resp.BodyStream(); bodyStream != nil && !r.consumed.Load() {
+		abandonStreamingResponse(r.ctx, bodyStream)
+		return nil
+	}
+	if r.ctx == nil {
+		resp.CloseBodyStream()
+		fasthttp.ReleaseResponse(resp)
+		return nil
+	}
+	ReleaseStreamingResponse(r.ctx, resp)
 	return nil
+}
+
+// errResponseBodyAbandoned closes a response body that was not read to EOF.
+var errResponseBodyAbandoned = errors.New("response body closed before EOF")
+
+// abandonStreamingResponse closes bodyStream with an error, so fasthttp closes the connection
+// rather than pooling it, and leaves the response to GC, as ReleaseStreamingResponse does on
+// its own abandon paths.
+func abandonStreamingResponse(ctx *schemas.BifrostContext, bodyStream io.Reader) {
+	if ctx != nil {
+		if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
+			return
+		}
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			getLogger().Debug("recovered panic abandoning response body: %v", rec)
+		}
+	}()
+	closeBodyStream(bodyStream, errResponseBodyAbandoned)
 }
 
 // BuildLargeResponseClient creates a streaming-enabled fasthttp client for large response detection.

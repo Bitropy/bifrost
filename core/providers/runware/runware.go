@@ -834,6 +834,11 @@ func (provider *RunwareProvider) buildPassthroughURL(req *schemas.BifrostPassthr
 	return providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
 }
 
+// StreamedPassthroughSupport declares which streamed passthrough bodies Passthrough honours. The response is read whole.
+func (provider *RunwareProvider) StreamedPassthroughSupport() (requestBody, responseBody bool) {
+	return true, false
+}
+
 // Passthrough forwards a raw request to Runware's unified endpoint and returns the untouched
 // response. This unlocks any Runware task type (3D, upscaling, background removal, ...) without a
 // per-feature translation, while Bifrost still injects the key, strips client auth, and logs the
@@ -867,7 +872,7 @@ func (provider *RunwareProvider) Passthrough(
 	if key.Value.GetValue() != "" {
 		fasthttpReq.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	fasthttpReq.SetBody(req.Body)
+	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()

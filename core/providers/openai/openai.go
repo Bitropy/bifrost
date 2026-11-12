@@ -8597,6 +8597,11 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 	return nil, lastErr
 }
 
+// StreamedPassthroughSupport declares which streamed passthrough bodies Passthrough honours.
+func (provider *OpenAIProvider) StreamedPassthroughSupport() (requestBody, responseBody bool) {
+	return true, true
+}
+
 func (provider *OpenAIProvider) Passthrough(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
@@ -8616,8 +8621,6 @@ func (provider *OpenAIProvider) Passthrough(
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
 	defer fasthttp.ReleaseRequest(fasthttpReq)
 
 	fasthttpReq.Header.SetMethod(req.Method)
@@ -8634,8 +8637,14 @@ func (provider *OpenAIProvider) Passthrough(
 		fasthttpReq.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	fasthttpReq.SetBody(req.Body)
+	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
 
+	if req.StreamResponseBody {
+		return providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, req.Path, provider.networkConfig.StreamIdleTimeoutInSeconds)
+	}
+
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
 	if bifrostErr != nil {

@@ -4270,6 +4270,12 @@ func (provider *GeminiProvider) ContainerFileDelete(_ *schemas.BifrostContext, _
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
 }
 
+// StreamedPassthroughSupport declares which streamed passthrough bodies Passthrough honours. The
+// response is read whole: the :download redirect is followed on a buffered response.
+func (provider *GeminiProvider) StreamedPassthroughSupport() (requestBody, responseBody bool) {
+	return true, false
+}
+
 func (provider *GeminiProvider) Passthrough(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
@@ -4301,7 +4307,7 @@ func (provider *GeminiProvider) Passthrough(
 
 	setGeminiAuthHeader(fasthttpReq, key.Value.GetValue())
 
-	fasthttpReq.SetBody(req.Body)
+	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
 
 	var latency time.Duration
 	var bifrostErr *schemas.BifrostError

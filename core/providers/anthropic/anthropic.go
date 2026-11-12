@@ -3427,6 +3427,11 @@ func (provider *AnthropicProvider) ContainerFileDelete(_ *schemas.BifrostContext
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
 }
 
+// StreamedPassthroughSupport declares which streamed passthrough bodies Passthrough honours.
+func (provider *AnthropicProvider) StreamedPassthroughSupport() (requestBody, responseBody bool) {
+	return true, true
+}
+
 func (provider *AnthropicProvider) Passthrough(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
@@ -3445,8 +3450,6 @@ func (provider *AnthropicProvider) Passthrough(
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
 	defer fasthttp.ReleaseRequest(fasthttpReq)
 
 	fasthttpReq.Header.SetMethod(req.Method)
@@ -3464,8 +3467,18 @@ func (provider *AnthropicProvider) Passthrough(
 	}
 	fasthttpReq.Header.Set("anthropic-version", provider.apiVersion)
 
-	fasthttpReq.SetBody(req.Body)
+	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
 
+	if req.StreamResponseBody {
+		streamed, bifrostErr := providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, req.Path, provider.networkConfig.StreamIdleTimeoutInSeconds)
+		if bifrostErr == nil {
+			provider.dropRejectedToken(key, streamed.StatusCode)
+		}
+		return streamed, bifrostErr
+	}
+
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
 	if bifrostErr != nil {
