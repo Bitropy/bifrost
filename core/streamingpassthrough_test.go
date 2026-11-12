@@ -18,12 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maximhq/bifrost/core/providers/bedrock"
-	"github.com/maximhq/bifrost/core/providers/gemini"
-	"github.com/maximhq/bifrost/core/providers/runware"
-	"github.com/maximhq/bifrost/core/providers/sagemaker"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
-	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -352,29 +347,63 @@ func TestStreamedPassthroughResponseBodyGzip(t *testing.T) {
 	}
 }
 
-// F2: a non-2xx answer comes back in Body as today, read up to the bound, with no BodyStream.
+// F2: a non-2xx answer comes back in Body as today, read up to the bound, with no BodyStream. A
+// body past the bound is abandoned, not drained, so one that never ends cannot hold the call.
 func TestStreamedPassthroughResponseErrorBodyIsBounded(t *testing.T) {
-	big := bytes.Repeat([]byte("e"), 3*providerUtils.PassthroughErrorBodyLimit)
+	chunk := bytes.Repeat([]byte("e"), 16*1024)
 	for _, p := range streamedPassthroughProviders {
 		t.Run(string(p.provider), func(t *testing.T) {
+			handlerDone, stop := make(chan struct{}), make(chan struct{})
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(handlerDone)
 				w.WriteHeader(http.StatusNotFound)
-				_, _ = w.Write(big)
+				// Endless error body: only a closed connection (or a failed test) ends this handler.
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					if _, err := w.Write(chunk); err != nil {
+						return
+					}
+					w.(http.Flusher).Flush()
+				}
 			}))
 			t.Cleanup(srv.Close)
+			t.Cleanup(func() { close(stop) }) // runs first, so a draining client cannot hang srv.Close
 			client := newStreamedPassthroughClient(t, p.provider, srv.URL, 0)
 
-			resp, bifrostErr := client.Passthrough(newPassthroughContext(t), p.provider, &schemas.BifrostPassthroughRequest{
-				Method: http.MethodGet, Path: p.path + "/file-1/content", StreamResponseBody: true,
-			})
-			if bifrostErr != nil {
-				t.Fatalf("Passthrough: %+v", bifrostErr.Error)
+			type result struct {
+				resp *schemas.BifrostPassthroughResponse
+				err  *schemas.BifrostError
 			}
-			if resp.StatusCode != http.StatusNotFound || resp.BodyStream != nil {
-				t.Fatalf("status %d, BodyStream %v", resp.StatusCode, resp.BodyStream != nil)
+			done := make(chan result, 1)
+			go func() {
+				resp, bifrostErr := client.Passthrough(newPassthroughContext(t), p.provider, &schemas.BifrostPassthroughRequest{
+					Method: http.MethodGet, Path: p.path + "/file-1/content", StreamResponseBody: true,
+				})
+				done <- result{resp, bifrostErr}
+			}()
+			var got result
+			select {
+			case got = <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("Passthrough drained an endless error body instead of abandoning it")
 			}
-			if !bytes.Equal(resp.Body, big[:providerUtils.PassthroughErrorBodyLimit]) {
-				t.Fatalf("Body has %d bytes, want the first %d", len(resp.Body), providerUtils.PassthroughErrorBodyLimit)
+			if got.err != nil {
+				t.Fatalf("Passthrough: %+v", got.err.Error)
+			}
+			if got.resp.StatusCode != http.StatusNotFound || got.resp.BodyStream != nil {
+				t.Fatalf("status %d, BodyStream %v", got.resp.StatusCode, got.resp.BodyStream != nil)
+			}
+			if len(got.resp.Body) != providerUtils.PassthroughErrorBodyLimit || got.resp.Body[0] != 'e' {
+				t.Fatalf("Body has %d bytes, want the first %d", len(got.resp.Body), providerUtils.PassthroughErrorBodyLimit)
+			}
+			select {
+			case <-handlerDone:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the upstream connection was not closed")
 			}
 		})
 	}
@@ -425,11 +454,12 @@ func TestStreamedPassthroughResponseEarlyCloseDoesNotDrain(t *testing.T) {
 	}
 }
 
-// Providers whose passthrough must hold the whole body refuse the streamed fields instead of
-// sending something else: Vertex rewrites a JSON body's project and location (BIT-2941 keeps
-// Vertex batch out), Bedrock and SageMaker sign the body. Gemini and Runware stream a request
-// body but read the response whole.
+// Providers whose passthrough must hold the whole body refuse the streamed fields before any
+// upstream call: Vertex rewrites a JSON body's project and location (BIT-2941 keeps Vertex batch
+// out), Bedrock and SageMaker sign the body. Gemini and Runware stream a request body but read
+// the response whole. A custom provider inherits its base provider's support.
 func TestStreamedPassthroughRefusedWhereUnsupported(t *testing.T) {
+	const customBedrock = schemas.ModelProvider("custom-bedrock")
 	cases := []struct {
 		name     string
 		provider schemas.ModelProvider
@@ -441,15 +471,25 @@ func TestStreamedPassthroughRefusedWhereUnsupported(t *testing.T) {
 		{"sagemaker response stream", schemas.SageMaker, &schemas.BifrostPassthroughRequest{StreamResponseBody: true}},
 		{"gemini response stream", schemas.Gemini, &schemas.BifrostPassthroughRequest{StreamResponseBody: true}},
 		{"runware response stream", schemas.Runware, &schemas.BifrostPassthroughRequest{StreamResponseBody: true}},
+		{"custom on bedrock body reader", customBedrock, &schemas.BifrostPassthroughRequest{BodyReader: strings.NewReader("x"), BodySize: -1}},
 	}
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
+	t.Cleanup(srv.Close)
+	account := NewMockAccount()
+	for _, provider := range []schemas.ModelProvider{schemas.Vertex, schemas.Bedrock, schemas.SageMaker, schemas.Gemini, schemas.Runware, customBedrock} {
+		configureUpstream(account, provider, "key-"+string(provider), srv.URL, 0)
+	}
+	account.SetCustomProviderConfig(customBedrock, &schemas.CustomProviderConfig{BaseProviderType: schemas.Bedrock})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var hits atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits.Add(1) }))
-			t.Cleanup(srv.Close)
-			provider := newPassthroughProvider(t, tc.provider, srv.URL)
 			tc.req.Method, tc.req.Path = http.MethodPost, "/v1/files"
-			_, bifrostErr := provider.Passthrough(newPassthroughContext(t), passthroughTestKey(), tc.req)
+			_, bifrostErr := client.Passthrough(newPassthroughContext(t), tc.provider, tc.req)
 			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
 				t.Fatalf("want a 400, got %+v", bifrostErr)
 			}
@@ -457,6 +497,58 @@ func TestStreamedPassthroughRefusedWhereUnsupported(t *testing.T) {
 				t.Fatal("the upstream was called")
 			}
 		})
+	}
+}
+
+// A BodyReader request carries no request bytes to read usage or a raw request from, so the
+// provider skips usage extraction: the caller bills from its own copy of the body. The control
+// sends the same exchange with a byte Body, so the skip is not vacuous.
+func TestStreamedPassthroughSkipsUsageExtraction(t *testing.T) {
+	cases := []struct {
+		provider schemas.ModelProvider
+		path     string
+		answer   string
+	}{
+		{schemas.OpenAI, "/v1/chat/completions", `{"object":"chat.completion","usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`},
+		{schemas.Anthropic, "/v1/messages", `{"type":"message","model":"claude-x","usage":{"input_tokens":3,"output_tokens":4}}`},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, tc.answer)
+			}))
+			t.Cleanup(srv.Close)
+			client := newStreamedPassthroughClient(t, tc.provider, srv.URL, 0)
+			body := `{"model":"m","messages":[]}`
+
+			control, bifrostErr := client.Passthrough(newPassthroughContext(t), tc.provider, &schemas.BifrostPassthroughRequest{
+				Method: http.MethodPost, Path: tc.path, Body: []byte(body),
+			})
+			if bifrostErr != nil || control.PassthroughUsage == nil {
+				t.Fatalf("control: usage %v, err %+v", control, bifrostErr)
+			}
+			resp, bifrostErr := client.Passthrough(newPassthroughContext(t), tc.provider, &schemas.BifrostPassthroughRequest{
+				Method: http.MethodPost, Path: tc.path, BodyReader: strings.NewReader(body), BodySize: -1,
+			})
+			if bifrostErr != nil {
+				t.Fatalf("Passthrough: %+v", bifrostErr.Error)
+			}
+			if resp.PassthroughUsage != nil {
+				t.Fatalf("usage extracted from a reader body: %+v", resp.PassthroughUsage)
+			}
+		})
+	}
+}
+
+// Fallbacks would re-send a drained BodyReader. A passthrough request carries none and no hook
+// can attach any, so shouldTryFallbacks always sees an empty list.
+func TestPassthroughHasNoFallbacks(t *testing.T) {
+	req := &schemas.BifrostRequest{PassthroughRequest: &schemas.BifrostPassthroughRequest{BodyReader: strings.NewReader("x")}}
+	req.SetFallbacks([]schemas.Fallback{{Provider: schemas.Azure, Model: "m"}})
+	if _, _, fallbacks := req.GetRequestFields(); len(fallbacks) != 0 {
+		t.Fatalf("passthrough request has fallbacks %v", fallbacks)
 	}
 }
 
@@ -548,42 +640,3 @@ func (repeatReader) Read(p []byte) (int, error) {
 }
 
 func sizeLabel(n int) string { return fmt.Sprintf("%dMiB", n>>20) }
-
-type passthroughProvider interface {
-	Passthrough(*schemas.BifrostContext, schemas.Key, *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError)
-}
-
-// newPassthroughProvider builds the provider directly: the refusal comes before any key or
-// credential is used, so no account plumbing is needed.
-func newPassthroughProvider(t *testing.T, provider schemas.ModelProvider, url string) passthroughProvider {
-	t.Helper()
-	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: url, DefaultRequestTimeoutInSeconds: 5}}
-	config.CheckAndSetDefaults()
-	logger := NewDefaultLogger(schemas.LogLevelError)
-	var (
-		p   passthroughProvider
-		err error
-	)
-	switch provider {
-	case schemas.Vertex:
-		p, err = vertex.NewVertexProvider(config, logger)
-	case schemas.Bedrock:
-		p, err = bedrock.NewBedrockProvider(config, logger)
-	case schemas.SageMaker:
-		p, err = sagemaker.NewSageMakerProvider(config, logger)
-	case schemas.Gemini:
-		p = gemini.NewGeminiProvider(config, logger)
-	case schemas.Runware:
-		p, err = runware.NewRunwareProvider(config, logger)
-	default:
-		t.Fatalf("no constructor for %s", provider)
-	}
-	if err != nil {
-		t.Fatalf("new %s provider: %v", provider, err)
-	}
-	return p
-}
-
-func passthroughTestKey() schemas.Key {
-	return schemas.Key{ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}}
-}
