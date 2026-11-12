@@ -57,7 +57,19 @@ func (provider *VertexProvider) RealtimeWebSocketURL(ctx *schemas.BifrostContext
 		return "", bifrostErr
 	}
 	host := getVertexModelAwareAPIHost(region, model, resolveVertexForceSingleRegion(ctx, key), provider.logger)
-	return "wss://" + host + vertexLivePath, nil
+	return vertexLiveOrigin(vertexOrigin(provider.networkConfig.BaseURL, host)) + vertexLivePath, nil
+}
+
+// vertexLiveOrigin turns an AI Platform origin (a configured NetworkConfig.BaseURL or
+// https://host) into its WebSocket form: https becomes wss and http becomes ws.
+func vertexLiveOrigin(origin string) string {
+	if rest, ok := strings.CutPrefix(origin, "https://"); ok {
+		return "wss://" + rest
+	}
+	if rest, ok := strings.CutPrefix(origin, "http://"); ok {
+		return "ws://" + rest
+	}
+	return origin
 }
 
 // RealtimeHeaders authenticates the WebSocket handshake with an OAuth bearer token from the key's credentials.
