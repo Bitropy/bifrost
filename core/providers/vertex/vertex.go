@@ -4667,6 +4667,77 @@ func (provider *VertexProvider) ContainerFileDelete(_ *schemas.BifrostContext, _
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
 }
 
+// passthroughURL returns the upstream URL of a generic passthrough request and, for a Google
+// publisher path on an API key, the key query to append (empty means OAuth).
+func (provider *VertexProvider) passthroughURL(key schemas.Key, req *schemas.BifrostPassthroughRequest, projectID, keyRegion string) (string, string, *schemas.BifrostError) {
+	// Model calls stay on v1 as they always have; other resources (interactions) use the client's version.
+	apiVersion := "v1"
+	if req.APIVersion != "" && req.APIVersion != "v1beta" && !strings.Contains(req.Path, "/models/") {
+		apiVersion = req.APIVersion
+	}
+	baseURL := getVertexAPIBaseURL(provider.networkConfig.BaseURL, keyRegion, apiVersion)
+
+	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments (e.g. /v1/v1/...)
+	path := req.Path
+	for strings.HasPrefix(path, "/v1/") || path == "/v1" {
+		path = strings.TrimPrefix(path, "/v1/")
+		path = strings.TrimPrefix(path, "/v1")
+		if path != "" && !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+	}
+	if rest, ok := cutVertexV1Beta1(path); ok {
+		path, baseURL = rest, getVertexAPIBaseURL(provider.networkConfig.BaseURL, keyRegion, "v1beta1")
+	}
+
+	// Replace region in path with key's configured region (client path may have different region)
+	if strings.Contains(path, "/locations/") {
+		path = vertexLocationsPathRe.ReplaceAllString(path, "/locations/"+keyRegion)
+		if strings.Contains(path, "/projects/") {
+			path = vertexProjectsPathRe.ReplaceAllString(path, "/projects/"+projectID)
+		}
+	} else {
+		// add projects/%s/locations/%s/publishers/google to path
+		path = fmt.Sprintf("/projects/%s/locations/%s%s", projectID, keyRegion, path)
+	}
+
+	requestURL, err := providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
+	if err != nil {
+		return "", "", providerUtils.NewBifrostBadRequestError(err.Error())
+	}
+
+	// Only use API key for Google publisher endpoints; Anthropic/Mistral/OpenAPI-style paths require OAuth.
+	authQuery := ""
+	if key.Value.GetValue() != "" && strings.Contains(path, "publishers/google") {
+		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
+	}
+	return requestURL, authQuery, nil
+}
+
+// setPassthroughBody puts a generic passthrough body on fasthttpReq, after the headers, with the
+// Vertex placeholders of a JSON body rewritten.
+func setPassthroughBody(fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest, projectID, keyRegion string) {
+	if len(req.Body) > 0 && strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
+		// Replace placeholder project/location and expand short-form model names.
+		if rewritten, changed := rewritePassthroughBody(req.Body, projectID, keyRegion); changed {
+			fasthttpReq.SetBodyRaw(rewritten)
+		} else {
+			fasthttpReq.SetBody(req.Body)
+		}
+	} else if len(req.Body) > 0 {
+		fasthttpReq.SetBody(req.Body)
+	}
+}
+
+// passthroughWireFormat is the API req speaks: Anthropic Messages for a ClaudeMessages request,
+// whatever its path, else the path's.
+func passthroughWireFormat(req *schemas.BifrostPassthroughRequest) schemas.ModelProvider {
+	if req.ClaudeMessages {
+		return schemas.Anthropic
+	}
+	return PassthroughWireFormat(req.Path)
+}
+
 func (provider *VertexProvider) Passthrough(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,

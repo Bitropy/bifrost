@@ -150,17 +150,14 @@ type BifrostPassthroughRequest struct {
 	BodyReader         io.Reader // sent instead of Body as it is read, one attempt (see Bifrost.Passthrough)
 	BodySize           int64     // BodyReader's length; negative = unknown, sent chunked
 	StreamResponseBody bool      // return a 2xx body as BifrostPassthroughResponse.BodyStream
-
-	// ClaudeMessages sends Body to the provider's Anthropic Messages endpoint for Model; Path is
-	// ignored. RawQuery is forwarded on anthropic, whose endpoint is the client's own, and dropped on
-	// vertex and azure, whose endpoints take no client query. Only providers implementing
-	// ClaudeMessagesProvider accept it (see Bifrost.Passthrough).
-	ClaudeMessages bool
+	ClaudeMessages     bool      // send Body to Model's Anthropic Messages endpoint, ignoring Path (see ClaudeMessagesProvider)
 }
 
 // ClaudeMessagesProvider is implemented by a provider that serves an Anthropic Messages body for a
-// Claude model (BifrostPassthroughRequest.ClaudeMessages). Bifrost.Passthrough and
-// Bifrost.PassthroughStream refuse ClaudeMessages on any other provider.
+// Claude model (BifrostPassthroughRequest.ClaudeMessages): the provider picks its own Messages
+// endpoint for Model and ignores Path. RawQuery is forwarded on anthropic, whose endpoint is the
+// client's own, and dropped on vertex and azure, whose endpoints take no client query.
+// Bifrost.Passthrough and Bifrost.PassthroughStream refuse ClaudeMessages on any other provider.
 type ClaudeMessagesProvider interface {
 	ClaudeMessagesSupport() bool
 }
@@ -220,11 +217,8 @@ type BifrostPassthroughResponse struct {
 	ServedModel      string                   // model or agent the upstream reports running, for requests that named none (an Interactions poll)
 	ProviderJob      *BifrostPassthroughJob   // provider-side run the response reports on; its usage is billed at settlement, not on this request
 
-	BodyStream io.ReadCloser // 2xx body of a StreamResponseBody request; the caller must Close it
-
-	// DroppedBetas are the anthropic-beta values a ClaudeMessages request carried that the target
-	// provider does not support and that were not sent; nil when none. Set on every stream chunk.
-	DroppedBetas []string
+	BodyStream   io.ReadCloser // 2xx body of a StreamResponseBody request; the caller must Close it
+	DroppedBetas []string      // anthropic-beta values of a ClaudeMessages request the provider does not support, not sent; nil when none; on every stream chunk
 }
 
 // BifrostPassthroughJob is a run the provider keeps and reports on every read, such as a Gemini
