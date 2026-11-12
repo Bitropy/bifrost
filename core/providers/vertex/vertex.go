@@ -5041,7 +5041,10 @@ func (provider *VertexProvider) Passthrough(
 	var requestURL, authQuery string
 	upstreamPath := req.Path
 	if req.ClaudeMessages {
-		requestURL, upstreamPath = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":rawPredict")
+		var urlErr *schemas.BifrostError
+		if requestURL, upstreamPath, urlErr = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":rawPredict"); urlErr != nil {
+			return nil, urlErr
+		}
 	} else {
 		var urlErr *schemas.BifrostError
 		if requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion); urlErr != nil {
@@ -5177,7 +5180,10 @@ func (provider *VertexProvider) PassthroughStream(
 	var requestURL, authQuery string
 	upstreamPath := req.Path
 	if req.ClaudeMessages {
-		requestURL, upstreamPath = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict")
+		var urlErr *schemas.BifrostError
+		if requestURL, upstreamPath, urlErr = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict"); urlErr != nil {
+			return nil, urlErr
+		}
 	} else {
 		var urlErr *schemas.BifrostError
 		if requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion); urlErr != nil {
