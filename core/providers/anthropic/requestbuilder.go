@@ -159,7 +159,7 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 		DeleteModelField:       true,
 		DeleteRegionField:      true,
 		AddAnthropicVersion:    true,
-		AnthropicVersion:       "vertex-2023-10-16",
+		AnthropicVersion:       VertexAnthropicVersion,
 		StripCacheControlScope: true,
 		RemapToolVersions:      true,
 		CachePrefixKeysLast:    true,
