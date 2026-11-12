@@ -430,3 +430,31 @@ func drainClaudeStream(t *testing.T, provider *AzureProvider, ctx *schemas.Bifro
 		}
 	}
 }
+
+// TestAzurePassthroughAliasedClaudeUsage pins that a plain (path-addressed) unary passthrough to a
+// deployment whose resolved alias is a Claude model is billed by the Anthropic usage parser, the
+// same family check its auth and stream path use.
+func TestAzurePassthroughAliasedClaudeUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"type":"message","usage":{"input_tokens":7,"output_tokens":5}}`)
+	}))
+	t.Cleanup(srv.Close)
+	provider, err := NewAzureProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}, &authTestLogger{})
+	if err != nil {
+		t.Fatalf("NewAzureProvider: %v", err)
+	}
+	key := schemas.Key{Value: *schemas.NewSecretVar("az-key"), AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(srv.URL)}}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "my-deploy-7", Config: &schemas.AliasConfig{ModelID: "claude-sonnet-4-5"}})
+	resp, bifrostErr := provider.Passthrough(ctx, key, &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/anthropic/v1/messages", Model: "my-deploy-7",
+		Body: []byte(`{"model":"my-deploy-7","messages":[]}`), SafeHeaders: map[string]string{"Content-Type": "application/json"},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %s", bifrostErr.GetErrorString())
+	}
+	if u := resp.PassthroughUsage; u == nil || u.LLMUsage == nil || u.LLMUsage.PromptTokens != 7 || u.LLMUsage.CompletionTokens != 5 {
+		t.Fatalf("usage = %+v, want the Anthropic parse 7/5", u)
+	}
+}
