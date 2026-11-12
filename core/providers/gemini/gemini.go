@@ -4479,7 +4479,7 @@ func (provider *GeminiProvider) Passthrough(
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		if IsInteractionsPassthroughPath(req.Path) {
 			passthroughUsage, servedModel, providerJob = InteractionsPassthroughResult(req, body)
-		} else if req.BodyReader == nil {
+		} else {
 			passthroughUsage = ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
 		}
 	}
