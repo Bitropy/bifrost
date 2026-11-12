@@ -8605,6 +8605,11 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 // (schemas.PassthroughBodySourceSender), so Bifrost does not read a multipart upload into memory first.
 func (provider *OpenAIProvider) SendsPassthroughBodySource() {}
 
+// StreamedPassthroughSupport declares which streamed passthrough bodies Passthrough honours.
+func (provider *OpenAIProvider) StreamedPassthroughSupport() (requestBody, responseBody bool) {
+	return true, true
+}
+
 func (provider *OpenAIProvider) Passthrough(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,

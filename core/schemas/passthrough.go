@@ -164,6 +164,13 @@ type PassthroughBodySourceSender interface {
 	SendsPassthroughBodySource()
 }
 
+// StreamedPassthroughProvider is implemented by a provider whose Passthrough sends a BodyReader as it
+// is read (requestBody) and returns a 2xx body as BodyStream (responseBody). Bifrost.Passthrough
+// refuses either field on a provider that does not declare it.
+type StreamedPassthroughProvider interface {
+	StreamedPassthroughSupport() (requestBody, responseBody bool)
+}
+
 // BifrostPassthroughUsage carries usage data extracted by the provider at stream
 // completion. The pricing module converts this into cost using the existing compute
 // functions — no new pricing logic is required.
