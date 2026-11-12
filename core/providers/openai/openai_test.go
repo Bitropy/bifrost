@@ -707,3 +707,111 @@ func TestContainerFileListNotFoundOnEveryKey(t *testing.T) {
 		t.Fatalf("error = %+v, want 404", err)
 	}
 }
+
+// TestIDAddressedFileBatchPathsHonourOverrides pins that the file and batch calls addressed by an
+// id compose under their request type's override, the way upload, list and create do: on an
+// OpenAI-compatible base that carries its own version segment (an Azure OpenAI v1 endpoint, z.AI's
+// /v4), an override "/files" or "/batches" keeps the segment single. Without an override map, or
+// with a map that lacks the key, the path is the hardcoded /v1 one, byte-identical to before.
+func TestIDAddressedFileBatchPathsHonourOverrides(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","object":"batch","status":"completed","output_file_id":"file-out"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	overrides := map[schemas.RequestType]string{
+		schemas.FileRetrieveRequest:  "/files",
+		schemas.FileDeleteRequest:    "/files",
+		schemas.FileContentRequest:   "/files",
+		schemas.BatchRetrieveRequest: "/batches",
+		schemas.BatchCancelRequest:   "/batches",
+	}
+	for _, tc := range []struct {
+		name  string
+		mount string
+		cpc   *schemas.CustomProviderConfig
+		want  []string // retrieve, delete, content, batch retrieve, batch cancel, results (retrieve + content)
+	}{
+		{
+			name:  "native: no custom config",
+			mount: "",
+			want: []string{
+				"/v1/files/file-1", "/v1/files/file-1", "/v1/files/file-1/content",
+				"/v1/batches/batch-1", "/v1/batches/batch-1/cancel",
+				"/v1/batches/batch-1", "/v1/files/file-out/content",
+			},
+		},
+		{
+			name:  "custom: map without the keys",
+			mount: "",
+			cpc: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, CustomProviderKey: "acme",
+				RequestPathOverrides: map[schemas.RequestType]string{schemas.ChatCompletionRequest: "/chat/completions"}},
+			want: []string{
+				"/v1/files/file-1", "/v1/files/file-1", "/v1/files/file-1/content",
+				"/v1/batches/batch-1", "/v1/batches/batch-1/cancel",
+				"/v1/batches/batch-1", "/v1/files/file-out/content",
+			},
+		},
+		{
+			name:  "custom: versioned base with overrides",
+			mount: "/openai/v1",
+			cpc:   &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, CustomProviderKey: "acme", RequestPathOverrides: overrides},
+			want: []string{
+				"/openai/v1/files/file-1", "/openai/v1/files/file-1", "/openai/v1/files/file-1/content",
+				"/openai/v1/batches/batch-1", "/openai/v1/batches/batch-1/cancel",
+				"/openai/v1/batches/batch-1", "/openai/v1/files/file-out/content",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			paths = nil
+			mu.Unlock()
+			provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
+				NetworkConfig:        schemas.NetworkConfig{BaseURL: srv.URL + tc.mount, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+				CustomProviderConfig: tc.cpc,
+			}, oauthTestLogger{})
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			keys := []schemas.Key{{ID: "k", Value: *schemas.NewSecretVar("sk"), Models: []string{"*"}}}
+			p := schemas.ModelProvider("acme")
+			var errs []string
+			note := func(e *schemas.BifrostError) {
+				if e != nil && e.Error != nil {
+					errs = append(errs, e.Error.Message)
+				}
+			}
+			_, e := provider.FileRetrieve(ctx, keys, &schemas.BifrostFileRetrieveRequest{Provider: p, FileID: "file-1"})
+			note(e)
+			_, e = provider.FileDelete(ctx, keys, &schemas.BifrostFileDeleteRequest{Provider: p, FileID: "file-1"})
+			note(e)
+			_, e = provider.FileContent(ctx, keys, &schemas.BifrostFileContentRequest{Provider: p, FileID: "file-1"})
+			note(e)
+			_, e = provider.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{Provider: p, BatchID: "batch-1"})
+			note(e)
+			_, e = provider.BatchCancel(ctx, keys, &schemas.BifrostBatchCancelRequest{Provider: p, BatchID: "batch-1"})
+			note(e)
+			_, e = provider.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{Provider: p, BatchID: "batch-1"})
+			note(e)
+			cancel()
+
+			mu.Lock()
+			got := append([]string(nil), paths...)
+			mu.Unlock()
+			if len(got) != len(tc.want) {
+				t.Fatalf("upstream saw %v, want %v (call errors: %v)", got, tc.want, errs)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("call %d went to %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
