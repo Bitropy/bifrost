@@ -245,6 +245,7 @@ func (bifrost *Bifrost) checkStreamedPassthrough(provider schemas.ModelProvider,
 // checkClaudeMessages refuses ClaudeMessages without a Model, which names the endpoint, or on a provider that does not
 // declare it (schemas.ClaudeMessagesProvider).
 func (bifrost *Bifrost) checkClaudeMessages(provider schemas.ModelProvider, model string) *schemas.BifrostError {
+	// Key selection, model access and alias resolution all key on Model.
 	if model == "" {
 		return providerUtils.NewBifrostBadRequestError("Claude Messages passthrough requires a model")
 	}
