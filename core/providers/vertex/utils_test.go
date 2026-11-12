@@ -238,13 +238,13 @@ func TestVertexEndpointURL(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Config: &schemas.AliasConfig{
 		ProjectID: schemas.NewSecretVar("alias-project"), Region: schemas.NewSecretVar("us-west1"),
 	}})
-	url, err := openAIEndpointURL(ctx, key, &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}, true)
+	url, err := openAIEndpointURL(ctx, "", key, &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}, true)
 	if err != nil || url != "https://us-west1-aiplatform.googleapis.com/v1/projects/alias-project/locations/us-west1/endpoints/2222:streamRawPredict" {
 		t.Fatalf("url=%s error=%v", url, err)
 	}
 	for _, region := range []string{"", "global", "us", "eu", "evil.example/"} {
 		key.VertexKeyConfig.Region = *schemas.NewSecretVar(region)
-		if _, err := openAIEndpointURL(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}, false); err == nil {
+		if _, err := openAIEndpointURL(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), "", key, &schemas.VertexEndpoint{EndpointID: "2222", Format: schemas.VertexEndpointOpenAIChat}, false); err == nil {
 			t.Errorf("accepted region %q", region)
 		}
 	}
@@ -415,6 +415,11 @@ func TestGetVertexModelListingAPIHost(t *testing.T) {
 			region:   "us-central1",
 			expected: "us-central1-aiplatform.googleapis.com",
 		},
+		{
+			name:     "europe single region listing endpoint",
+			region:   "europe-central2",
+			expected: "europe-central2-aiplatform.googleapis.com",
+		},
 	}
 
 	for _, tt := range tests {
@@ -457,13 +462,18 @@ func TestGetVertexPublisherModelURL(t *testing.T) {
 			region:   "us-central1",
 			expected: "https://us-central1-aiplatform.googleapis.com/v1/projects/project-123/locations/us-central1/publishers/anthropic/models/claude-opus-4-7:rawPredict",
 		},
+		{
+			name:     "europe single region raw predict",
+			region:   "europe-central2",
+			expected: "https://europe-central2-aiplatform.googleapis.com/v1/projects/project-123/locations/europe-central2/publishers/anthropic/models/claude-opus-4-7:rawPredict",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			actual := getVertexPublisherModelURL(tt.region, "v1", "project-123", "anthropic", "claude-opus-4-7", ":rawPredict")
+			actual := getVertexPublisherModelURL("", tt.region, "v1", "project-123", "anthropic", "claude-opus-4-7", ":rawPredict")
 			if actual != tt.expected {
 				t.Fatalf("expected %q, got %q", tt.expected, actual)
 			}
@@ -642,13 +652,66 @@ func TestGetVertexModelAwarePublisherModelURL(t *testing.T) {
 			forceSingleRegion: true,
 			expected:          "https://us-east5-aiplatform.googleapis.com/v1/projects/project-123/locations/us-east5/publishers/anthropic/models/claude-opus-4-7:rawPredict",
 		},
+		{
+			name:     "global flagged model stays global",
+			region:   "global",
+			model:    "claude-opus-4-7",
+			expected: "https://aiplatform.googleapis.com/v1/projects/project-123/locations/global/publishers/anthropic/models/claude-opus-4-7:rawPredict",
+		},
+		{
+			name:              "global unflagged model with force single region stays global",
+			region:            "global",
+			model:             "claude-3-5-sonnet",
+			forceSingleRegion: true,
+			expected:          "https://aiplatform.googleapis.com/v1/projects/project-123/locations/global/publishers/anthropic/models/claude-3-5-sonnet:rawPredict",
+		},
+		{
+			name:              "us multi-region flagged model with force single region keeps rep host",
+			region:            "us",
+			model:             "claude-opus-4-7",
+			forceSingleRegion: true,
+			expected:          "https://aiplatform.us.rep.googleapis.com/v1/projects/project-123/locations/us/publishers/anthropic/models/claude-opus-4-7:rawPredict",
+		},
+		{
+			name:     "eu multi-region unflagged model gets rep host URL",
+			region:   "eu",
+			model:    "claude-3-5-sonnet",
+			expected: "https://aiplatform.eu.rep.googleapis.com/v1/projects/project-123/locations/eu/publishers/anthropic/models/claude-3-5-sonnet:rawPredict",
+		},
+		{
+			name:     "europe-central2 flagged model gets promoted to eu pool",
+			region:   "europe-central2",
+			model:    "claude-opus-4-7",
+			expected: "https://aiplatform.eu.rep.googleapis.com/v1/projects/project-123/locations/eu/publishers/anthropic/models/claude-opus-4-7:rawPredict",
+		},
+		{
+			name:              "europe-central2 flagged model with force single region keeps requested region",
+			region:            "europe-central2",
+			model:             "claude-opus-4-7",
+			forceSingleRegion: true,
+			expected:          "https://europe-central2-aiplatform.googleapis.com/v1/projects/project-123/locations/europe-central2/publishers/anthropic/models/claude-opus-4-7:rawPredict",
+		},
+		{
+			name:              "europe-central2 unflagged model with force single region keeps requested region",
+			region:            "europe-central2",
+			model:             "claude-3-5-sonnet",
+			forceSingleRegion: true,
+			expected:          "https://europe-central2-aiplatform.googleapis.com/v1/projects/project-123/locations/europe-central2/publishers/anthropic/models/claude-3-5-sonnet:rawPredict",
+		},
+		{
+			name:              "single region unflagged model with force single region keeps standard host",
+			region:            "us-central1",
+			model:             "claude-3-5-sonnet",
+			forceSingleRegion: true,
+			expected:          "https://us-central1-aiplatform.googleapis.com/v1/projects/project-123/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet:rawPredict",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			actual := getVertexModelAwarePublisherModelURL(tt.region, "v1", "project-123", "anthropic", tt.model, ":rawPredict", tt.forceSingleRegion, nil)
+			actual := getVertexModelAwarePublisherModelURL("", tt.region, "v1", "project-123", "anthropic", tt.model, ":rawPredict", tt.forceSingleRegion, nil)
 			if actual != tt.expected {
 				t.Fatalf("expected %q, got %q", tt.expected, actual)
 			}
@@ -1288,7 +1351,7 @@ func TestVertexResourceNamesStayOnExpectedEndpoint(t *testing.T) {
 		"projects/987654321/locations/europe-west4/batchPredictionJobs/123": "https://europe-west4-aiplatform.googleapis.com/v1/projects/987654321/locations/europe-west4/batchPredictionJobs/123",
 	}
 	for id, want := range validBatch {
-		got, bifrostErr := vertexBatchJobURL(key, id)
+		got, bifrostErr := vertexBatchJobURL("", key, id)
 		if bifrostErr != nil || got != want {
 			t.Fatalf("vertexBatchJobURL(%q) = %q, %v; want %q", id, got, bifrostErr, want)
 		}
@@ -1301,20 +1364,20 @@ func TestVertexResourceNamesStayOnExpectedEndpoint(t *testing.T) {
 		"projects/p/locations/us-central1/batchPredictionJobs/../endpoints",
 		"projects/p/locations/us-central1/batchPredictionJobs/1/extra",
 	} {
-		if got, bifrostErr := vertexBatchJobURL(key, id); bifrostErr == nil {
+		if got, bifrostErr := vertexBatchJobURL("", key, id); bifrostErr == nil {
 			t.Fatalf("vertexBatchJobURL(%q) = %q, want error", id, got)
 		}
 	}
 
 	operation := "projects/proj/locations/europe-west4/publishers/google/models/veo-3/operations/op-1"
-	if got, bifrostErr := vertexVideoOperationURL(operation); bifrostErr != nil || got != "https://europe-west4-aiplatform.googleapis.com/v1/projects/proj/locations/europe-west4/publishers/google/models/veo-3:fetchPredictOperation" {
+	if got, bifrostErr := vertexVideoOperationURL("", operation); bifrostErr != nil || got != "https://europe-west4-aiplatform.googleapis.com/v1/projects/proj/locations/europe-west4/publishers/google/models/veo-3:fetchPredictOperation" {
 		t.Fatalf("vertexVideoOperationURL = %q, %v", got, bifrostErr)
 	}
 	for _, id := range []string{
 		"projects/proj/locations/us-central1/../../endpoints/operations/op-1",
 		"projects/proj/locations/attacker.example#/publishers/google/models/veo-3/operations/op-1",
 	} {
-		if got, bifrostErr := vertexVideoOperationURL(id); bifrostErr == nil {
+		if got, bifrostErr := vertexVideoOperationURL("", id); bifrostErr == nil {
 			t.Fatalf("vertexVideoOperationURL(%q) = %q, want error", id, got)
 		}
 	}

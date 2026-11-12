@@ -193,8 +193,22 @@ func getVertexModelListingAPIHost(region string) string {
 	return fmt.Sprintf("%s-aiplatform.googleapis.com", region)
 }
 
-func getVertexAPIBaseURL(region string, apiVersion string) string {
-	return fmt.Sprintf("https://%s/%s", getVertexAPIHost(region), apiVersion)
+// vertexOrigin is the scheme and host every AI Platform URL starts with: a configured
+// NetworkConfig.BaseURL (PSC, proxy or replay fake) replaces https://host, the path stays.
+func vertexOrigin(base string, host string) string {
+	if base != "" {
+		return strings.TrimSuffix(base, "/")
+	}
+	return "https://" + host
+}
+
+func getVertexAPIBaseURL(base string, region string, apiVersion string) string {
+	return fmt.Sprintf("%s/%s", vertexOrigin(base, getVertexAPIHost(region)), apiVersion)
+}
+
+// getVertexModelListURL builds the Model Garden publishers.models.list URL.
+func getVertexModelListURL(base string, region string, publisher string, pageSize int) string {
+	return fmt.Sprintf("%s/v1beta1/publishers/%s/models?pageSize=%d", vertexOrigin(base, getVertexModelListingAPIHost(region)), publisher, pageSize)
 }
 
 // cutVertexV1Beta1 strips a leading "/v1beta1" from a pass-through path. A path
@@ -213,16 +227,16 @@ func cutVertexV1Beta1(path string) (string, bool) {
 
 // getVertexModelAwareAPIBaseURL is like getVertexAPIBaseURL but uses model-aware
 // host selection for multi-region endpoints.
-func getVertexModelAwareAPIBaseURL(region string, apiVersion string, model string, forceSingleRegion bool, logger schemas.Logger) string {
-	return fmt.Sprintf("https://%s/%s", getVertexModelAwareAPIHost(region, model, forceSingleRegion, logger), apiVersion)
+func getVertexModelAwareAPIBaseURL(base string, region string, apiVersion string, model string, forceSingleRegion bool, logger schemas.Logger) string {
+	return fmt.Sprintf("%s/%s", vertexOrigin(base, getVertexModelAwareAPIHost(region, model, forceSingleRegion, logger)), apiVersion)
 }
 
-func getVertexProjectLocationURL(region string, apiVersion string, projectID string) string {
-	return fmt.Sprintf("%s/projects/%s/locations/%s", getVertexAPIBaseURL(region, apiVersion), projectID, region)
+func getVertexProjectLocationURL(base string, region string, apiVersion string, projectID string) string {
+	return fmt.Sprintf("%s/projects/%s/locations/%s", getVertexAPIBaseURL(base, region, apiVersion), projectID, region)
 }
 
-func getVertexPublisherModelURL(region string, apiVersion string, projectID string, publisher string, model string, method string) string {
-	return fmt.Sprintf("%s/publishers/%s/models/%s%s", getVertexProjectLocationURL(region, apiVersion, projectID), publisher, model, method)
+func getVertexPublisherModelURL(base string, region string, apiVersion string, projectID string, publisher string, model string, method string) string {
+	return fmt.Sprintf("%s/publishers/%s/models/%s%s", getVertexProjectLocationURL(base, region, apiVersion, projectID), publisher, model, method)
 }
 
 // getVertexModelAwarePublisherModelURL is like getVertexPublisherModelURL but
@@ -230,9 +244,9 @@ func getVertexPublisherModelURL(region string, apiVersion string, projectID stri
 // inference endpoints that may need multi-region pool hosts.
 // When a single-region is promoted to multi-region, both the host AND the
 // locations/ path segment are updated to the pool region.
-func getVertexModelAwarePublisherModelURL(region string, apiVersion string, projectID string, publisher string, model string, method string, forceSingleRegion bool, logger schemas.Logger) string {
+func getVertexModelAwarePublisherModelURL(base string, region string, apiVersion string, projectID string, publisher string, model string, method string, forceSingleRegion bool, logger schemas.Logger) string {
 	effectiveRegion := getVertexEffectiveRegion(region, model, forceSingleRegion)
-	baseURL := fmt.Sprintf("https://%s/%s", getVertexModelAwareAPIHost(region, model, forceSingleRegion, logger), apiVersion)
+	baseURL := fmt.Sprintf("%s/%s", vertexOrigin(base, getVertexModelAwareAPIHost(region, model, forceSingleRegion, logger)), apiVersion)
 	return fmt.Sprintf("%s/projects/%s/locations/%s/publishers/%s/models/%s%s", baseURL, projectID, effectiveRegion, publisher, model, method)
 }
 
@@ -253,22 +267,22 @@ func getVertexEffectiveRegion(region string, model string, forceSingleRegion boo
 	return region
 }
 
-func getVertexEndpointURL(region string, apiVersion string, projectID string, endpoint string, method string) string {
-	return fmt.Sprintf("%s/endpoints/%s%s", getVertexProjectLocationURL(region, apiVersion, projectID), endpoint, method)
+func getVertexEndpointURL(base string, region string, apiVersion string, projectID string, endpoint string, method string) string {
+	return fmt.Sprintf("%s/endpoints/%s%s", getVertexProjectLocationURL(base, region, apiVersion, projectID), endpoint, method)
 }
 
 // getCompleteURLForGeminiEndpoint constructs the complete URL for the Gemini endpoint, for both streaming and non-streaming requests
 // for custom/fine-tuned models, it uses the projectNumber
 // for gemini models, it uses the projectID
-func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID string, projectNumber string, method string) string {
+func getCompleteURLForGeminiEndpoint(base string, deployment string, region string, projectID string, projectNumber string, method string) string {
 	deployment = gemini.NormalizeModelName(deployment)
 	if schemas.IsAllDigitsASCII(deployment) {
 		// Custom/fine-tuned models use projectNumber
-		return getVertexEndpointURL(region, "v1beta1", projectNumber, deployment, method)
+		return getVertexEndpointURL(base, region, "v1beta1", projectNumber, deployment, method)
 	}
 
 	// Gemini models use projectID
-	return getVertexPublisherModelURL(region, "v1", projectID, "google", deployment, method)
+	return getVertexPublisherModelURL(base, region, "v1", projectID, "google", deployment, method)
 }
 
 // vertexPriorityModels lists model name prefixes that support Priority PayGo on Vertex.
