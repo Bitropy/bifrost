@@ -844,9 +844,6 @@ func (provider *RunwareProvider) Passthrough(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	if err := providerUtils.RejectStreamedPassthroughResponse(req, provider.GetProviderKey()); err != nil {
-		return nil, err
-	}
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
@@ -908,7 +905,7 @@ func (provider *RunwareProvider) Passthrough(
 	// Honor the provider's raw-payload exposure config: expose the raw upstream request/response
 	// to callers only when send_back_raw_request/response is enabled (internal store_raw logging is
 	// handled separately by the logging layer).
-	if sendBackRawRequest {
+	if sendBackRawRequest && req.BodyReader == nil {
 		bifrostResponse.ExtraFields.RawRequest = string(req.Body)
 	}
 	if sendBackRawResponse {

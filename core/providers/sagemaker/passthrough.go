@@ -152,10 +152,6 @@ func (provider *SageMakerProvider) buildPassthroughRequest(ctx *schemas.BifrostC
 
 // Passthrough forwards InvokeEndpoint to the runtime host and returns the container's status, headers and body verbatim.
 func (provider *SageMakerProvider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	// SigV4 signs a hash of the whole body.
-	if err := providerUtils.RejectStreamedPassthrough(req, provider.GetProviderKey()); err != nil {
-		return nil, err
-	}
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(fasthttpReq)

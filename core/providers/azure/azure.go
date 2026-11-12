@@ -3762,8 +3762,6 @@ func (provider *AzureProvider) Passthrough(
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
 	defer fasthttp.ReleaseRequest(fasthttpReq)
 
 	fasthttpReq.Header.SetMethod(req.Method)
@@ -3789,6 +3787,8 @@ func (provider *AzureProvider) Passthrough(
 		return providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, req.Path, provider.networkConfig.StreamIdleTimeoutInSeconds)
 	}
 
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
 	if bifrostErr != nil {
@@ -3804,7 +3804,7 @@ func (provider *AzureProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
-	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
+	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 && req.BodyReader == nil {
 		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, req.Body, body, req.Model)
 	}
 

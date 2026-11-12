@@ -8616,8 +8616,6 @@ func (provider *OpenAIProvider) Passthrough(
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
 	defer fasthttp.ReleaseRequest(fasthttpReq)
 
 	fasthttpReq.Header.SetMethod(req.Method)
@@ -8640,6 +8638,8 @@ func (provider *OpenAIProvider) Passthrough(
 		return providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, req.Path, provider.networkConfig.StreamIdleTimeoutInSeconds)
 	}
 
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
 	defer wait()
 	if bifrostErr != nil {
@@ -8655,7 +8655,7 @@ func (provider *OpenAIProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
-	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
+	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 && req.BodyReader == nil {
 		passthroughUsage = ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
 	}
 

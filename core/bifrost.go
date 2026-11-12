@@ -218,10 +218,26 @@ func isLargePayloadPassthrough(ctx *schemas.BifrostContext) bool {
 	return reader != nil
 }
 
-// hasPassthroughBodyReader reports a passthrough whose body is a one-shot reader, which the
-// retry loop treats like a large payload: the first attempt drains it, so it is never re-sent.
-func hasPassthroughBodyReader(req *schemas.BifrostRequest) bool {
-	return req != nil && req.PassthroughRequest != nil && req.PassthroughRequest.BodyReader != nil
+// hasOneShotRequestBody reports a request whose body is a reader the first attempt drains: a
+// large payload (context keys set by the transport) or a passthrough BodyReader (set by a Go SDK
+// caller). Such a body cannot be sent twice.
+func hasOneShotRequestBody(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) bool {
+	return isLargePayloadPassthrough(ctx) ||
+		(req != nil && req.PassthroughRequest != nil && req.PassthroughRequest.BodyReader != nil)
+}
+
+// streamedPassthroughSupport reports, by base provider type, whose Passthrough sends a BodyReader
+// as it is read and returns a 2xx body as BodyStream. Every other provider holds the whole body:
+// Vertex rewrites a JSON body's project and location, Bedrock and SageMaker sign it, Gemini follows
+// its :download redirect on a buffered response, and Runware reads the response whole.
+func streamedPassthroughSupport(base schemas.ModelProvider) (requestBody, responseBody bool) {
+	switch base {
+	case schemas.OpenAI, schemas.Azure, schemas.Anthropic:
+		return true, true
+	case schemas.Gemini, schemas.Runware:
+		return true, false
+	}
+	return false, false
 }
 
 // signalClosing signals the closing of the provider queue.
@@ -3235,6 +3251,21 @@ func (bifrost *Bifrost) CachedContentDeleteRequest(ctx *schemas.BifrostContext, 
 	return response.CachedContentDeleteResponse, nil
 }
 
+// Passthrough forwards req to provider verbatim and returns the upstream status, headers and body.
+//
+// Streamed bodies (OpenAI, Azure and Anthropic, and custom providers built on them; Gemini and
+// Runware take BodyReader only; any other provider answers 400 before an upstream call):
+//   - BodyReader is sent instead of Body as it is read, with Content-Length when BodySize is known
+//     and chunked when it is negative. A reader can be read once, so the request gets exactly one
+//     attempt and no fallback. A read error other than io.EOF aborts the upstream request before
+//     its terminating chunk, so the upstream holds an incomplete request and acts on nothing.
+//     The provider skips usage extraction and raw-request capture, which read Body: the caller
+//     holds the only copy of the bytes it sent.
+//   - StreamResponseBody returns a 2xx body as BodyStream, unread, once the headers arrive. The
+//     caller must Close it: Close frees the upstream connection, and closing before EOF abandons
+//     the connection instead of draining it. Any other status comes back in Body, read up to
+//     providerUtils.PassthroughErrorBodyLimit; a longer error body is abandoned. Usage is not
+//     extracted from a streamed body.
 func (bifrost *Bifrost) Passthrough(
 	ctx *schemas.BifrostContext,
 	provider schemas.ModelProvider,
@@ -3246,6 +3277,12 @@ func (bifrost *Bifrost) Passthrough(
 			IsBifrostError: false,
 			StatusCode:     &sc,
 			Error:          &schemas.ErrorField{Message: "passthrough request is nil"},
+		}
+	}
+	if req.BodyReader != nil || req.StreamResponseBody {
+		requestBody, responseBody := streamedPassthroughSupport(bifrost.baseProviderType(provider))
+		if (req.BodyReader != nil && !requestBody) || (req.StreamResponseBody && !responseBody) {
+			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("streamed passthrough bodies are not supported by the %s provider", provider))
 		}
 	}
 
@@ -7902,7 +7939,7 @@ func executeRequestWithRetries[T any](
 		// without a body and fail locally, and that local failure would replace the
 		// provider's real answer. The first attempt's error is the answer. The check sits
 		// before the encrypted-reasoning strip because that also re-sends.
-		if isLargePayloadPassthrough(ctx) || hasPassthroughBodyReader(req) {
+		if hasOneShotRequestBody(ctx, req) {
 			break
 		}
 
