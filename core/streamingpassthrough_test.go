@@ -630,6 +630,37 @@ func BenchmarkStreamedPassthrough(b *testing.B) {
 	}
 }
 
+// Benchmarks the buffered passthrough (byte Body in, Body out) that every existing caller takes,
+// so the streamed fields' cost on it shows up as an allocs/op or ns/op delta against the base.
+func BenchmarkBufferedPassthrough(b *testing.B) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"file-1","object":"file","bytes":120}`)
+	}))
+	defer srv.Close()
+	account := NewMockAccount()
+	configureUpstream(account, schemas.OpenAI, "key-openai", srv.URL, 0)
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer client.Shutdown()
+	body := bytes.Repeat([]byte(`{"custom_id":"r","body":{"model":"m"}}`+"\n"), 16)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := client.Passthrough(ctx, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
+			Method: http.MethodPost, Path: "/v1/files", Body: body,
+		})
+		if bifrostErr != nil || resp.StatusCode != http.StatusOK {
+			b.Fatal(bifrostErr)
+		}
+	}
+}
+
 type repeatReader struct{}
 
 func (repeatReader) Read(p []byte) (int, error) {
