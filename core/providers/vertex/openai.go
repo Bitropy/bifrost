@@ -12,7 +12,7 @@ import (
 // openAIEndpointURL keeps the transport method separate from the served model.
 // Only explicitly configured endpoints take this path; existing publisher and
 // tuned-Gemini routing is unchanged. No endpoint or credential state is built here.
-func openAIEndpointURL(ctx *schemas.BifrostContext, key schemas.Key, endpoint *schemas.VertexEndpoint, stream bool) (string, *schemas.BifrostError) {
+func openAIEndpointURL(ctx *schemas.BifrostContext, base string, key schemas.Key, endpoint *schemas.VertexEndpoint, stream bool) (string, *schemas.BifrostError) {
 	if err := endpoint.Validate(); err != nil {
 		return "", providerUtils.NewConfigurationError(err.Error())
 	}
@@ -29,13 +29,13 @@ func openAIEndpointURL(ctx *schemas.BifrostContext, key schemas.Key, endpoint *s
 		return "", err
 	}
 	if endpoint.Method == schemas.VertexEndpointChatCompletions {
-		return getVertexEndpointURL(region, "v1beta1", project, endpoint.EndpointID+"/chat/completions", ""), nil
+		return getVertexEndpointURL(base, region, "v1beta1", project, endpoint.EndpointID+"/chat/completions", ""), nil
 	}
 	suffix := ":rawPredict"
 	if stream {
 		suffix = ":streamRawPredict"
 	}
-	return getVertexEndpointURL(region, "v1", project, endpoint.EndpointID, suffix), nil
+	return getVertexEndpointURL(base, region, "v1", project, endpoint.EndpointID, suffix), nil
 }
 
 func (provider *VertexProvider) openAIEndpointAuth(key schemas.Key) (map[string]string, *schemas.BifrostError) {
@@ -66,7 +66,7 @@ func (provider *VertexProvider) openAIEndpointError(key schemas.Key) openai.Erro
 }
 
 func (provider *VertexProvider) openAIChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest, endpoint *schemas.VertexEndpoint) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	url, err := openAIEndpointURL(ctx, key, endpoint, false)
+	url, err := openAIEndpointURL(ctx, provider.networkConfig.BaseURL, key, endpoint, false)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (provider *VertexProvider) openAIChatCompletion(ctx *schemas.BifrostContext
 }
 
 func (provider *VertexProvider) openAIChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest, endpoint *schemas.VertexEndpoint) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	url, err := openAIEndpointURL(ctx, key, endpoint, true)
+	url, err := openAIEndpointURL(ctx, provider.networkConfig.BaseURL, key, endpoint, true)
 	if err != nil {
 		return nil, err
 	}

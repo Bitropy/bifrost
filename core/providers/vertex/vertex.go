@@ -353,8 +353,6 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	// No deployments configured - fetch from Model Garden API
-	host := getVertexModelListingAPIHost(region)
-
 	// Accumulate all publisher models from paginated requests
 	var allPublisherModels []VertexPublisherModel
 	var rawRequests []interface{}
@@ -377,9 +375,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		pageToken = ""
 		// Loop through all pages until no nextPageToken is returned
 		for {
-			// Build URL for publishers.models.list endpoint (Model Garden)
-			// Format: https://{vertex-api-host}/v1beta1/publishers/{publisher}/models
-			requestURL := fmt.Sprintf("https://%s/v1beta1/publishers/%s/models?pageSize=%d", host, publisher, MaxPageSize)
+			requestURL := getVertexModelListURL(provider.networkConfig.BaseURL, region, publisher, MaxPageSize)
 			if pageToken != "" {
 				requestURL = fmt.Sprintf("%s&pageToken=%s", requestURL, url.QueryEscape(pageToken))
 			}
@@ -829,21 +825,21 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
-		completeURL = getVertexEndpointURL(region, "v1beta1", projectNumber, request.Model, ":generateContent")
+		completeURL = getVertexEndpointURL(provider.networkConfig.BaseURL, region, "v1beta1", projectNumber, request.Model, ":generateContent")
 	} else if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Claude models use Anthropic publisher — model-aware host for multi-region support
-		completeURL = getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":rawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
+		completeURL = getVertexModelAwarePublisherModelURL(provider.networkConfig.BaseURL, region, "v1", projectID, "anthropic", request.Model, ":rawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
 	} else if schemas.IsMistralModelFamily(ctx, request.Model) {
 		// Mistral models use mistralai publisher with rawPredict
-		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "mistralai", request.Model, ":rawPredict")
+		completeURL = getVertexPublisherModelURL(provider.networkConfig.BaseURL, region, "v1", projectID, "mistralai", request.Model, ":rawPredict")
 	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		// Gemini models support api key
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}
-		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":generateContent")
+		completeURL = getVertexPublisherModelURL(provider.networkConfig.BaseURL, region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":generateContent")
 	} else {
-		completeURL = getVertexEndpointURL(region, "v1beta1", projectID, "openapi/chat/completions", "")
+		completeURL = getVertexEndpointURL(provider.networkConfig.BaseURL, region, "v1beta1", projectID, "openapi/chat/completions", "")
 	}
 
 	// Create HTTP request for streaming
@@ -1079,7 +1075,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			}
 		}
 
-		completeURL := getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":streamRawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
+		completeURL := getVertexModelAwarePublisherModelURL(provider.networkConfig.BaseURL, region, "v1", projectID, "anthropic", request.Model, ":streamRawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
 
 		// Prepare headers for Vertex Anthropic
 		headers := map[string]string{
@@ -1156,7 +1152,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		}
 
 		// Construct the URL for Gemini streaming
-		completeURL := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":streamGenerateContent")
+		completeURL := getCompleteURLForGeminiEndpoint(provider.networkConfig.BaseURL, request.Model, region, projectID, projectNumber, ":streamGenerateContent")
 
 		// Add alt=sse parameter
 		if authQuery != "" {
@@ -1222,7 +1218,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		var errorConverter openai.ErrorConverter
 		if schemas.IsMistralModelFamily(ctx, request.Model) {
 			// Mistral models use mistralai publisher with streamRawPredict
-			completeURL = getVertexPublisherModelURL(region, "v1", projectID, "mistralai", request.Model, ":streamRawPredict")
+			completeURL = getVertexPublisherModelURL(provider.networkConfig.BaseURL, region, "v1", projectID, "mistralai", request.Model, ":streamRawPredict")
 			// The publisher's error bodies (Mistral's API error, a validation
 			// list) are read as on the unary path.
 			errorConverter = parseVertexError
@@ -1231,7 +1227,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			if key.Value.GetValue() != "" {
 				authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 			}
-			completeURL = getVertexEndpointURL(region, "v1beta1", projectID, "openapi/chat/completions", "")
+			completeURL = getVertexEndpointURL(provider.networkConfig.BaseURL, region, "v1beta1", projectID, "openapi/chat/completions", "")
 		}
 
 		if authQuery != "" {
@@ -1316,7 +1312,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		// Claude models use Anthropic publisher — model-aware host for multi-region support
-		url := getVertexModelAwarePublisherModelURL(region, "v1beta1", projectID, "anthropic", request.Model, ":rawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
+		url := getVertexModelAwarePublisherModelURL(provider.networkConfig.BaseURL, region, "v1beta1", projectID, "anthropic", request.Model, ":rawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
 
 		// Create HTTP request for streaming
 		req := fasthttp.AcquireRequest()
@@ -1472,7 +1468,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
 
-		url := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":generateContent")
+		url := getCompleteURLForGeminiEndpoint(provider.networkConfig.BaseURL, request.Model, region, projectID, projectNumber, ":generateContent")
 
 		// Create HTTP request for streaming
 		req := fasthttp.AcquireRequest()
@@ -1624,7 +1620,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, bifrostErr
 		}
 
-		url := getVertexModelAwarePublisherModelURL(region, "v1", projectID, "anthropic", request.Model, ":streamRawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
+		url := getVertexModelAwarePublisherModelURL(provider.networkConfig.BaseURL, region, "v1", projectID, "anthropic", request.Model, ":streamRawPredict", resolveVertexForceSingleRegion(ctx, key), provider.logger)
 
 		// Prepare headers for Vertex Anthropic
 		headers := map[string]string{
@@ -1715,7 +1711,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		}
 
 		// Construct the URL for Gemini streaming
-		completeURL := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":streamGenerateContent")
+		completeURL := getCompleteURLForGeminiEndpoint(provider.networkConfig.BaseURL, request.Model, region, projectID, projectNumber, ":streamGenerateContent")
 		// Add alt=sse parameter
 		if authQuery != "" {
 			completeURL = fmt.Sprintf("%s?alt=sse&%s", completeURL, authQuery)
@@ -1832,7 +1828,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	if isGeminiEmbedding2Request {
 		endpointSuffix = ":embedContent"
 	}
-	completeURL := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, endpointSuffix)
+	completeURL := getCompleteURLForGeminiEndpoint(provider.networkConfig.BaseURL, request.Model, region, projectID, projectNumber, endpointSuffix)
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -2221,19 +2217,19 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		if value := key.Value.GetValue(); value != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(value))
 		}
-		completeURL = getVertexEndpointURL(region, "v1beta1", projectNumber, request.Model, ":generateContent")
+		completeURL = getVertexEndpointURL(provider.networkConfig.BaseURL, region, "v1beta1", projectNumber, request.Model, ":generateContent")
 
 	} else if schemas.IsImagenModelFamily(ctx, request.Model) {
 		// Imagen models are published models, use publishers/google/models path
 		if value := key.Value.GetValue(); value != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(value))
 		}
-		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":predict")
+		completeURL = getVertexPublisherModelURL(provider.networkConfig.BaseURL, region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":predict")
 	} else if schemas.IsGeminiModelFamily(ctx, request.Model) {
 		if value := key.Value.GetValue(); value != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(value))
 		}
-		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":generateContent")
+		completeURL = getVertexPublisherModelURL(provider.networkConfig.BaseURL, region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":generateContent")
 	}
 
 	// Create HTTP request for image generation
@@ -2439,11 +2435,11 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		if projectNumber == "" {
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
-		completeURL = getVertexEndpointURL(region, "v1beta1", projectNumber, gemini.NormalizeModelName(request.Model), ":generateContent")
+		completeURL = getVertexEndpointURL(provider.networkConfig.BaseURL, region, "v1beta1", projectNumber, gemini.NormalizeModelName(request.Model), ":generateContent")
 	} else if schemas.IsImagenModelFamily(ctx, request.Model) {
-		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":predict")
+		completeURL = getVertexPublisherModelURL(provider.networkConfig.BaseURL, region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":predict")
 	} else if schemas.IsGeminiModelFamily(ctx, request.Model) {
-		completeURL = getVertexPublisherModelURL(region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":generateContent")
+		completeURL = getVertexPublisherModelURL(provider.networkConfig.BaseURL, region, "v1", projectID, "google", gemini.NormalizeModelName(request.Model), ":generateContent")
 	}
 
 	req := fasthttp.AcquireRequest()
@@ -2622,7 +2618,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	}
 
 	// Construct the URL for Gemini video generation using predictLongRunning
-	completeURL := getCompleteURLForGeminiEndpoint(bifrostReq.Model, region, projectID, projectNumber, ":predictLongRunning")
+	completeURL := getCompleteURLForGeminiEndpoint(provider.networkConfig.BaseURL, bifrostReq.Model, region, projectID, projectNumber, ":predictLongRunning")
 
 	// Create HTTP request
 	req := fasthttp.AcquireRequest()
@@ -2700,12 +2696,12 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 }
 
 // vertexVideoOperationURL returns the fetchPredictOperation URL for a video operation name, on the operation's own region.
-func vertexVideoOperationURL(taskID string) (string, *schemas.BifrostError) {
+func vertexVideoOperationURL(base string, taskID string) (string, *schemas.BifrostError) {
 	parts, bifrostErr := parseVertexResourceName(taskID, "video_id", "projects", "", "locations", "", "publishers", "", "models", "", "operations", "")
 	if bifrostErr != nil {
 		return "", bifrostErr
 	}
-	return getVertexAPIBaseURL(parts[3], "v1") + "/" + strings.Join(parts[:8], "/") + ":fetchPredictOperation", nil
+	return getVertexAPIBaseURL(base, parts[3], "v1") + "/" + strings.Join(parts[:8], "/") + ":fetchPredictOperation", nil
 }
 
 // VideoRetrieve retrieves the status of a video generation operation.
@@ -2718,7 +2714,7 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	// projects/PROJECT_ID/locations/REGION/publishers/google/models/MODEL_ID/operations/OPERATION_ID
 	// Its region, not the selected key's, decides the host: keys rotate across regions on model-less polls.
 	taskID := providerUtils.StripVideoIDProviderSuffix(bifrostReq.ID, provider.GetProviderKey())
-	completeURL, idErr := vertexVideoOperationURL(taskID)
+	completeURL, idErr := vertexVideoOperationURL(provider.networkConfig.BaseURL, taskID)
 	if idErr != nil {
 		return nil, idErr
 	}
@@ -3020,7 +3016,7 @@ func stripVertexGeminiUnsupportedFieldsRaw(jsonBody []byte) []byte {
 //
 // The output destination is taken from the typed output_folder.url (a gs:// prefix).
 func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
-	baseURL, cfgErr := vertexBatchJobsBaseURL(key)
+	baseURL, cfgErr := vertexBatchJobsBaseURL(provider.networkConfig.BaseURL, key)
 	if cfgErr != nil {
 		return nil, cfgErr
 	}
@@ -3237,7 +3233,7 @@ func (provider *VertexProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 // The native Vertex page token (if any) is taken from request.PageToken; the returned
 // NextCursor carries Vertex's nextPageToken verbatim for the caller to re-encode.
 func (provider *VertexProvider) batchListByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, time.Duration, *schemas.BifrostError) {
-	baseURL, cfgErr := vertexBatchJobsBaseURL(key)
+	baseURL, cfgErr := vertexBatchJobsBaseURL(provider.networkConfig.BaseURL, key)
 	if cfgErr != nil {
 		return nil, 0, cfgErr
 	}
@@ -3349,7 +3345,7 @@ func (provider *VertexProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 // the raw response payload when raw-response capture is enabled (nil otherwise); it is a
 // GET, so there is no raw request to capture.
 func (provider *VertexProvider) vertexGetBatchJob(ctx *schemas.BifrostContext, key schemas.Key, batchID string) (*VertexBatchPredictionJob, interface{}, *schemas.BifrostError) {
-	jobURL, cfgErr := vertexBatchJobURL(key, batchID)
+	jobURL, cfgErr := vertexBatchJobURL(provider.networkConfig.BaseURL, key, batchID)
 	if cfgErr != nil {
 		return nil, nil, cfgErr
 	}
@@ -3411,7 +3407,7 @@ func (provider *VertexProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 
 // batchCancelByKey cancels a batch prediction job using a single Vertex key.
 func (provider *VertexProvider) batchCancelByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
-	jobURL, cfgErr := vertexBatchJobURL(key, request.BatchID)
+	jobURL, cfgErr := vertexBatchJobURL(provider.networkConfig.BaseURL, key, request.BatchID)
 	if cfgErr != nil {
 		return nil, cfgErr
 	}
@@ -3479,7 +3475,7 @@ func (provider *VertexProvider) BatchDelete(ctx *schemas.BifrostContext, keys []
 
 // batchDeleteByKey deletes a batch prediction job using a single Vertex key.
 func (provider *VertexProvider) batchDeleteByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
-	jobURL, cfgErr := vertexBatchJobURL(key, request.BatchID)
+	jobURL, cfgErr := vertexBatchJobURL(provider.networkConfig.BaseURL, key, request.BatchID)
 	if cfgErr != nil {
 		return nil, cfgErr
 	}
@@ -4484,7 +4480,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		// Use model-aware host based on request.Model, but URL path uses "count-tokens"
 		forceSingleRegion := resolveVertexForceSingleRegion(ctx, key)
 		effectiveRegion := getVertexEffectiveRegion(region, request.Model, forceSingleRegion)
-		baseURL := getVertexModelAwareAPIBaseURL(region, "v1", request.Model, forceSingleRegion, provider.logger)
+		baseURL := getVertexModelAwareAPIBaseURL(provider.networkConfig.BaseURL, region, "v1", request.Model, forceSingleRegion, provider.logger)
 		completeURL = fmt.Sprintf("%s/projects/%s/locations/%s/publishers/%s/models/%s%s", baseURL, projectID, effectiveRegion, "anthropic", "count-tokens", ":rawPredict")
 	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		if key.Value.GetValue() != "" {
@@ -4496,7 +4492,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 			return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 		}
 
-		completeURL = getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, ":countTokens")
+		completeURL = getCompleteURLForGeminiEndpoint(provider.networkConfig.BaseURL, request.Model, region, projectID, projectNumber, ":countTokens")
 	}
 
 	if completeURL == "" {
@@ -4691,7 +4687,7 @@ func (provider *VertexProvider) Passthrough(
 	if req.APIVersion != "" && req.APIVersion != "v1beta" && !strings.Contains(req.Path, "/models/") {
 		apiVersion = req.APIVersion
 	}
-	baseURL := getVertexAPIBaseURL(keyRegion, apiVersion)
+	baseURL := getVertexAPIBaseURL(provider.networkConfig.BaseURL, keyRegion, apiVersion)
 
 	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments (e.g. /v1/v1/...)
 	path := req.Path
@@ -4703,7 +4699,7 @@ func (provider *VertexProvider) Passthrough(
 		}
 	}
 	if rest, ok := cutVertexV1Beta1(path); ok {
-		path, baseURL = rest, getVertexAPIBaseURL(keyRegion, "v1beta1")
+		path, baseURL = rest, getVertexAPIBaseURL(provider.networkConfig.BaseURL, keyRegion, "v1beta1")
 	}
 
 	// Replace region in path with key's configured region (client path may have different region)
@@ -4860,7 +4856,7 @@ func (provider *VertexProvider) PassthroughStream(
 	if req.APIVersion != "" && req.APIVersion != "v1beta" && !strings.Contains(req.Path, "/models/") {
 		apiVersion = req.APIVersion
 	}
-	baseURL := getVertexAPIBaseURL(keyRegion, apiVersion)
+	baseURL := getVertexAPIBaseURL(provider.networkConfig.BaseURL, keyRegion, apiVersion)
 
 	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments.
 	path := req.Path
@@ -4872,7 +4868,7 @@ func (provider *VertexProvider) PassthroughStream(
 		}
 	}
 	if rest, ok := cutVertexV1Beta1(path); ok {
-		path, baseURL = rest, getVertexAPIBaseURL(keyRegion, "v1beta1")
+		path, baseURL = rest, getVertexAPIBaseURL(provider.networkConfig.BaseURL, keyRegion, "v1beta1")
 	}
 
 	// Replace region and project in path with key's configured values.
