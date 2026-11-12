@@ -19,6 +19,9 @@ const (
 	AnthropicDefaultMaxTokens = 4096
 	MinimumReasoningMaxTokens = 1024
 
+	// VertexAnthropicVersion is the anthropic_version Vertex requires in an Anthropic Messages body.
+	VertexAnthropicVersion = "vertex-2023-10-16"
+
 	// AnthropicBetaHeader is the HTTP header name used to enable Anthropic beta features.
 	AnthropicBetaHeader = "anthropic-beta"
 	// AnthropicDangerousToolUseBetaHeader activates safeguards evaluation.

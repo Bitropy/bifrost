@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"sort"
 	"strings"
@@ -3388,6 +3389,45 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
 // per-request context headers, deduplicating them.
 func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]schemas.SecretVar) []string {
+	return mergeBetaValues(providerExtraHeaders, func(yield func(string) bool) {
+		for _, key := range []schemas.BifrostContextKey{
+			schemas.BifrostContextKeyExtraHeaders,
+			schemas.BifrostContextKeyPassthroughHeaders,
+		} {
+			ctxHeaders, ok := ctx.Value(key).(map[string][]string)
+			if !ok {
+				continue
+			}
+			for k, vals := range ctxHeaders {
+				if !strings.EqualFold(k, AnthropicBetaHeader) {
+					continue
+				}
+				for _, v := range vals {
+					if !yield(v) {
+						return
+					}
+				}
+			}
+		}
+	})
+}
+
+// MergeRequestBetaHeaders collects the anthropic-beta values of a passthrough request's client
+// headers and of the provider's ExtraHeaders (header names matched case-insensitively), split on
+// commas, trimmed and deduplicated, ExtraHeaders first.
+func MergeRequestBetaHeaders(safeHeaders map[string]string, providerExtraHeaders map[string]schemas.SecretVar) []string {
+	return mergeBetaValues(providerExtraHeaders, func(yield func(string) bool) {
+		for k, v := range safeHeaders {
+			if strings.EqualFold(k, AnthropicBetaHeader) && !yield(v) {
+				return
+			}
+		}
+	})
+}
+
+// mergeBetaValues splits the anthropic-beta values of providerExtraHeaders, then client, on commas
+// and returns them trimmed and deduplicated in first-seen order.
+func mergeBetaValues(providerExtraHeaders map[string]schemas.SecretVar, client iter.Seq[string]) []string {
 	seen := make(map[string]bool)
 	var all []string
 	add := func(v string) {
@@ -3403,25 +3443,27 @@ func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]schem
 			add(v.GetValue())
 		}
 	}
-
-	for _, key := range []schemas.BifrostContextKey{
-		schemas.BifrostContextKeyExtraHeaders,
-		schemas.BifrostContextKeyPassthroughHeaders,
-	} {
-		ctxHeaders, ok := ctx.Value(key).(map[string][]string)
-		if !ok {
-			continue
-		}
-		for k, vals := range ctxHeaders {
-			if !strings.EqualFold(k, AnthropicBetaHeader) {
-				continue
-			}
-			for _, v := range vals {
-				add(v)
-			}
-		}
+	for v := range client {
+		add(v)
 	}
 	return all
+}
+
+// ClaudeMessagesBetas merges a ClaudeMessages request's betas (MergeRequestBetaHeaders) and filters
+// them for provider (FilterBetaHeadersForProvider). dropped is merged minus kept, nil when the
+// filter removed nothing.
+func ClaudeMessagesBetas(safeHeaders map[string]string, providerExtraHeaders map[string]schemas.SecretVar, provider schemas.ModelProvider, overrides map[string]bool) (kept, dropped []string) {
+	merged := MergeRequestBetaHeaders(safeHeaders, providerExtraHeaders)
+	if len(merged) == 0 {
+		return nil, nil
+	}
+	kept = FilterBetaHeadersForProvider(merged, provider, overrides)
+	for _, b := range merged {
+		if !slices.Contains(kept, b) {
+			dropped = append(dropped, b)
+		}
+	}
+	return kept, dropped
 }
 
 // clampToModelOutputCeiling lowers maxTokens to the target model's max_output_tokens: the datasheet row, else the static Claude table.

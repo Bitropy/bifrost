@@ -21,10 +21,6 @@ import (
 // request — labels included — is echoed back in each output line).
 const vertexBatchCustomIDLabel = "bifrost_custom_id"
 
-// vertexAnthropicBatchVersion is the anthropic_version required by Claude-on-Vertex
-// batch instances (same value the chat path injects via the Vertex build config).
-const vertexAnthropicBatchVersion = "vertex-2023-10-16"
-
 // vertexJobStateToBatchStatus maps Vertex JOB_STATE_* values to Bifrost batch statuses.
 func vertexJobStateToBatchStatus(state string) schemas.BatchStatus {
 	switch state {
@@ -338,7 +334,7 @@ func vertexAnthropicBatchInstance(ctx *schemas.BifrostContext, body map[string]i
 	}
 	delete(out, "model")
 	if _, ok := out["anthropic_version"]; !ok {
-		out["anthropic_version"] = vertexAnthropicBatchVersion
+		out["anthropic_version"] = anthropic.VertexAnthropicVersion
 	}
 	return out, nil
 }
