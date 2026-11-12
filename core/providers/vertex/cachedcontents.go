@@ -117,8 +117,8 @@ func (provider *VertexProvider) vertexAuthHeaders(req *fasthttp.Request, key sch
 
 // vertexCachedContentBaseURL builds /v1/projects/{p}/locations/{l}/cachedContents
 // using the existing helper from utils.go.
-func vertexCachedContentBaseURL(region, projectID string) string {
-	return fmt.Sprintf("%s/cachedContents", getVertexProjectLocationURL(region, "v1", projectID))
+func vertexCachedContentBaseURL(base, region, projectID string) string {
+	return fmt.Sprintf("%s/cachedContents", getVertexProjectLocationURL(base, region, "v1", projectID))
 }
 
 // CachedContentCreate creates a new cached content via Vertex AI's
@@ -178,7 +178,7 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	requestURL := vertexCachedContentBaseURL(region, projectID)
+	requestURL := vertexCachedContentBaseURL(provider.networkConfig.BaseURL, region, projectID)
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
@@ -240,7 +240,7 @@ func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	requestURL := vertexCachedContentBaseURL(region, projectID)
+	requestURL := vertexCachedContentBaseURL(provider.networkConfig.BaseURL, region, projectID)
 	queryArgs := url.Values{}
 	if request.PageSize > 0 {
 		queryArgs.Set("pageSize", strconv.Itoa(request.PageSize))
@@ -326,7 +326,7 @@ func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 	if idErr != nil {
 		return nil, 0, idErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", getVertexAPIBaseURL(region, "v1"), name)
+	requestURL := fmt.Sprintf("%s/%s", getVertexAPIBaseURL(provider.networkConfig.BaseURL, region, "v1"), name)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
@@ -429,7 +429,7 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 	if idErr != nil {
 		return nil, 0, idErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", getVertexAPIBaseURL(region, "v1"), name)
+	requestURL := fmt.Sprintf("%s/%s", getVertexAPIBaseURL(provider.networkConfig.BaseURL, region, "v1"), name)
 	if len(updateMaskFields) > 0 {
 		requestURL += "?updateMask=" + strings.Join(updateMaskFields, ",")
 	}
@@ -522,7 +522,7 @@ func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 	if idErr != nil {
 		return nil, 0, idErr
 	}
-	requestURL := fmt.Sprintf("%s/%s", getVertexAPIBaseURL(region, "v1"), name)
+	requestURL := fmt.Sprintf("%s/%s", getVertexAPIBaseURL(provider.networkConfig.BaseURL, region, "v1"), name)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)

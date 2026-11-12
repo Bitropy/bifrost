@@ -49,7 +49,7 @@ func vertexJobStateToBatchStatus(state string) schemas.BatchStatus {
 
 // vertexBatchJobsBaseURL returns ".../v1/projects/{project}/locations/{region}" for the
 // key's configured project and region. Batch prediction requires a regional endpoint.
-func vertexBatchJobsBaseURL(key schemas.Key) (string, *schemas.BifrostError) {
+func vertexBatchJobsBaseURL(base string, key schemas.Key) (string, *schemas.BifrostError) {
 	if key.VertexKeyConfig == nil {
 		return "", providerUtils.NewConfigurationError("vertex key config is not set")
 	}
@@ -61,20 +61,20 @@ func vertexBatchJobsBaseURL(key schemas.Key) (string, *schemas.BifrostError) {
 	if region == "" {
 		return "", providerUtils.NewConfigurationError("region is required for batch prediction")
 	}
-	return getVertexProjectLocationURL(region, "v1", projectID), nil
+	return getVertexProjectLocationURL(base, region, "v1", projectID), nil
 }
 
 // vertexBatchJobURL resolves a Bifrost batch ID (bare job ID or full resource name)
 // to the job's REST URL.
-func vertexBatchJobURL(key schemas.Key, batchID string) (string, *schemas.BifrostError) {
+func vertexBatchJobURL(base string, key schemas.Key, batchID string) (string, *schemas.BifrostError) {
 	if strings.HasPrefix(batchID, "projects/") {
 		parts, bifrostErr := parseVertexResourceName(batchID, "batch_id", "projects", "", "locations", "", "batchPredictionJobs", "")
 		if bifrostErr != nil {
 			return "", bifrostErr
 		}
-		return getVertexAPIBaseURL(parts[3], "v1") + "/" + strings.Join(parts, "/"), nil
+		return getVertexAPIBaseURL(base, parts[3], "v1") + "/" + strings.Join(parts, "/"), nil
 	}
-	base, cfgErr := vertexBatchJobsBaseURL(key)
+	base, cfgErr := vertexBatchJobsBaseURL(base, key)
 	if cfgErr != nil {
 		return "", cfgErr
 	}
