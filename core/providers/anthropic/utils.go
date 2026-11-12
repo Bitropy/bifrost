@@ -3449,11 +3449,17 @@ func mergeBetaValues(providerExtraHeaders map[string]schemas.SecretVar, client i
 	return all
 }
 
-// ClaudeMessagesBetas merges a ClaudeMessages request's betas (MergeRequestBetaHeaders) and filters
-// them for provider (FilterBetaHeadersForProvider). dropped is merged minus kept, nil when the
-// filter removed nothing.
-func ClaudeMessagesBetas(safeHeaders map[string]string, providerExtraHeaders map[string]schemas.SecretVar, provider schemas.ModelProvider, overrides map[string]bool) (kept, dropped []string) {
-	merged := MergeRequestBetaHeaders(safeHeaders, providerExtraHeaders)
+// ClaudeMessagesBetas merges a ClaudeMessages request's betas (the provider's ExtraHeaders and the
+// context's extra headers as MergeBetaHeaders reads them, then the client's) and filters them for
+// provider (FilterBetaHeadersForProvider). dropped is merged minus kept, nil when the filter removed
+// nothing.
+func ClaudeMessagesBetas(ctx context.Context, safeHeaders map[string]string, providerExtraHeaders map[string]schemas.SecretVar, provider schemas.ModelProvider, overrides map[string]bool) (kept, dropped []string) {
+	merged := MergeBetaHeaders(ctx, providerExtraHeaders)
+	for _, b := range MergeRequestBetaHeaders(safeHeaders, nil) {
+		if !slices.Contains(merged, b) {
+			merged = append(merged, b)
+		}
+	}
 	if len(merged) == 0 {
 		return nil, nil
 	}

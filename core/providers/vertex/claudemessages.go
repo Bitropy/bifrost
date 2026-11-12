@@ -37,8 +37,8 @@ func (provider *VertexProvider) claudeMessagesURL(ctx *schemas.BifrostContext, k
 // setClaudeMessagesBody puts the Vertex form of a ClaudeMessages body (claudeMessagesBody) on
 // fasthttpReq, after the headers, and returns the betas Vertex does not support. The body is never
 // regex-rewritten.
-func (provider *VertexProvider) setClaudeMessagesBody(fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest) []string {
-	kept, dropped := anthropic.ClaudeMessagesBetas(req.SafeHeaders, provider.networkConfig.ExtraHeaders, schemas.Vertex, provider.networkConfig.BetaHeaderOverrides)
+func (provider *VertexProvider) setClaudeMessagesBody(ctx *schemas.BifrostContext, fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest) []string {
+	kept, dropped := anthropic.ClaudeMessagesBetas(ctx, req.SafeHeaders, provider.networkConfig.ExtraHeaders, schemas.Vertex, provider.networkConfig.BetaHeaderOverrides)
 	// Vertex reads betas from the body only.
 	fasthttpReq.Header.Del(anthropic.AnthropicBetaHeader)
 	fasthttpReq.SetBodyRaw(claudeMessagesBody(req.Body, kept))

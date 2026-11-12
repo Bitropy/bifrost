@@ -7,6 +7,15 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// passthroughPolicyRoute is the version and path a policy matches: a ClaudeMessages request ignores
+// its Path and is checked as the Anthropic Messages route the client called, on every provider.
+func passthroughPolicyRoute(req *schemas.BifrostPassthroughRequest) (apiVersion, path string) {
+	if req.ClaudeMessages {
+		return "", "/v1/messages"
+	}
+	return req.APIVersion, req.Path
+}
+
 // passthroughRouteAllowed reports whether a provider's passthrough policy forwards req.
 // Host-backed routes (UpstreamURL) are not governed by the provider policy: they carry their
 // own fixed route list and the caller's credential.
@@ -14,8 +23,9 @@ func passthroughRouteAllowed(policy *schemas.PassthroughPolicy, req *schemas.Bif
 	if policy == nil || req.UpstreamURL != "" {
 		return true
 	}
+	apiVersion, path := passthroughPolicyRoute(req)
 	for i := range policy.AllowedRoutes {
-		if policy.AllowedRoutes[i].Matches(req.Method, req.APIVersion, req.Path) {
+		if policy.AllowedRoutes[i].Matches(req.Method, apiVersion, path) {
 			return true
 		}
 	}
@@ -25,9 +35,9 @@ func passthroughRouteAllowed(policy *schemas.PassthroughPolicy, req *schemas.Bif
 // newPassthroughRouteNotAllowedError names the route as the client called it, so the
 // operator can copy it into the provider's allowed routes.
 func newPassthroughRouteNotAllowedError(provider schemas.ModelProvider, requestType schemas.RequestType, req *schemas.BifrostPassthroughRequest) schemas.BifrostError {
-	routePath := req.Path
-	if req.APIVersion != "" {
-		routePath = "/" + req.APIVersion + req.Path
+	apiVersion, routePath := passthroughPolicyRoute(req)
+	if apiVersion != "" {
+		routePath = "/" + apiVersion + routePath
 	}
 	return schemas.BifrostError{
 		IsBifrostError: true,
