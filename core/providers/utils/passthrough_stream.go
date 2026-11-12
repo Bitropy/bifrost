@@ -47,6 +47,8 @@ type PassthroughStreamParams struct {
 	// Finalize, when set, completes the final response of a successful stream once it ends: it may
 	// name the model the stream reported running, or move the observed usage onto a provider job.
 	Finalize func(resp *schemas.BifrostPassthroughResponse)
+	// DroppedBetas is stamped on every chunk (BifrostPassthroughResponse.DroppedBetas).
+	DroppedBetas []string
 }
 
 // StreamPassthrough runs the shared passthrough streaming loop. It forwards each raw upstream
@@ -218,6 +220,7 @@ func streamPassthrough(
 				Headers:          params.Headers,
 				ExtraFields:      extraFields,
 				PassthroughUsage: usage,
+				DroppedBetas:     params.DroppedBetas,
 			}
 			if params.Finalize != nil && success {
 				params.Finalize(final)
@@ -238,10 +241,11 @@ func streamPassthrough(
 				// Forward the raw chunk to the client unchanged.
 				ProcessAndSendResponse(ctx, postHookRunner, &schemas.BifrostResponse{
 					PassthroughResponse: &schemas.BifrostPassthroughResponse{
-						StatusCode:  params.StatusCode,
-						Headers:     params.Headers,
-						Body:        chunk,
-						ExtraFields: extraFields,
+						StatusCode:   params.StatusCode,
+						Headers:      params.Headers,
+						Body:         chunk,
+						ExtraFields:  extraFields,
+						DroppedBetas: params.DroppedBetas,
 					},
 				}, ch, postHookSpanFinalizer)
 

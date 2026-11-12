@@ -3755,15 +3755,57 @@ func (provider *AzureProvider) StreamedPassthroughSupport() (requestBody, respon
 	return true, true
 }
 
+// ClaudeMessagesSupport declares that Passthrough serves ClaudeMessages requests.
+func (provider *AzureProvider) ClaudeMessagesSupport() bool {
+	return true
+}
+
+// passthroughRoute returns the upstream URL and path of req. A ClaudeMessages request goes to the
+// deployment's Anthropic Messages endpoint, which takes no api-version and no client query.
+func (provider *AzureProvider) passthroughRoute(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (string, string, *schemas.BifrostError) {
+	path, rawQuery := req.Path, req.RawQuery
+	if req.ClaudeMessages {
+		path, rawQuery = "/anthropic/v1/messages", ""
+	}
+	url, err := provider.buildPassthroughURL(ctx, key, path, rawQuery)
+	if err != nil {
+		return "", "", providerUtils.NewConfigurationError(fmt.Sprintf("failed to build passthrough URL: %s", err.Error()))
+	}
+	return url, path, nil
+}
+
+// setClaudeMessagesHeaders sets anthropic-version (the client's, else the alias's or default) and
+// the betas Azure supports on a ClaudeMessages request, and returns the betas it dropped.
+func (provider *AzureProvider) setClaudeMessagesHeaders(ctx *schemas.BifrostContext, fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest) []string {
+	version := ""
+	for k, v := range req.SafeHeaders {
+		if strings.EqualFold(k, "anthropic-version") && v != "" {
+			version = v
+		}
+	}
+	if version == "" {
+		version = resolveAnthropicVersion(ctx)
+	}
+	fasthttpReq.Header.Set("anthropic-version", version)
+
+	kept, dropped := anthropic.ClaudeMessagesBetas(req.SafeHeaders, provider.networkConfig.ExtraHeaders, schemas.Azure, provider.networkConfig.BetaHeaderOverrides)
+	if len(kept) > 0 {
+		fasthttpReq.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(kept, ","))
+	} else {
+		fasthttpReq.Header.Del(anthropic.AnthropicBetaHeader)
+	}
+	return dropped
+}
+
 // Passthrough forwards a raw request to Azure's API without any transformation.
 func (provider *AzureProvider) Passthrough(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	url, err := provider.buildPassthroughURL(ctx, key, req.Path, req.RawQuery)
-	if err != nil {
-		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("failed to build passthrough URL: %s", err.Error()))
+	url, path, urlErr := provider.passthroughRoute(ctx, key, req)
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
@@ -3778,18 +3820,26 @@ func (provider *AzureProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, schemas.IsAnthropicModelFamily(ctx, req.Model))
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, req.ClaudeMessages || schemas.IsAnthropicModelFamily(ctx, req.Model))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	for k, v := range authHeaders {
 		fasthttpReq.Header.Set(k, v)
 	}
+	var droppedBetas []string
+	if req.ClaudeMessages {
+		droppedBetas = provider.setClaudeMessagesHeaders(ctx, fasthttpReq, req)
+	}
 
 	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
 
 	if req.StreamResponseBody {
-		return providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, req.Path, provider.networkConfig.StreamIdleTimeoutInSeconds)
+		streamed, bifrostErr := providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, path, provider.networkConfig.StreamIdleTimeoutInSeconds)
+		if streamed != nil {
+			streamed.DroppedBetas = droppedBetas
+		}
+		return streamed, bifrostErr
 	}
 
 	resp := fasthttp.AcquireResponse()
@@ -3810,7 +3860,7 @@ func (provider *AzureProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = extractAzurePassthroughUsage(req.Method, req.Path, req.Body, body, req.Model)
+		passthroughUsage = extractAzurePassthroughUsage(req, path, body)
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -3820,9 +3870,10 @@ func (provider *AzureProvider) Passthrough(
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: headers,
-			PassthroughPath:         req.Path,
+			PassthroughPath:         path,
 		},
 		PassthroughUsage: passthroughUsage,
+		DroppedBetas:     droppedBetas,
 	}
 
 	return bifrostResponse, nil
@@ -3837,9 +3888,9 @@ func (provider *AzureProvider) PassthroughStream(
 	key schemas.Key,
 	req *schemas.BifrostPassthroughRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	url, err := provider.buildPassthroughURL(ctx, key, req.Path, req.RawQuery)
-	if err != nil {
-		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("failed to build passthrough URL: %s", err.Error()))
+	url, path, urlErr := provider.passthroughRoute(ctx, key, req)
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
@@ -3858,12 +3909,16 @@ func (provider *AzureProvider) PassthroughStream(
 
 	fasthttpReq.Header.Set("Connection", "close")
 
-	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, schemas.IsAnthropicModelFamily(ctx, req.Model))
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, req.ClaudeMessages || schemas.IsAnthropicModelFamily(ctx, req.Model))
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	for k, v := range authHeaders {
 		fasthttpReq.Header.Set(k, v)
+	}
+	var droppedBetas []string
+	if req.ClaudeMessages {
+		droppedBetas = provider.setClaudeMessagesHeaders(ctx, fasthttpReq, req)
 	}
 
 	fasthttpReq.SetBody(req.Body)
@@ -3873,7 +3928,7 @@ func (provider *AzureProvider) PassthroughStream(
 
 	startTime := time.Now()
 
-	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -3907,7 +3962,7 @@ func (provider *AzureProvider) PassthroughStream(
 	}
 
 	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
-	if schemas.IsAnthropicModelFamily(ctx, req.Model) {
+	if req.ClaudeMessages || schemas.IsAnthropicModelFamily(ctx, req.Model) {
 		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}
 	}
 	return providerUtils.StreamPassthrough(
@@ -3915,11 +3970,12 @@ func (provider *AzureProvider) PassthroughStream(
 		providerUtils.PassthroughStreamParams{
 			StatusCode:       resp.StatusCode(),
 			Headers:          headers,
-			Path:             req.Path,
+			Path:             path,
 			RawRequest:       req.Body,
 			CancellationBody: providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
 			StartTime:        startTime,
 			Logger:           provider.logger,
+			DroppedBetas:     droppedBetas,
 			HasUsage: func(event []byte) bool {
 				if anthropicUsage != nil {
 					return anthropic.HasAnthropicPassthroughUsage(event)
@@ -3930,7 +3986,7 @@ func (provider *AzureProvider) PassthroughStream(
 				if anthropicUsage != nil {
 					return anthropicUsage.ObserveEvent(event)
 				}
-				return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)
+				return openai.ExtractOpenAIPassthroughUsage(req.Method, path, req.Body, event)
 			},
 		},
 	), nil
@@ -3985,9 +4041,9 @@ func (provider *AzureProvider) buildPassthroughURL(ctx *schemas.BifrostContext, 
 // passthrough request targets. Azure serves both OpenAI and Azure-hosted Anthropic models,
 // so Anthropic routes (e.g. /messages) must use the Anthropic extractor — otherwise their
 // usage is dropped and budgets/logging stay wrong.
-func extractAzurePassthroughUsage(method, path string, reqBody, body []byte, model string) *schemas.BifrostPassthroughUsage {
-	if schemas.IsAnthropicModel(model) {
-		return anthropic.ExtractAnthropicPassthroughUsage(path, reqBody, body)
+func extractAzurePassthroughUsage(req *schemas.BifrostPassthroughRequest, path string, body []byte) *schemas.BifrostPassthroughUsage {
+	if req.ClaudeMessages || schemas.IsAnthropicModel(req.Model) {
+		return anthropic.ExtractAnthropicPassthroughUsage(path, req.Body, body)
 	}
-	return openai.ExtractOpenAIPassthroughUsage(method, path, reqBody, body)
+	return openai.ExtractOpenAIPassthroughUsage(req.Method, path, req.Body, body)
 }

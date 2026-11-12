@@ -150,6 +150,17 @@ type BifrostPassthroughRequest struct {
 	BodyReader         io.Reader // sent instead of Body as it is read, one attempt (see Bifrost.Passthrough)
 	BodySize           int64     // BodyReader's length; negative = unknown, sent chunked
 	StreamResponseBody bool      // return a 2xx body as BifrostPassthroughResponse.BodyStream
+
+	// ClaudeMessages sends Body to the provider's Anthropic Messages endpoint for Model; Path is
+	// ignored. Only providers implementing ClaudeMessagesProvider accept it (see Bifrost.Passthrough).
+	ClaudeMessages bool
+}
+
+// ClaudeMessagesProvider is implemented by a provider that serves an Anthropic Messages body for a
+// Claude model (BifrostPassthroughRequest.ClaudeMessages). Bifrost.Passthrough and
+// Bifrost.PassthroughStream refuse ClaudeMessages on any other provider.
+type ClaudeMessagesProvider interface {
+	ClaudeMessagesSupport() bool
 }
 
 // StreamedPassthroughProvider is implemented by a provider whose Passthrough sends a BodyReader as it
@@ -208,6 +219,10 @@ type BifrostPassthroughResponse struct {
 	ProviderJob      *BifrostPassthroughJob   // provider-side run the response reports on; its usage is billed at settlement, not on this request
 
 	BodyStream io.ReadCloser // 2xx body of a StreamResponseBody request; the caller must Close it
+
+	// DroppedBetas are the anthropic-beta values a ClaudeMessages request carried that the target
+	// provider does not support and that were not sent; nil when none. Set on every stream chunk.
+	DroppedBetas []string
 }
 
 // BifrostPassthroughJob is a run the provider keeps and reports on every read, such as a Gemini

@@ -3424,6 +3424,52 @@ func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]schem
 	return all
 }
 
+// MergeRequestBetaHeaders collects the anthropic-beta values of a passthrough request's client
+// headers and of the provider's ExtraHeaders (header names matched case-insensitively), split on
+// commas, trimmed and deduplicated, ExtraHeaders first.
+func MergeRequestBetaHeaders(safeHeaders map[string]string, providerExtraHeaders map[string]schemas.SecretVar) []string {
+	var all []string
+	add := func(v string) {
+		for part := range strings.SplitSeq(v, ",") {
+			if t := strings.TrimSpace(part); t != "" && !slices.Contains(all, t) {
+				all = append(all, t)
+			}
+		}
+	}
+	for k, v := range providerExtraHeaders {
+		if strings.EqualFold(k, AnthropicBetaHeader) {
+			add(v.GetValue())
+		}
+	}
+	for k, v := range safeHeaders {
+		if strings.EqualFold(k, AnthropicBetaHeader) {
+			add(v)
+		}
+	}
+	return all
+}
+
+// ClaudeMessagesBetas merges a ClaudeMessages request's betas (MergeRequestBetaHeaders) and filters
+// them for provider (FilterBetaHeadersForProvider). dropped is merged minus kept, nil when the
+// filter removed nothing.
+func ClaudeMessagesBetas(safeHeaders map[string]string, providerExtraHeaders map[string]schemas.SecretVar, provider schemas.ModelProvider, overrides map[string]bool) (kept, dropped []string) {
+	merged := MergeRequestBetaHeaders(safeHeaders, providerExtraHeaders)
+	if len(merged) == 0 {
+		return nil, nil
+	}
+	kept = FilterBetaHeadersForProvider(merged, provider, overrides)
+	// The filter keeps merged's order and adds nothing, so kept is a subsequence of merged.
+	j := 0
+	for _, b := range merged {
+		if j < len(kept) && kept[j] == b {
+			j++
+			continue
+		}
+		dropped = append(dropped, b)
+	}
+	return kept, dropped
+}
+
 // clampToModelOutputCeiling lowers maxTokens to the target model's max_output_tokens: the datasheet row, else the static Claude table.
 func clampToModelOutputCeiling(caps schemas.ModelCaps, maxTokens int) int {
 	if ceiling := caps.MaxOutputTokens(providerUtils.KnownClaudeMaxOutputTokens(caps.Model())); ceiling > 0 && maxTokens > ceiling {

@@ -242,6 +242,15 @@ func (bifrost *Bifrost) checkStreamedPassthrough(provider schemas.ModelProvider,
 	return nil
 }
 
+// checkClaudeMessages refuses ClaudeMessages on a provider that does not declare it
+// (schemas.ClaudeMessagesProvider).
+func (bifrost *Bifrost) checkClaudeMessages(provider schemas.ModelProvider) *schemas.BifrostError {
+	if p, ok := bifrost.getProviderByKey(provider).(schemas.ClaudeMessagesProvider); ok && p.ClaudeMessagesSupport() {
+		return nil
+	}
+	return providerUtils.NewBifrostBadRequestError(fmt.Sprintf("Claude Messages passthrough is not supported by the %s provider", provider))
+}
+
 // signalClosing signals the closing of the provider queue.
 // This is lock-free: uses atomic store and sync.Once to safely signal shutdown.
 func (pq *ProviderQueue) signalClosing() {
@@ -3288,6 +3297,11 @@ func (bifrost *Bifrost) Passthrough(
 			return nil, err
 		}
 	}
+	if req.ClaudeMessages {
+		if err := bifrost.checkClaudeMessages(provider); err != nil {
+			return nil, err
+		}
+	}
 
 	req.Provider = provider
 
@@ -3326,6 +3340,11 @@ func (bifrost *Bifrost) PassthroughStream(
 
 	if req.BodyReader != nil || req.StreamResponseBody {
 		return nil, providerUtils.NewBifrostBadRequestError("passthrough streams take a byte body; BodyReader and StreamResponseBody are for Passthrough")
+	}
+	if req.ClaudeMessages {
+		if err := bifrost.checkClaudeMessages(provider); err != nil {
+			return nil, err
+		}
 	}
 
 	req.Provider = provider

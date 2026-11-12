@@ -3432,6 +3432,20 @@ func (provider *AnthropicProvider) StreamedPassthroughSupport() (requestBody, re
 	return true, true
 }
 
+// ClaudeMessagesSupport declares that Passthrough serves ClaudeMessages requests.
+func (provider *AnthropicProvider) ClaudeMessagesSupport() bool {
+	return true
+}
+
+// passthroughPath is the upstream path of req: the Messages endpoint for a ClaudeMessages request.
+// Its betas go out as today, unfiltered, so the native path does no extra work.
+func passthroughPath(req *schemas.BifrostPassthroughRequest) string {
+	if req.ClaudeMessages {
+		return "/v1/messages"
+	}
+	return req.Path
+}
+
 func (provider *AnthropicProvider) Passthrough(
 	ctx *schemas.BifrostContext,
 	key schemas.Key,
@@ -3444,7 +3458,8 @@ func (provider *AnthropicProvider) Passthrough(
 		return nil, keyErr
 	}
 
-	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL, req.Path, req.RawQuery)
+	path := passthroughPath(req)
+	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL, path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
@@ -3470,7 +3485,7 @@ func (provider *AnthropicProvider) Passthrough(
 	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
 
 	if req.StreamResponseBody {
-		streamed, bifrostErr := providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, req.Path, provider.networkConfig.StreamIdleTimeoutInSeconds)
+		streamed, bifrostErr := providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, path, provider.networkConfig.StreamIdleTimeoutInSeconds)
 		if bifrostErr == nil {
 			provider.dropRejectedToken(key, streamed.StatusCode)
 		}
@@ -3496,7 +3511,7 @@ func (provider *AnthropicProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		passthroughUsage = ExtractAnthropicPassthroughUsage(req.Path, req.Body, body)
+		passthroughUsage = ExtractAnthropicPassthroughUsage(path, req.Body, body)
 	}
 
 	bifrostResponse := &schemas.BifrostPassthroughResponse{
@@ -3506,7 +3521,7 @@ func (provider *AnthropicProvider) Passthrough(
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: headers,
-			PassthroughPath:         req.Path,
+			PassthroughPath:         path,
 		},
 		PassthroughUsage: passthroughUsage,
 	}
@@ -3528,7 +3543,8 @@ func (provider *AnthropicProvider) PassthroughStream(
 		return nil, keyErr
 	}
 
-	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL, req.Path, req.RawQuery)
+	path := passthroughPath(req)
+	url, err := providerUtils.BuildPassthroughURL(provider.networkConfig.BaseURL, path, req.RawQuery)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
@@ -3594,7 +3610,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
-	strippedPath := req.Path
+	strippedPath := path
 	if idx := strings.IndexByte(strippedPath, '?'); idx >= 0 {
 		strippedPath = strippedPath[:idx]
 	}
@@ -3607,7 +3623,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 		providerUtils.PassthroughStreamParams{
 			StatusCode:       resp.StatusCode(),
 			Headers:          headers,
-			Path:             req.Path,
+			Path:             path,
 			RawRequest:       req.Body,
 			CancellationBody: req.Body,
 			StartTime:        startTime,
@@ -3617,7 +3633,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 				if messagesUsage != nil {
 					return messagesUsage.ObserveEvent(event)
 				}
-				return ExtractAnthropicPassthroughUsage(req.Path, req.Body, event)
+				return ExtractAnthropicPassthroughUsage(path, req.Body, event)
 			},
 		},
 	), nil
