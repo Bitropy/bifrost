@@ -47,7 +47,7 @@ func TestExtractAzurePassthroughUsage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			u := extractAzurePassthroughUsage(&schemas.BifrostPassthroughRequest{Method: tt.method, Model: tt.model}, tt.path, []byte(tt.body))
+			u := extractAzurePassthroughUsage(schemas.IsAnthropicModel(tt.model), tt.method, tt.path, nil, []byte(tt.body))
 			tt.check(t, u)
 		})
 	}

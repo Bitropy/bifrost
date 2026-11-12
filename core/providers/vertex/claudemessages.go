@@ -14,29 +14,43 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// vertexAnthropicVersion is the anthropic_version Vertex requires in an Anthropic Messages body.
-const vertexAnthropicVersion = "vertex-2023-10-16"
-
 // ClaudeMessagesSupport declares that Passthrough serves ClaudeMessages requests.
 func (provider *VertexProvider) ClaudeMessagesSupport() bool {
 	return true
 }
 
-// passthroughURL returns the upstream URL of a passthrough request and, for a Google publisher
-// path on an API key, the key query to append (empty means OAuth). A ClaudeMessages request goes
-// to the Anthropic publisher's method (":rawPredict" or ":streamRawPredict") for the resolved
-// model; the client's path and query are ignored.
-func (provider *VertexProvider) passthroughURL(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest, projectID, keyRegion, claudeMethod string) (string, string, *schemas.BifrostError) {
-	if req.ClaudeMessages {
-		// req.Model may be a routing name that key selection resolved through an alias; the
-		// alias's ModelID is the Vertex model to call.
-		model := req.Model
-		if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.ModelID != "" {
-			model = ra.Config.ModelID
-		}
-		return getVertexModelAwarePublisherModelURL(provider.networkConfig.BaseURL, keyRegion, "v1", projectID, "anthropic", model, claudeMethod, resolveVertexForceSingleRegion(ctx, key), provider.logger), "", nil
+// claudeMessagesURL returns the Anthropic publisher URL of a ClaudeMessages request (method is
+// ":rawPredict" or ":streamRawPredict") for the resolved model, and its path; the client's path and
+// query are ignored.
+func (provider *VertexProvider) claudeMessagesURL(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest, projectID, keyRegion, method string) (string, string) {
+	// req.Model may be a routing name that key selection resolved through an alias; the
+	// alias's ModelID is the Vertex model to call.
+	model := req.Model
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.ModelID != "" {
+		model = ra.Config.ModelID
 	}
+	requestURL := getVertexModelAwarePublisherModelURL(provider.networkConfig.BaseURL, keyRegion, "v1", projectID, "anthropic", model, method, resolveVertexForceSingleRegion(ctx, key), provider.logger)
+	path := requestURL
+	if u, err := url.Parse(requestURL); err == nil {
+		path = u.Path
+	}
+	return requestURL, path
+}
 
+// setClaudeMessagesBody puts the Vertex form of a ClaudeMessages body (claudeMessagesBody) on
+// fasthttpReq, after the headers, and returns the betas Vertex does not support. The body is never
+// regex-rewritten.
+func (provider *VertexProvider) setClaudeMessagesBody(fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest) []string {
+	kept, dropped := anthropic.ClaudeMessagesBetas(req.SafeHeaders, provider.networkConfig.ExtraHeaders, schemas.Vertex, provider.networkConfig.BetaHeaderOverrides)
+	// Vertex reads betas from the body only.
+	fasthttpReq.Header.Del(anthropic.AnthropicBetaHeader)
+	fasthttpReq.SetBodyRaw(claudeMessagesBody(req.Body, kept))
+	return dropped
+}
+
+// passthroughURL returns the upstream URL of a generic passthrough request and, for a Google
+// publisher path on an API key, the key query to append (empty means OAuth).
+func (provider *VertexProvider) passthroughURL(key schemas.Key, req *schemas.BifrostPassthroughRequest, projectID, keyRegion string) (string, string, *schemas.BifrostError) {
 	// Model calls stay on v1 as they always have; other resources (interactions) use the client's version.
 	apiVersion := "v1"
 	if req.APIVersion != "" && req.APIVersion != "v1beta" && !strings.Contains(req.Path, "/models/") {
@@ -81,16 +95,9 @@ func (provider *VertexProvider) passthroughURL(ctx *schemas.BifrostContext, key 
 	return requestURL, authQuery, nil
 }
 
-// setPassthroughBody puts req's body on fasthttpReq, after the headers. A ClaudeMessages body is
-// adapted by claudeMessagesBody and never regex-rewritten; it returns the betas Vertex dropped.
-func (provider *VertexProvider) setPassthroughBody(fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest, projectID, keyRegion string) []string {
-	if req.ClaudeMessages {
-		kept, dropped := anthropic.ClaudeMessagesBetas(req.SafeHeaders, provider.networkConfig.ExtraHeaders, schemas.Vertex, provider.networkConfig.BetaHeaderOverrides)
-		// Vertex reads betas from the body only.
-		fasthttpReq.Header.Del(anthropic.AnthropicBetaHeader)
-		fasthttpReq.SetBodyRaw(claudeMessagesBody(req.Body, kept))
-		return dropped
-	}
+// setPassthroughBody puts a generic passthrough body on fasthttpReq, after the headers, with the
+// Vertex placeholders of a JSON body rewritten.
+func setPassthroughBody(fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest, projectID, keyRegion string) {
 	if len(req.Body) > 0 && strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
 		// Replace placeholder project/location and expand short-form model names.
 		if rewritten, changed := rewritePassthroughBody(req.Body, projectID, keyRegion); changed {
@@ -101,7 +108,6 @@ func (provider *VertexProvider) setPassthroughBody(fasthttpReq *fasthttp.Request
 	} else if len(req.Body) > 0 {
 		fasthttpReq.SetBody(req.Body)
 	}
-	return nil
 }
 
 // passthroughWireFormat is the API req speaks: Anthropic Messages for a ClaudeMessages request,
@@ -129,7 +135,7 @@ func claudeMessagesBody(body []byte, betas []string) []byte {
 	if len(betas) > 0 {
 		betaJSON, _ = json.Marshal(betas) // a []string always marshals
 	}
-	out := make([]byte, 0, len(body)+len(`,"anthropic_version":""`)+len(vertexAnthropicVersion)+len(`,"anthropic_beta":`)+len(betaJSON))
+	out := make([]byte, 0, len(body)+len(`,"anthropic_version":""`)+len(anthropic.VertexAnthropicVersion)+len(`,"anthropic_beta":`)+len(betaJSON))
 	out = append(out, '{')
 	hasVersion := false
 	parsed.ForEach(func(k, v gjson.Result) bool {
@@ -150,7 +156,7 @@ func claudeMessagesBody(body []byte, betas []string) []byte {
 		if len(out) > 1 {
 			out = append(out, ',')
 		}
-		out = append(out, `"anthropic_version":"`+vertexAnthropicVersion+`"`...)
+		out = append(out, `"anthropic_version":"`+anthropic.VertexAnthropicVersion+`"`...)
 	}
 	if betaJSON != nil {
 		if len(out) > 1 {

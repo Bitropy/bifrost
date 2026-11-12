@@ -78,22 +78,7 @@ func TestVertexClaudeMessagesPassthrough(t *testing.T) {
 		_, _ = io.WriteString(w, `{"type":"message","usage":{"input_tokens":7,"output_tokens":5}}`)
 	}))
 	t.Cleanup(srv.Close)
-
-	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
-		BaseURL: srv.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 5,
-		ExtraHeaders: map[string]schemas.SecretVar{"Anthropic-Beta": *schemas.NewSecretVar("context-1m-2025-08-07")},
-	}}
-	config.CheckAndSetDefaults()
-	provider, err := NewVertexProvider(config, vertexEndpointTestLogger{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(provider.client.CloseIdleConnections)
-	// A key Value must not switch an Anthropic publisher call to the API-key query.
-	key := schemas.Key{Value: *schemas.NewSecretVar("api-key"), VertexKeyConfig: &schemas.VertexKeyConfig{
-		ProjectID: *schemas.NewSecretVar("p"), Region: *schemas.NewSecretVar("us-east5"), AuthCredentials: *schemas.NewSecretVar("test-credentials"),
-	}}
-	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "t"}))
+	provider, key := newClaudeTestVertex(t, srv.URL)
 
 	const versioned = `{"anthropic_version":"v-own","model":"claude-x","messages":[]}`
 	tests := []struct {
@@ -144,6 +129,9 @@ func TestVertexClaudeMessagesPassthrough(t *testing.T) {
 						t.Fatalf("Passthrough: %s", bifrostErr.GetErrorString())
 					}
 					dropped, usage = resp.DroppedBetas, resp.PassthroughUsage
+					if want := "/v1/projects/p/locations/us-east5/publishers/anthropic/models/" + tt.wantModel + method; resp.ExtraFields.PassthroughPath != want {
+						t.Fatalf("PassthroughPath = %q, want the upstream path %q", resp.ExtraFields.PassthroughPath, want)
+					}
 				}
 				got := <-seen
 				want := claudeUpstreamSeen{"/v1/projects/p/locations/us-east5/publishers/anthropic/models/" + tt.wantModel + method, "", "Bearer t", "", tt.wantBody}
@@ -158,6 +146,49 @@ func TestVertexClaudeMessagesPassthrough(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// newClaudeTestVertex returns a Vertex provider on baseURL with a context-1m ExtraHeaders beta, and
+// an OAuth key whose Value must not switch an Anthropic publisher call to the API-key query.
+func newClaudeTestVertex(t *testing.T, baseURL string) (*VertexProvider, schemas.Key) {
+	t.Helper()
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
+		BaseURL: baseURL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 5,
+		ExtraHeaders: map[string]schemas.SecretVar{"Anthropic-Beta": *schemas.NewSecretVar("context-1m-2025-08-07")},
+	}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, vertexEndpointTestLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(provider.client.CloseIdleConnections)
+	key := schemas.Key{Value: *schemas.NewSecretVar("api-key"), VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID: *schemas.NewSecretVar("p"), Region: *schemas.NewSecretVar("us-east5"), AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "t"}))
+	return provider, key
+}
+
+// TestVertexAnthropicPassthroughStreamBillsContainer pins that a generic (path-addressed) Anthropic
+// stream on Vertex hands the request body to the usage tracker, so a container the stream started
+// is billed as one session.
+func TestVertexAnthropicPassthroughStreamBillsContainer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":1}}}\n\n"+
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"container\":{\"id\":\"c1\"}},\"usage\":{\"output_tokens\":5}}\n\n"+
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+	provider, key := newClaudeTestVertex(t, srv.URL)
+	req := &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-x:streamRawPredict",
+		Body: []byte(`{"anthropic_version":"vertex-2023-10-16","messages":[]}`), SafeHeaders: map[string]string{"Content-Type": "application/json"},
+	}
+	_, usage := drainClaudeStream(t, provider, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), key, req)
+	if usage == nil || usage.LLMUsage == nil || usage.LLMUsage.ToolUsage == nil || usage.LLMUsage.ToolUsage.ContainerSessions[schemas.ContainerTierDefault] != 1 {
+		t.Fatalf("usage = %+v, want one container session", usage)
 	}
 }
 

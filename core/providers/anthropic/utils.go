@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"sort"
 	"strings"
@@ -3388,6 +3389,45 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
 // per-request context headers, deduplicating them.
 func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]schemas.SecretVar) []string {
+	return mergeBetaValues(providerExtraHeaders, func(yield func(string) bool) {
+		for _, key := range []schemas.BifrostContextKey{
+			schemas.BifrostContextKeyExtraHeaders,
+			schemas.BifrostContextKeyPassthroughHeaders,
+		} {
+			ctxHeaders, ok := ctx.Value(key).(map[string][]string)
+			if !ok {
+				continue
+			}
+			for k, vals := range ctxHeaders {
+				if !strings.EqualFold(k, AnthropicBetaHeader) {
+					continue
+				}
+				for _, v := range vals {
+					if !yield(v) {
+						return
+					}
+				}
+			}
+		}
+	})
+}
+
+// MergeRequestBetaHeaders collects the anthropic-beta values of a passthrough request's client
+// headers and of the provider's ExtraHeaders (header names matched case-insensitively), split on
+// commas, trimmed and deduplicated, ExtraHeaders first.
+func MergeRequestBetaHeaders(safeHeaders map[string]string, providerExtraHeaders map[string]schemas.SecretVar) []string {
+	return mergeBetaValues(providerExtraHeaders, func(yield func(string) bool) {
+		for k, v := range safeHeaders {
+			if strings.EqualFold(k, AnthropicBetaHeader) && !yield(v) {
+				return
+			}
+		}
+	})
+}
+
+// mergeBetaValues splits the anthropic-beta values of providerExtraHeaders, then client, on commas
+// and returns them trimmed and deduplicated in first-seen order.
+func mergeBetaValues(providerExtraHeaders map[string]schemas.SecretVar, client iter.Seq[string]) []string {
 	seen := make(map[string]bool)
 	var all []string
 	add := func(v string) {
@@ -3403,48 +3443,8 @@ func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]schem
 			add(v.GetValue())
 		}
 	}
-
-	for _, key := range []schemas.BifrostContextKey{
-		schemas.BifrostContextKeyExtraHeaders,
-		schemas.BifrostContextKeyPassthroughHeaders,
-	} {
-		ctxHeaders, ok := ctx.Value(key).(map[string][]string)
-		if !ok {
-			continue
-		}
-		for k, vals := range ctxHeaders {
-			if !strings.EqualFold(k, AnthropicBetaHeader) {
-				continue
-			}
-			for _, v := range vals {
-				add(v)
-			}
-		}
-	}
-	return all
-}
-
-// MergeRequestBetaHeaders collects the anthropic-beta values of a passthrough request's client
-// headers and of the provider's ExtraHeaders (header names matched case-insensitively), split on
-// commas, trimmed and deduplicated, ExtraHeaders first.
-func MergeRequestBetaHeaders(safeHeaders map[string]string, providerExtraHeaders map[string]schemas.SecretVar) []string {
-	var all []string
-	add := func(v string) {
-		for part := range strings.SplitSeq(v, ",") {
-			if t := strings.TrimSpace(part); t != "" && !slices.Contains(all, t) {
-				all = append(all, t)
-			}
-		}
-	}
-	for k, v := range providerExtraHeaders {
-		if strings.EqualFold(k, AnthropicBetaHeader) {
-			add(v.GetValue())
-		}
-	}
-	for k, v := range safeHeaders {
-		if strings.EqualFold(k, AnthropicBetaHeader) {
-			add(v)
-		}
+	for v := range client {
+		add(v)
 	}
 	return all
 }
@@ -3458,14 +3458,10 @@ func ClaudeMessagesBetas(safeHeaders map[string]string, providerExtraHeaders map
 		return nil, nil
 	}
 	kept = FilterBetaHeadersForProvider(merged, provider, overrides)
-	// The filter keeps merged's order and adds nothing, so kept is a subsequence of merged.
-	j := 0
 	for _, b := range merged {
-		if j < len(kept) && kept[j] == b {
-			j++
-			continue
+		if !slices.Contains(kept, b) {
+			dropped = append(dropped, b)
 		}
-		dropped = append(dropped, b)
 	}
 	return kept, dropped
 }

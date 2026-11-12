@@ -4682,9 +4682,15 @@ func (provider *VertexProvider) Passthrough(
 		keyRegion = "global"
 	}
 
-	requestURL, authQuery, urlErr := provider.passthroughURL(ctx, key, req, projectID, keyRegion, ":rawPredict")
-	if urlErr != nil {
-		return nil, urlErr
+	var requestURL, authQuery string
+	upstreamPath := req.Path
+	if req.ClaudeMessages {
+		requestURL, upstreamPath = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":rawPredict")
+	} else {
+		var urlErr *schemas.BifrostError
+		if requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion); urlErr != nil {
+			return nil, urlErr
+		}
 	}
 
 	// Prepare fasthttp request
@@ -4729,7 +4735,12 @@ func (provider *VertexProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	droppedBetas := provider.setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
+	var droppedBetas []string
+	if req.ClaudeMessages {
+		droppedBetas = provider.setClaudeMessagesBody(fasthttpReq, req)
+	} else {
+		setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
+	}
 
 	// Execute request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
@@ -4778,7 +4789,7 @@ func (provider *VertexProvider) Passthrough(
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: headers,
-			PassthroughPath:         req.Path,
+			PassthroughPath:         upstreamPath,
 			RawRequest:              req.Body,
 		},
 		PassthroughUsage: passthroughUsage,
@@ -4807,9 +4818,15 @@ func (provider *VertexProvider) PassthroughStream(
 		keyRegion = "global"
 	}
 
-	requestURL, authQuery, urlErr := provider.passthroughURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict")
-	if urlErr != nil {
-		return nil, urlErr
+	var requestURL, authQuery string
+	upstreamPath := req.Path
+	if req.ClaudeMessages {
+		requestURL, upstreamPath = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict")
+	} else {
+		var urlErr *schemas.BifrostError
+		if requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion); urlErr != nil {
+			return nil, urlErr
+		}
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
@@ -4852,7 +4869,12 @@ func (provider *VertexProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	droppedBetas := provider.setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
+	var droppedBetas []string
+	if req.ClaudeMessages {
+		droppedBetas = provider.setClaudeMessagesBody(fasthttpReq, req)
+	} else {
+		setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
+	}
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	startTime := time.Now()
@@ -4932,7 +4954,7 @@ func (provider *VertexProvider) PassthroughStream(
 		providerUtils.PassthroughStreamParams{
 			StatusCode:          resp.StatusCode(),
 			Headers:             headers,
-			Path:                req.Path,
+			Path:                upstreamPath,
 			RawRequest:          req.Body,
 			CancellationBody:    providerUtils.PassthroughJSONBody(fasthttpReq, req.Body),
 			StartTime:           time.Now(),

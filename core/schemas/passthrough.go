@@ -152,7 +152,9 @@ type BifrostPassthroughRequest struct {
 	StreamResponseBody bool      // return a 2xx body as BifrostPassthroughResponse.BodyStream
 
 	// ClaudeMessages sends Body to the provider's Anthropic Messages endpoint for Model; Path is
-	// ignored. Only providers implementing ClaudeMessagesProvider accept it (see Bifrost.Passthrough).
+	// ignored. RawQuery is forwarded on anthropic, whose endpoint is the client's own, and dropped on
+	// vertex and azure, whose endpoints take no client query. Only providers implementing
+	// ClaudeMessagesProvider accept it (see Bifrost.Passthrough).
 	ClaudeMessages bool
 }
 
