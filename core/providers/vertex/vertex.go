@@ -5039,17 +5039,15 @@ func (provider *VertexProvider) Passthrough(
 	}
 
 	var requestURL, authQuery string
+	var urlErr *schemas.BifrostError
 	upstreamPath := req.Path
 	if req.ClaudeMessages {
-		var urlErr *schemas.BifrostError
-		if requestURL, upstreamPath, urlErr = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":rawPredict"); urlErr != nil {
-			return nil, urlErr
-		}
+		requestURL, upstreamPath, urlErr = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":rawPredict")
 	} else {
-		var urlErr *schemas.BifrostError
-		if requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion); urlErr != nil {
-			return nil, urlErr
-		}
+		requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion)
+	}
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	// Prepare fasthttp request
@@ -5178,17 +5176,15 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	var requestURL, authQuery string
+	var urlErr *schemas.BifrostError
 	upstreamPath := req.Path
 	if req.ClaudeMessages {
-		var urlErr *schemas.BifrostError
-		if requestURL, upstreamPath, urlErr = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict"); urlErr != nil {
-			return nil, urlErr
-		}
+		requestURL, upstreamPath, urlErr = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict")
 	} else {
-		var urlErr *schemas.BifrostError
-		if requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion); urlErr != nil {
-			return nil, urlErr
-		}
+		requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion)
+	}
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
