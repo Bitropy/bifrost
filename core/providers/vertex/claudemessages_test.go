@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -231,5 +232,48 @@ func drainClaudeStream(t *testing.T, provider *VertexProvider, ctx *schemas.Bifr
 		case <-timeout:
 			t.Fatal("stream did not finish")
 		}
+	}
+}
+
+// TestVertexClaudeMessagesRefusesUnsafeModel: the model Vertex splices into the URL path, the
+// request's or the resolved alias's, must be one safe segment; anything else is a 400 sent nowhere.
+func TestVertexClaudeMessagesRefusesUnsafeModel(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
+	t.Cleanup(srv.Close)
+	provider, key := newClaudeTestVertex(t, srv.URL)
+	tests := []struct {
+		name, model string
+		aliasModel  string
+	}{
+		{"path traversal", "x/../../endpoints/1", ""},
+		{"query", "m?key=1", ""},
+		{"fragment", "m#f", ""},
+		{"escaped slash", "m%2F", ""},
+		{"backslash", `m\x`, ""},
+		{"newline", "m\n", ""},
+		{"space", "m x", ""},
+		{"resolved alias model", "claude-x", "x/../../endpoints/1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.aliasModel != "" {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: tt.model, Config: &schemas.AliasConfig{ModelID: tt.aliasModel}})
+			}
+			req := func() *schemas.BifrostPassthroughRequest {
+				return &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Model: tt.model, Body: []byte(`{}`), ClaudeMessages: true}
+			}
+			_, unaryErr := provider.Passthrough(ctx, key, req())
+			_, streamErr := provider.PassthroughStream(ctx, nil, nil, key, req())
+			for name, bifrostErr := range map[string]*schemas.BifrostError{"Passthrough": unaryErr, "PassthroughStream": streamErr} {
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+					t.Fatalf("%s: want a 400, got %+v", name, bifrostErr)
+				}
+			}
+			if hits.Load() != 0 {
+				t.Fatal("the upstream was called")
+			}
+		})
 	}
 }

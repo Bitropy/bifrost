@@ -2,10 +2,13 @@ package vertex
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"regexp"
 	"unsafe"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -16,22 +19,30 @@ func (provider *VertexProvider) ClaudeMessagesSupport() bool {
 	return true
 }
 
+// claudeModelRe is what a Vertex model ID may contain. The model is spliced into the URL path, and a
+// passthrough policy only sees POST /v1/messages, so "x/../../endpoints/1" or "m?key=1" would
+// otherwise reach another Vertex resource with the key's token.
+var claudeModelRe = regexp.MustCompile(`^[A-Za-z0-9._@:-]+$`)
+
 // claudeMessagesURL returns the Anthropic publisher URL of a ClaudeMessages request (method is
 // ":rawPredict" or ":streamRawPredict") for the resolved model, and its path; the client's path and
-// query are ignored.
-func (provider *VertexProvider) claudeMessagesURL(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest, projectID, keyRegion, method string) (string, string) {
+// query are ignored. A model that is not a single safe path segment is a 400.
+func (provider *VertexProvider) claudeMessagesURL(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest, projectID, keyRegion, method string) (string, string, *schemas.BifrostError) {
 	// req.Model may be a routing name that key selection resolved through an alias; the
 	// alias's ModelID is the Vertex model to call.
 	model := req.Model
 	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.ModelID != "" {
 		model = ra.Config.ModelID
 	}
+	if !claudeModelRe.MatchString(model) {
+		return "", "", providerUtils.NewBifrostBadRequestError(fmt.Sprintf("Claude Messages passthrough: %q is not a Vertex model ID", model))
+	}
 	requestURL := getVertexModelAwarePublisherModelURL(provider.networkConfig.BaseURL, keyRegion, "v1", projectID, "anthropic", model, method, resolveVertexForceSingleRegion(ctx, key), provider.logger)
 	path := requestURL
 	if u, err := url.Parse(requestURL); err == nil {
 		path = u.Path
 	}
-	return requestURL, path
+	return requestURL, path, nil
 }
 
 // setClaudeMessagesBody puts the Vertex form of a ClaudeMessages body (claudeMessagesBody) on

@@ -242,13 +242,11 @@ func (bifrost *Bifrost) checkStreamedPassthrough(provider schemas.ModelProvider,
 	return nil
 }
 
-// checkClaudeMessages refuses ClaudeMessages without a usable Model, or on a provider that does not
+// checkClaudeMessages refuses ClaudeMessages without a Model, which names the endpoint, or on a provider that does not
 // declare it (schemas.ClaudeMessagesProvider).
 func (bifrost *Bifrost) checkClaudeMessages(provider schemas.ModelProvider, model string) *schemas.BifrostError {
-	// Vertex splices the model into the upstream path, and a policy only sees POST /v1/messages, so a
-	// model must stay one path segment: "x/../../endpoints/1" would reach another resource on the key's token.
-	if model == "" || strings.ContainsAny(model, "/?#%\\") {
-		return providerUtils.NewBifrostBadRequestError("Claude Messages passthrough requires a model that is a single path segment")
+	if model == "" {
+		return providerUtils.NewBifrostBadRequestError("Claude Messages passthrough requires a model")
 	}
 	if p, ok := bifrost.getProviderByKey(provider).(schemas.ClaudeMessagesProvider); ok && p.ClaudeMessagesSupport() {
 		return nil
