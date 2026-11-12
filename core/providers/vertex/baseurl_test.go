@@ -153,9 +153,9 @@ func TestVertexBaseURLLeavesOtherGoogleHosts(t *testing.T) {
 
 // TestVertexBaseURLAuthorizedUserTokenRoundTrip runs the auth of a real credential JSON against
 // a fake (BL-5): the authorized_user token_uri serves the token, and the managed and pass-through
-// requests reach the base carrying it.
+// requests reach the base carrying it. A key with a Value sends ?key= to the base instead.
 func TestVertexBaseURLAuthorizedUserTokenRoundTrip(t *testing.T) {
-	type seen struct{ path, auth, host string }
+	type seen struct{ path, query, auth, host string }
 	requests := make(chan seen, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -163,7 +163,7 @@ func TestVertexBaseURLAuthorizedUserTokenRoundTrip(t *testing.T) {
 			_, _ = io.WriteString(w, `{"access_token":"fake-token","token_type":"Bearer","expires_in":3600}`)
 			return
 		}
-		requests <- seen{r.URL.Path, r.Header.Get("Authorization"), r.Host}
+		requests <- seen{r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"), r.Host}
 		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`)
 	}))
 	t.Cleanup(srv.Close)
@@ -182,21 +182,21 @@ func TestVertexBaseURLAuthorizedUserTokenRoundTrip(t *testing.T) {
 		ProjectID: *schemas.NewSecretVar("p"), Region: *schemas.NewSecretVar("us-central1"), AuthCredentials: *schemas.NewSecretVar(string(creds)),
 	}}
 	srvURL, _ := url.Parse(srv.URL)
-	const path = "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent"
-	check := func(t *testing.T) {
+	const model = "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash"
+	check := func(t *testing.T, path, query, auth string) {
 		t.Helper()
 		// The handler records before it answers, so a returned call has left its record.
 		select {
 		case got := <-requests:
-			if got != (seen{path, "Bearer fake-token", srvURL.Host}) {
-				t.Fatalf("upstream saw %+v", got)
+			if want := (seen{path, query, auth, srvURL.Host}); got != want {
+				t.Fatalf("upstream saw %+v, want %+v", got, want)
 			}
 		default:
 			t.Fatal("no request reached the base")
 		}
 	}
-
-	t.Run("managed", func(t *testing.T) {
+	chat := func(t *testing.T, key schemas.Key) {
+		t.Helper()
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		text := "hello"
 		_, bifrostErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
@@ -206,7 +206,17 @@ func TestVertexBaseURLAuthorizedUserTokenRoundTrip(t *testing.T) {
 		if bifrostErr != nil {
 			t.Fatalf("ChatCompletion: %s", bifrostErr.GetErrorString())
 		}
-		check(t)
+	}
+
+	t.Run("managed", func(t *testing.T) {
+		chat(t, key)
+		check(t, model+":generateContent", "", "Bearer fake-token")
+	})
+	t.Run("managed with api key", func(t *testing.T) {
+		apiKey := key
+		apiKey.Value = *schemas.NewSecretVar("api-key")
+		chat(t, apiKey)
+		check(t, model+":generateContent", "key=api-key", "")
 	})
 	t.Run("pass-through", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -216,25 +226,57 @@ func TestVertexBaseURLAuthorizedUserTokenRoundTrip(t *testing.T) {
 		if bifrostErr != nil {
 			t.Fatalf("Passthrough: %s", bifrostErr.GetErrorString())
 		}
-		check(t)
+		check(t, model+":generateContent", "", "Bearer fake-token")
+	})
+	t.Run("pass-through stream", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		noHooks := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return resp, err
+		}
+		stream, bifrostErr := provider.PassthroughStream(ctx, noHooks, nil, key, &schemas.BifrostPassthroughRequest{
+			Method: http.MethodPost, Path: "/publishers/google/models/gemini-2.5-flash:streamGenerateContent", Body: []byte(`{"contents":[]}`),
+		})
+		if bifrostErr != nil {
+			t.Fatalf("PassthroughStream: %s", bifrostErr.GetErrorString())
+		}
+		for chunk := range stream {
+			if chunk.BifrostError != nil {
+				t.Fatalf("PassthroughStream chunk: %s", chunk.BifrostError.GetErrorString())
+			}
+		}
+		check(t, model+":streamGenerateContent", "", "Bearer fake-token")
 	})
 }
 
-// vertexURLAllowlist names the only functions that may spell an AI Platform host or an
-// https://%s/ origin; everything else must build on them so a configured base is honoured (BL-4).
-var vertexURLAllowlist = map[string]bool{
-	"getVertexAPIHost":                     true,
-	"getVertexModelAwareAPIHost":           true,
-	"getVertexModelListingAPIHost":         true,
-	"getVertexAPIBaseURL":                  true,
-	"getVertexModelAwareAPIBaseURL":        true,
-	"getVertexModelAwarePublisherModelURL": true,
-	"getVertexModelListURL":                true,
+// vertexHostFuncs are the only functions that may spell an AI Platform host (BL-4).
+var vertexHostFuncs = map[string]bool{
+	"getVertexAPIHost":             true,
+	"getVertexModelAwareAPIHost":   true,
+	"getVertexModelListingAPIHost": true,
 }
 
-// vertexURLLiteralViolations returns "file:func" for each string literal outside the
-// allowlist that names an AI Platform host or an https://%s/ origin. Comments are not literals.
-func vertexURLLiteralViolations(fset *token.FileSet, files []*ast.File) []string {
+// vertexURLViolations returns the position of each AI Platform host or https://%s literal
+// outside the host functions, and of each host-function call outside a function that passes
+// its host through vertexOrigin, so every URL honours a configured base. Comments are not literals.
+func vertexURLViolations(fset *token.FileSet, files []*ast.File) []string {
+	calls := func(decl ast.Decl, names map[string]bool, visit func(*ast.CallExpr)) {
+		ast.Inspect(decl, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if id, ok := call.Fun.(*ast.Ident); ok && names[id.Name] {
+					visit(call)
+				}
+			}
+			return true
+		})
+	}
+	builders := map[string]bool{}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok {
+				calls(fn, map[string]bool{"vertexOrigin": true}, func(*ast.CallExpr) { builders[fn.Name.Name] = true })
+			}
+		}
+	}
 	var out []string
 	for _, f := range files {
 		for _, decl := range f.Decls {
@@ -242,16 +284,21 @@ func vertexURLLiteralViolations(fset *token.FileSet, files []*ast.File) []string
 			if fn, ok := decl.(*ast.FuncDecl); ok {
 				name = fn.Name.Name
 			}
-			if vertexURLAllowlist[name] {
+			if vertexHostFuncs[name] {
 				continue
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {
 				lit, ok := n.(*ast.BasicLit)
-				if ok && lit.Kind == token.STRING && (strings.Contains(lit.Value, "aiplatform") || strings.Contains(lit.Value, `https://%s/`)) {
-					out = append(out, fset.Position(lit.Pos()).String()+" in "+name)
+				if ok && lit.Kind == token.STRING && (strings.Contains(lit.Value, "aiplatform") || strings.Contains(lit.Value, "https://%s")) {
+					out = append(out, fset.Position(lit.Pos()).String()+" literal in "+name)
 				}
 				return true
 			})
+			if !builders[name] {
+				calls(decl, vertexHostFuncs, func(call *ast.CallExpr) {
+					out = append(out, fset.Position(call.Pos()).String()+" host call in "+name)
+				})
+			}
 		}
 	}
 	return out
@@ -282,19 +329,21 @@ func TestVertexURLLiteralGuard(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatal("no source files scanned")
 	}
-	if v := vertexURLLiteralViolations(fset, files); len(v) > 0 {
+	if v := vertexURLViolations(fset, files); len(v) > 0 {
 		t.Fatalf("AI Platform URL literals outside the base-aware builders: %v", v)
 	}
 
 	planted, err := parser.ParseFile(fset, "planted.go", `package vertex
 // https://us-central1-aiplatform.googleapis.com in a comment is fine
 func plantedURL(region string) string { return "https://" + region + "-aiplatform.googleapis.com/v1" }
-var plantedOrigin = fmt.Sprintf("https://%s/v1", "x")
+var plantedOrigin = fmt.Sprintf("https://%s", "x")
+func plantedConcat(r string) string { return "https://" + getVertexAPIHost(r) + "/v1" }
+func plantedCall(r string) string { return fmt.Sprint(getVertexModelListingAPIHost(r)) }
 `, parser.ParseComments)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := vertexURLLiteralViolations(fset, []*ast.File{planted}); len(v) != 2 {
-		t.Fatalf("planted literals: got %v, want 2 violations", v)
+	if v := vertexURLViolations(fset, []*ast.File{planted}); len(v) != 4 {
+		t.Fatalf("planted: got %v, want 4 violations", v)
 	}
 }
