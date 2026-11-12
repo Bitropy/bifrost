@@ -4967,46 +4967,9 @@ func (provider *VertexProvider) Passthrough(
 		keyRegion = "global"
 	}
 
-	// Model calls stay on v1 as they always have; other resources (interactions) use the client's version.
-	apiVersion := "v1"
-	if req.APIVersion != "" && req.APIVersion != "v1beta" && !strings.Contains(req.Path, "/models/") {
-		apiVersion = req.APIVersion
-	}
-	baseURL := getVertexAPIBaseURL(provider.networkConfig.BaseURL, keyRegion, apiVersion)
-
-	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments (e.g. /v1/v1/...)
-	path := req.Path
-	for strings.HasPrefix(path, "/v1/") || path == "/v1" {
-		path = strings.TrimPrefix(path, "/v1/")
-		path = strings.TrimPrefix(path, "/v1")
-		if path != "" && !strings.HasPrefix(path, "/") {
-			path = "/" + path
-		}
-	}
-	if rest, ok := cutVertexV1Beta1(path); ok {
-		path, baseURL = rest, getVertexAPIBaseURL(provider.networkConfig.BaseURL, keyRegion, "v1beta1")
-	}
-
-	// Replace region in path with key's configured region (client path may have different region)
-	if strings.Contains(path, "/locations/") {
-		path = vertexLocationsPathRe.ReplaceAllString(path, "/locations/"+keyRegion)
-		if strings.Contains(path, "/projects/") {
-			path = vertexProjectsPathRe.ReplaceAllString(path, "/projects/"+projectID)
-		}
-	} else {
-		// add projects/%s/locations/%s/publishers/google to path
-		path = fmt.Sprintf("/projects/%s/locations/%s%s", projectID, keyRegion, path)
-	}
-
-	requestURL, err := providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
-	if err != nil {
-		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
-	}
-
-	// Only use API key for Google publisher endpoints; Anthropic/Mistral/OpenAPI-style paths require OAuth.
-	authQuery := ""
-	if key.Value.GetValue() != "" && strings.Contains(path, "publishers/google") {
-		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
+	requestURL, authQuery, urlErr := provider.passthroughURL(ctx, key, req, projectID, keyRegion, ":rawPredict")
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	// Prepare fasthttp request
@@ -5051,16 +5014,7 @@ func (provider *VertexProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	if len(req.Body) > 0 && strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
-		// Replace placeholder project/location and expand short-form model names.
-		if rewritten, changed := rewritePassthroughBody(req.Body, projectID, keyRegion); changed {
-			fasthttpReq.SetBodyRaw(rewritten)
-		} else {
-			fasthttpReq.SetBody(req.Body)
-		}
-	} else if len(req.Body) > 0 {
-		fasthttpReq.SetBody(req.Body)
-	}
+	droppedBetas := provider.setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
 
 	// Execute request
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
@@ -5086,7 +5040,7 @@ func (provider *VertexProvider) Passthrough(
 	var servedModel string
 	var providerJob *schemas.BifrostPassthroughJob
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		switch PassthroughWireFormat(req.Path) {
+		switch passthroughWireFormat(req) {
 		case schemas.Anthropic:
 			passthroughUsage = anthropic.ExtractAnthropicMessagesUsage(body)
 		case schemas.Mistral:
@@ -5115,6 +5069,7 @@ func (provider *VertexProvider) Passthrough(
 		PassthroughUsage: passthroughUsage,
 		ServedModel:      servedModel,
 		ProviderJob:      providerJob,
+		DroppedBetas:     droppedBetas,
 	}
 
 	return bifrostResponse, nil
@@ -5137,38 +5092,9 @@ func (provider *VertexProvider) PassthroughStream(
 		keyRegion = "global"
 	}
 
-	apiVersion := "v1"
-	if req.APIVersion != "" && req.APIVersion != "v1beta" && !strings.Contains(req.Path, "/models/") {
-		apiVersion = req.APIVersion
-	}
-	baseURL := getVertexAPIBaseURL(provider.networkConfig.BaseURL, keyRegion, apiVersion)
-
-	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments.
-	path := req.Path
-	for strings.HasPrefix(path, "/v1/") || path == "/v1" {
-		path = strings.TrimPrefix(path, "/v1/")
-		path = strings.TrimPrefix(path, "/v1")
-		if path != "" && !strings.HasPrefix(path, "/") {
-			path = "/" + path
-		}
-	}
-	if rest, ok := cutVertexV1Beta1(path); ok {
-		path, baseURL = rest, getVertexAPIBaseURL(provider.networkConfig.BaseURL, keyRegion, "v1beta1")
-	}
-
-	// Replace region and project in path with key's configured values.
-	if strings.Contains(path, "/locations/") {
-		path = vertexLocationsPathRe.ReplaceAllString(path, "/locations/"+keyRegion)
-		if strings.Contains(path, "/projects/") {
-			path = vertexProjectsPathRe.ReplaceAllString(path, "/projects/"+projectID)
-		}
-	} else {
-		path = fmt.Sprintf("/projects/%s/locations/%s%s", projectID, keyRegion, path)
-	}
-
-	requestURL, err := providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
-	if err != nil {
-		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	requestURL, authQuery, urlErr := provider.passthroughURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict")
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
@@ -5177,12 +5103,6 @@ func (provider *VertexProvider) PassthroughStream(
 	defer fasthttp.ReleaseRequest(fasthttpReq)
 
 	fasthttpReq.Header.SetMethod(req.Method)
-
-	// Only use API key for Google publisher endpoints; Anthropic/Mistral/OpenAPI-style paths require OAuth.
-	authQuery := ""
-	if key.Value.GetValue() != "" && strings.Contains(path, "publishers/google") {
-		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
-	}
 
 	if authQuery != "" {
 		if strings.Contains(requestURL, "?") {
@@ -5217,19 +5137,11 @@ func (provider *VertexProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	if len(req.Body) > 0 && strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
-		if rewritten, changed := rewritePassthroughBody(req.Body, projectID, keyRegion); changed {
-			fasthttpReq.SetBodyRaw(rewritten)
-		} else {
-			fasthttpReq.SetBody(req.Body)
-		}
-	} else if len(req.Body) > 0 {
-		fasthttpReq.SetBody(req.Body)
-	}
+	droppedBetas := provider.setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.streamingClient, resp)
 	startTime := time.Now()
-	err = providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
+	err := providerUtils.DoStreamingRequest(ctx, activeClient, fasthttpReq, resp)
 	latency := time.Since(startTime)
 	if err != nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -5277,9 +5189,9 @@ func (provider *VertexProvider) PassthroughStream(
 		return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 	}
 	var finalize func(*schemas.BifrostPassthroughResponse)
-	switch PassthroughWireFormat(req.Path) {
+	switch passthroughWireFormat(req) {
 	case schemas.Anthropic:
-		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
+		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}
 		hasUsage = anthropic.HasAnthropicPassthroughUsage
 		observe = messagesUsage.ObserveEvent
 	case schemas.Mistral:
@@ -5314,6 +5226,7 @@ func (provider *VertexProvider) PassthroughStream(
 			HasUsage:            hasUsage,
 			Observe:             observe,
 			Finalize:            finalize,
+			DroppedBetas:        droppedBetas,
 		},
 	), nil
 }
