@@ -3261,8 +3261,10 @@ func (bifrost *Bifrost) CachedContentDeleteRequest(ctx *schemas.BifrostContext, 
 //     and chunked when it is negative. A reader can be read once, so the request gets exactly one
 //     attempt and no fallback. A read error other than io.EOF aborts the upstream request before
 //     its terminating chunk, so the upstream holds an incomplete request and acts on nothing.
-//     The provider skips usage extraction and raw-request capture, which read Body: the caller
-//     holds the only copy of the bytes it sent.
+//     Body is empty, so usage comes from the response alone: what only the request carries
+//     (speech characters, requested video seconds or image count, container-session and
+//     image-generation tool settings) is absent or defaulted, and no raw request is captured.
+//     The caller holds the only copy of the bytes it sent and bills from it where that matters.
 //   - StreamResponseBody returns a 2xx body as BodyStream, unread, once the headers arrive. The
 //     caller must Close it: Close frees the upstream connection, and closing before EOF abandons
 //     the connection instead of draining it. Any other status comes back in Body, read up to

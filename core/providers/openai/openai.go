@@ -8660,7 +8660,7 @@ func (provider *OpenAIProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
-	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 && req.BodyReader == nil {
+	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		passthroughUsage = ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
 	}
 

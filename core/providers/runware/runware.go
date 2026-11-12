@@ -910,7 +910,7 @@ func (provider *RunwareProvider) Passthrough(
 	// Honor the provider's raw-payload exposure config: expose the raw upstream request/response
 	// to callers only when send_back_raw_request/response is enabled (internal store_raw logging is
 	// handled separately by the logging layer).
-	if sendBackRawRequest && req.BodyReader == nil {
+	if sendBackRawRequest {
 		bifrostResponse.ExtraFields.RawRequest = string(req.Body)
 	}
 	if sendBackRawResponse {

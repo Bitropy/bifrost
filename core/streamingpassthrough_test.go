@@ -500,10 +500,10 @@ func TestStreamedPassthroughRefusedWhereUnsupported(t *testing.T) {
 	}
 }
 
-// A BodyReader request carries no request bytes to read usage or a raw request from, so the
-// provider skips usage extraction: the caller bills from its own copy of the body. The control
-// sends the same exchange with a byte Body, so the skip is not vacuous.
-func TestStreamedPassthroughSkipsUsageExtraction(t *testing.T) {
+// A BodyReader request has no request bytes for the provider to read, but usage the response
+// reports on its own is still extracted: chat-completions and Messages usage come from the
+// response body. The control sends the same exchange with a byte Body.
+func TestStreamedPassthroughKeepsResponseUsage(t *testing.T) {
 	cases := []struct {
 		provider schemas.ModelProvider
 		path     string
@@ -535,8 +535,9 @@ func TestStreamedPassthroughSkipsUsageExtraction(t *testing.T) {
 			if bifrostErr != nil {
 				t.Fatalf("Passthrough: %+v", bifrostErr.Error)
 			}
-			if resp.PassthroughUsage != nil {
-				t.Fatalf("usage extracted from a reader body: %+v", resp.PassthroughUsage)
+			if resp.PassthroughUsage == nil || resp.PassthroughUsage.LLMUsage == nil ||
+				resp.PassthroughUsage.LLMUsage.TotalTokens != control.PassthroughUsage.LLMUsage.TotalTokens {
+				t.Fatalf("reader body usage %+v, want the control's %+v", resp.PassthroughUsage, control.PassthroughUsage)
 			}
 		})
 	}

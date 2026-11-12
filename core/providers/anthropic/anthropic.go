@@ -3495,7 +3495,7 @@ func (provider *AnthropicProvider) Passthrough(
 	}
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
-	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 && req.BodyReader == nil {
+	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		passthroughUsage = ExtractAnthropicPassthroughUsage(req.Path, req.Body, body)
 	}
 
