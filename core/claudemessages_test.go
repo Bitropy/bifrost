@@ -53,6 +53,27 @@ func TestClaudeMessagesRefusedWhereUnsupported(t *testing.T) {
 		})
 	}
 
+	// The model is spliced into Vertex's upstream path, so it must be one non-empty segment.
+	for _, model := range []string{"", "x/../../endpoints/1", "m?key=1", "m#f", "m%2F", `m\n`} {
+		t.Run("model "+model, func(t *testing.T) {
+			req := func() *schemas.BifrostPassthroughRequest {
+				r := newReq()
+				r.Model = model
+				return r
+			}
+			_, unaryErr := client.Passthrough(newPassthroughContext(t), schemas.Anthropic, req())
+			_, streamErr := client.PassthroughStream(newPassthroughContext(t), schemas.Anthropic, req())
+			for name, bifrostErr := range map[string]*schemas.BifrostError{"Passthrough": unaryErr, "PassthroughStream": streamErr} {
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+					t.Fatalf("%s: want a 400, got %+v", name, bifrostErr)
+				}
+			}
+			if hits.Load() != 0 {
+				t.Fatal("the upstream was called")
+			}
+		})
+	}
+
 	t.Run("anthropic control", func(t *testing.T) {
 		resp, bifrostErr := client.Passthrough(newPassthroughContext(t), schemas.Anthropic, newReq())
 		if bifrostErr != nil || resp.StatusCode != http.StatusOK || hits.Load() != 1 {

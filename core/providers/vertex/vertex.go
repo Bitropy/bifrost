@@ -5093,7 +5093,7 @@ func (provider *VertexProvider) Passthrough(
 
 	var droppedBetas []string
 	if req.ClaudeMessages {
-		droppedBetas = provider.setClaudeMessagesBody(fasthttpReq, req)
+		droppedBetas = provider.setClaudeMessagesBody(ctx, fasthttpReq, req)
 	} else {
 		setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
 	}
@@ -5227,7 +5227,7 @@ func (provider *VertexProvider) PassthroughStream(
 
 	var droppedBetas []string
 	if req.ClaudeMessages {
-		droppedBetas = provider.setClaudeMessagesBody(fasthttpReq, req)
+		droppedBetas = provider.setClaudeMessagesBody(ctx, fasthttpReq, req)
 	} else {
 		setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
 	}
