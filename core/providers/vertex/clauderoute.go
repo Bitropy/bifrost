@@ -90,51 +90,41 @@ func claudeRouteBody(body []byte, betas []string, bodyModel string) []byte {
 	}
 	out := make([]byte, 0, len(body)+len(`,"model":`)+len(modelJSON)+len(`,"anthropic_version":""`)+len(anthropic.VertexAnthropicVersion)+len(`,"anthropic_beta":`)+len(betaJSON))
 	out = append(out, '{')
+	// member appends key (a quoted name and colon, or "" when value is a whole body member) and
+	// value after the separator.
+	member := func(key string, value []byte) {
+		if len(out) > 1 {
+			out = append(out, ',')
+		}
+		out = append(out, key...)
+		out = append(out, value...)
+	}
 	hasVersion, hasModel := false, false
 	parsed.ForEach(func(k, v gjson.Result) bool {
 		switch k.Str {
 		case "model":
-			if modelJSON == nil || hasModel {
-				return true
+			if modelJSON != nil && !hasModel {
+				hasModel = true
+				member(`"model":`, modelJSON)
 			}
-			hasModel = true
-			if len(out) > 1 {
-				out = append(out, ',')
-			}
-			out = append(out, `"model":`...)
-			out = append(out, modelJSON...)
 			return true
 		case "anthropic_beta":
 			return true
 		case "anthropic_version":
 			hasVersion = true
 		}
-		if len(out) > 1 {
-			out = append(out, ',')
-		}
 		// Parse records leading whitespace in Index, so ForEach offsets index body directly.
-		out = append(out, body[k.Index:v.Index+len(v.Raw)]...)
+		member("", body[k.Index:v.Index+len(v.Raw)])
 		return true
 	})
 	if modelJSON != nil && !hasModel {
-		if len(out) > 1 {
-			out = append(out, ',')
-		}
-		out = append(out, `"model":`...)
-		out = append(out, modelJSON...)
+		member(`"model":`, modelJSON)
 	}
 	if !hasVersion {
-		if len(out) > 1 {
-			out = append(out, ',')
-		}
-		out = append(out, `"anthropic_version":"`+anthropic.VertexAnthropicVersion+`"`...)
+		member(`"anthropic_version":`, []byte(`"`+anthropic.VertexAnthropicVersion+`"`))
 	}
 	if betaJSON != nil {
-		if len(out) > 1 {
-			out = append(out, ',')
-		}
-		out = append(out, `"anthropic_beta":`...)
-		out = append(out, betaJSON...)
+		member(`"anthropic_beta":`, betaJSON)
 	}
 	return append(out, '}')
 }
