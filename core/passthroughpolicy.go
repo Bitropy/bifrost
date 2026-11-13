@@ -7,11 +7,14 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// passthroughPolicyRoute is the version and path a policy matches: a ClaudeMessages request ignores
-// its Path and is checked as the Anthropic Messages route the client called, on every provider.
+// passthroughPolicyRoute is the version and path a policy matches: a ClaudeRoute request is checked
+// as the Anthropic route the client called, on every provider.
 func passthroughPolicyRoute(req *schemas.BifrostPassthroughRequest) (apiVersion, path string) {
-	if req.ClaudeMessages {
+	switch req.ClaudeRoute {
+	case schemas.ClaudeRouteMessages:
 		return "", "/v1/messages"
+	case schemas.ClaudeRouteCountTokens:
+		return "", "/v1/messages/count_tokens"
 	}
 	return req.APIVersion, req.Path
 }

@@ -283,9 +283,9 @@ func TestResolveAnthropicVersion_AliasOverride(t *testing.T) {
 	}
 }
 
-// claudeMessagesTestBody carries the members a field-level rewrite could damage; it must reach
+// claudeRouteTestBody carries the members a field-level rewrite could damage; it must reach
 // the upstream byte for byte.
-const claudeMessagesTestBody = `{"model":"my-deploy-7","max_tokens":64,"thinking":{"type":"enabled","budget_tokens":1024},` +
+const claudeRouteTestBody = `{"model":"my-deploy-7","max_tokens":64,"thinking":{"type":"enabled","budget_tokens":1024},` +
 	`"mcp_servers":[{"type":"url","url":"https://mcp.example/sse","name":"m"}],` +
 	`"tools":[{"type":"web_search_20260209","name":"web_search","max_uses":2}],` +
 	`"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"doc"},"citations":{"enabled":true},"cache_control":{"type":"ephemeral"}},` +
@@ -295,11 +295,11 @@ type claudeUpstreamSeen struct {
 	path, query, apiKey, auth, version, betas, body string
 }
 
-// TestAzureClaudeMessagesPassthrough drives both entry points against a fake Azure resource: the
+// TestAzureClaudeRoutePassthrough drives the Messages route on both entry points against a fake Azure resource: the
 // request goes to the Anthropic Messages endpoint with no api-version or client query, the body is
 // untouched, anthropic-version is the client's or the default, betas are filtered for Azure, and
 // Anthropic usage is parsed for a deployment name that does not look like a Claude model.
-func TestAzureClaudeMessagesPassthrough(t *testing.T) {
+func TestAzureClaudeRoutePassthrough(t *testing.T) {
 	seen := make(chan claudeUpstreamSeen, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -326,7 +326,7 @@ func TestAzureClaudeMessagesPassthrough(t *testing.T) {
 	}
 	key := schemas.Key{Value: *schemas.NewSecretVar("az-key"), AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(srv.URL)}}
 
-	streamBody := strings.Replace(claudeMessagesTestBody, `"max_tokens":64`, `"max_tokens":64,"stream":true`, 1)
+	streamBody := strings.Replace(claudeRouteTestBody, `"max_tokens":64`, `"max_tokens":64,"stream":true`, 1)
 	tests := []struct {
 		name, betas, version, ctxToken string
 		wantAPIKey, wantAuth           string
@@ -352,13 +352,13 @@ func TestAzureClaudeMessagesPassthrough(t *testing.T) {
 				if tt.version != "" {
 					headers["anthropic-version"] = tt.version
 				}
-				body := claudeMessagesTestBody
+				body := claudeRouteTestBody
 				if stream {
 					body = streamBody
 				}
 				req := &schemas.BifrostPassthroughRequest{
-					Method: http.MethodPost, Path: "/openai/deployments/x/chat/completions", RawQuery: "api-version=2024-01-01&beta=true",
-					Model: "my-deploy-7", Body: []byte(body), SafeHeaders: headers, ClaudeMessages: true,
+					Method: http.MethodPost, RawQuery: "api-version=2024-01-01&beta=true",
+					Model: "my-deploy-7", Body: []byte(body), SafeHeaders: headers, ClaudeRoute: schemas.ClaudeRouteMessages,
 				}
 				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 				if tt.ctxToken != "" {

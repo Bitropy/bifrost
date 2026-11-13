@@ -34,10 +34,14 @@ func TestPassthroughRouteAllowed(t *testing.T) {
 		{"rule keeps its method limit", chatPlusFiles, &schemas.BifrostPassthroughRequest{Method: http.MethodDelete, Path: "/v1/files/f1"}, false},
 		{"genai rule includes the version segment", genAIVersioned, &schemas.BifrostPassthroughRequest{Method: http.MethodPost, APIVersion: "v1beta", Path: "/models/m:generateContent"}, true},
 		{"genai rule refuses another version", genAIVersioned, &schemas.BifrostPassthroughRequest{Method: http.MethodPost, APIVersion: "v1", Path: "/models/m:generateContent"}, false},
-		{"claude messages is checked as POST /v1/messages, not its ignored path", &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{http.MethodPost}, Path: "/v1/messages"}}},
-			&schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/ignored", APIVersion: "v9", ClaudeMessages: true}, true},
-		{"claude messages cannot borrow an allowed path", chatPlusFiles,
-			&schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/chat/completions", ClaudeMessages: true}, false},
+		{"claude messages is checked as POST /v1/messages, not its version", &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{http.MethodPost}, Path: "/v1/messages"}}},
+			&schemas.BifrostPassthroughRequest{Method: http.MethodPost, APIVersion: "v9", ClaudeRoute: schemas.ClaudeRouteMessages}, true},
+		{"claude messages is not allowed by unrelated rules", chatPlusFiles,
+			&schemas.BifrostPassthroughRequest{Method: http.MethodPost, ClaudeRoute: schemas.ClaudeRouteMessages}, false},
+		{"claude count-tokens is checked as POST /v1/messages/count_tokens", &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{http.MethodPost}, Path: "/v1/messages/count_tokens"}}},
+			&schemas.BifrostPassthroughRequest{Method: http.MethodPost, ClaudeRoute: schemas.ClaudeRouteCountTokens}, true},
+		{"claude count-tokens is not allowed by a messages rule", &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{http.MethodPost}, Path: "/v1/messages"}}},
+			&schemas.BifrostPassthroughRequest{Method: http.MethodPost, ClaudeRoute: schemas.ClaudeRouteCountTokens}, false},
 		{"host-backed routes are not governed", &schemas.PassthroughPolicy{}, &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/backend-api/codex/responses", UpstreamURL: "https://chatgpt.com"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

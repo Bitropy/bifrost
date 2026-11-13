@@ -15,39 +15,42 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// claudeMessagesTestBody carries the members a regex or field-level rewrite could damage: a server
+// claudeRouteTestBody carries the members a regex or field-level rewrite could damage: a server
 // tool, MCP servers, thinking, cache_control, a citations document, an unknown key with inner
 // whitespace, and a prompt quoting a Vertex resource path and a short model name.
-const claudeMessagesTestBody = `{"model":"claude-x","max_tokens":64,"thinking":{"type":"enabled","budget_tokens":1024},` +
+const claudeRouteTestBody = `{"model":"claude-x","max_tokens":64,"thinking":{"type":"enabled","budget_tokens":1024},` +
 	`"mcp_servers":[{"type":"url","url":"https://mcp.example/sse","name":"m"}],` +
 	`"tools":[{"type":"web_search_20260209","name":"web_search","max_uses":2}],` +
 	`"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"doc"},"citations":{"enabled":true},"cache_control":{"type":"ephemeral"}},` +
 	`{"type":"text","text":"see projects/x/locations/y and \"models/z\" please"}]}],"x_unknown":{"a":  1}}`
 
-// claudeMessagesTestRest is claudeMessagesTestBody without its model member.
-var claudeMessagesTestRest = strings.Replace(claudeMessagesTestBody, `"model":"claude-x",`, "", 1)
+// claudeRouteTestRest is claudeRouteTestBody without its model member.
+var claudeRouteTestRest = strings.Replace(claudeRouteTestBody, `"model":"claude-x",`, "", 1)
 
-func TestClaudeMessagesBody(t *testing.T) {
+func TestClaudeRouteBody(t *testing.T) {
 	tests := []struct {
 		name, body string
 		betas      []string
+		keepModel  bool
 		want       string
 	}{
-		{"model removed, version and betas added", claudeMessagesTestBody, []string{"a-1", "b-2"},
-			claudeMessagesTestRest[:len(claudeMessagesTestRest)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["a-1","b-2"]}`},
-		{"no betas, no member", claudeMessagesTestBody, nil,
-			claudeMessagesTestRest[:len(claudeMessagesTestRest)-1] + `,"anthropic_version":"vertex-2023-10-16"}`},
-		{"existing version kept, client anthropic_beta replaced", ` {"anthropic_version":"v-own", "model":"m","anthropic_beta":["x"],"a":[1, 2]}`, []string{"k"},
+		{"model removed, version and betas added", claudeRouteTestBody, []string{"a-1", "b-2"}, false,
+			claudeRouteTestRest[:len(claudeRouteTestRest)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["a-1","b-2"]}`},
+		{"no betas, no member", claudeRouteTestBody, nil, false,
+			claudeRouteTestRest[:len(claudeRouteTestRest)-1] + `,"anthropic_version":"vertex-2023-10-16"}`},
+		{"existing version kept, client anthropic_beta replaced", ` {"anthropic_version":"v-own", "model":"m","anthropic_beta":["x"],"a":[1, 2]}`, []string{"k"}, false,
 			`{"anthropic_version":"v-own","a":[1, 2],"anthropic_beta":["k"]}`},
-		{"client anthropic_beta removed when none kept", `{"anthropic_beta":["x"],"a":1}`, nil,
+		{"client anthropic_beta removed when none kept", `{"anthropic_beta":["x"],"a":1}`, nil, false,
 			`{"a":1,"anthropic_version":"vertex-2023-10-16"}`},
-		{"empty object", `{}`, nil, `{"anthropic_version":"vertex-2023-10-16"}`},
-		{"invalid JSON unchanged", `{"model":"m",`, []string{"k"}, `{"model":"m",`},
-		{"array unchanged", `[1]`, nil, `[1]`},
+		{"empty object", `{}`, nil, false, `{"anthropic_version":"vertex-2023-10-16"}`},
+		{"invalid JSON unchanged", `{"model":"m",`, []string{"k"}, false, `{"model":"m",`},
+		{"array unchanged", `[1]`, nil, false, `[1]`},
+		{"count-tokens keeps model", claudeRouteTestBody, []string{"a-1"}, true,
+			claudeRouteTestBody[:len(claudeRouteTestBody)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["a-1"]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := string(claudeMessagesBody([]byte(tt.body), tt.betas)); got != tt.want {
+			if got := string(claudeRouteBody([]byte(tt.body), tt.betas, tt.keepModel)); got != tt.want {
 				t.Fatalf("got  %s\nwant %s", got, tt.want)
 			}
 		})
@@ -59,11 +62,12 @@ type claudeUpstreamSeen struct {
 	body                          string
 }
 
-// TestVertexClaudeMessagesPassthrough drives both entry points against a fake Vertex: the URL is
-// the Anthropic publisher's rawPredict for Model whatever Path says, the body is adapted without
-// touching any other member, betas move from the header into the body filtered for Vertex, and
-// Anthropic usage is parsed.
-func TestVertexClaudeMessagesPassthrough(t *testing.T) {
+// TestVertexClaudeRoutePassthrough drives every route on its entry points against a fake Vertex:
+// Messages goes to the Anthropic publisher's rawPredict (unary) or streamRawPredict (stream) for
+// Model, count-tokens to the count-tokens model on Model's host. The body is adapted without touching
+// any other member (count-tokens keeps model, which the endpoint reads), betas move from the header
+// into the body filtered for Vertex, and Anthropic usage is parsed on Messages only.
+func TestVertexClaudeRoutePassthrough(t *testing.T) {
 	seen := make(chan claudeUpstreamSeen, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -76,31 +80,45 @@ func TestVertexClaudeMessagesPassthrough(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/count-tokens:") {
+			_, _ = io.WriteString(w, `{"input_tokens":7}`)
+			return
+		}
 		_, _ = io.WriteString(w, `{"type":"message","usage":{"input_tokens":7,"output_tokens":5}}`)
 	}))
 	t.Cleanup(srv.Close)
 	provider, key := newClaudeTestVertex(t, srv.URL)
+	const upstreamPrefix = "/v1/projects/p/locations/us-east5/publishers/anthropic/models/"
 
 	const versioned = `{"anthropic_version":"v-own","model":"claude-x","messages":[]}`
 	tests := []struct {
 		name, body, betas string
+		route             schemas.ClaudeRoute
 		model             string
 		alias             *schemas.ResolvedAlias
-		wantModel         string
+		wantModel         string // the upstream model segment, before the method
 		wantBody          string
 		wantDropped       []string
 	}{
-		{"betas filtered", claudeMessagesTestBody, "interleaved-thinking-2025-05-14, files-api-2025-04-14,totally-unknown-2099", "claude-x", nil, "claude-x",
-			claudeMessagesTestRest[:len(claudeMessagesTestRest)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["context-1m-2025-08-07","interleaved-thinking-2025-05-14"]}`,
+		{"betas filtered", claudeRouteTestBody, "interleaved-thinking-2025-05-14, files-api-2025-04-14,totally-unknown-2099", schemas.ClaudeRouteMessages, "claude-x", nil, "claude-x",
+			claudeRouteTestRest[:len(claudeRouteTestRest)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["context-1m-2025-08-07","interleaved-thinking-2025-05-14"]}`,
 			[]string{"files-api-2025-04-14", "totally-unknown-2099"}},
-		{"version kept, nothing dropped", versioned, "", "claude-x", nil, "claude-x",
+		{"version kept, nothing dropped", versioned, "", schemas.ClaudeRouteMessages, "claude-x", nil, "claude-x",
 			`{"anthropic_version":"v-own","messages":[],"anthropic_beta":["context-1m-2025-08-07"]}`, nil},
-		{"resolved alias names the model", versioned, "", "tok__claude-x",
+		{"resolved alias names the model", versioned, "", schemas.ClaudeRouteMessages, "tok__claude-x",
 			&schemas.ResolvedAlias{Key: "tok__claude-x", Config: &schemas.AliasConfig{ModelID: "claude-sonnet-4-5@20250929"}}, "claude-sonnet-4-5@20250929",
 			`{"anthropic_version":"v-own","messages":[],"anthropic_beta":["context-1m-2025-08-07"]}`, nil},
+		{"count-tokens keeps model, betas filtered", claudeRouteTestBody, "files-api-2025-04-14", schemas.ClaudeRouteCountTokens, "claude-x", nil, "count-tokens",
+			claudeRouteTestBody[:len(claudeRouteTestBody)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["context-1m-2025-08-07"]}`,
+			[]string{"files-api-2025-04-14"}},
+		{"count-tokens version kept", versioned, "", schemas.ClaudeRouteCountTokens, "claude-x", nil, "count-tokens",
+			`{"anthropic_version":"v-own","model":"claude-x","messages":[],"anthropic_beta":["context-1m-2025-08-07"]}`, nil},
 	}
 	for _, tt := range tests {
 		for _, stream := range []bool{false, true} {
+			if stream && tt.route == schemas.ClaudeRouteCountTokens {
+				continue // core refuses a count-tokens stream
+			}
 			name := tt.name + "/unary"
 			if stream {
 				name = tt.name + "/stream"
@@ -111,8 +129,8 @@ func TestVertexClaudeMessagesPassthrough(t *testing.T) {
 					headers["anthropic-beta"] = tt.betas
 				}
 				req := &schemas.BifrostPassthroughRequest{
-					Method: http.MethodPost, Path: "/ignored/models/other:predict", RawQuery: "beta=true", Model: tt.model,
-					Body: []byte(tt.body), SafeHeaders: headers, ClaudeMessages: true,
+					Method: http.MethodPost, RawQuery: "beta=true", Model: tt.model,
+					Body: []byte(tt.body), SafeHeaders: headers, ClaudeRoute: tt.route,
 				}
 				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 				if tt.alias != nil {
@@ -121,6 +139,7 @@ func TestVertexClaudeMessagesPassthrough(t *testing.T) {
 				var dropped []string
 				var usage *schemas.BifrostPassthroughUsage
 				method := ":rawPredict"
+				messages := tt.route == schemas.ClaudeRouteMessages
 				if stream {
 					method = ":streamRawPredict"
 					dropped, usage = drainClaudeStream(t, provider, ctx, key, req)
@@ -130,17 +149,23 @@ func TestVertexClaudeMessagesPassthrough(t *testing.T) {
 						t.Fatalf("Passthrough: %s", bifrostErr.GetErrorString())
 					}
 					dropped, usage = resp.DroppedBetas, resp.PassthroughUsage
-					if want := "/v1/projects/p/locations/us-east5/publishers/anthropic/models/" + tt.wantModel + method; resp.ExtraFields.PassthroughPath != want {
+					if want := upstreamPrefix + tt.wantModel + method; resp.ExtraFields.PassthroughPath != want {
 						t.Fatalf("PassthroughPath = %q, want the upstream path %q", resp.ExtraFields.PassthroughPath, want)
 					}
 				}
 				got := <-seen
-				want := claudeUpstreamSeen{"/v1/projects/p/locations/us-east5/publishers/anthropic/models/" + tt.wantModel + method, "", "Bearer t", "", tt.wantBody}
+				want := claudeUpstreamSeen{upstreamPrefix + tt.wantModel + method, "", "Bearer t", "", tt.wantBody}
 				if got != want {
 					t.Fatalf("upstream saw\n %+v\nwant\n %+v", got, want)
 				}
 				if !reflect.DeepEqual(dropped, tt.wantDropped) {
 					t.Fatalf("DroppedBetas = %#v, want %#v", dropped, tt.wantDropped)
+				}
+				if !messages {
+					if usage != nil {
+						t.Fatalf("count-tokens parsed usage %+v", usage)
+					}
+					return
 				}
 				if usage == nil || usage.LLMUsage == nil || usage.LLMUsage.PromptTokens != 7 || usage.LLMUsage.CompletionTokens != 5 {
 					t.Fatalf("usage = %+v", usage)
@@ -193,7 +218,7 @@ func TestVertexAnthropicPassthroughStreamBillsContainer(t *testing.T) {
 	}
 }
 
-// drainClaudeStream reads a ClaudeMessages stream, checks every chunk carries the same
+// drainClaudeStream reads a ClaudeRoute stream, checks every chunk carries the same
 // DroppedBetas, and returns them with the final chunk's usage.
 func drainClaudeStream(t *testing.T, provider *VertexProvider, ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) ([]string, *schemas.BifrostPassthroughUsage) {
 	t.Helper()
@@ -235,9 +260,9 @@ func drainClaudeStream(t *testing.T, provider *VertexProvider, ctx *schemas.Bifr
 	}
 }
 
-// TestVertexClaudeMessagesRefusesUnsafeModel: the model Vertex splices into the URL path, the
+// TestVertexClaudeRouteRefusesUnsafeModel: the model Vertex splices into the URL (path or host), the
 // request's or the resolved alias's, must be one safe segment; anything else is a 400 sent nowhere.
-func TestVertexClaudeMessagesRefusesUnsafeModel(t *testing.T) {
+func TestVertexClaudeRouteRefusesUnsafeModel(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits.Add(1) }))
 	t.Cleanup(srv.Close)
@@ -261,12 +286,13 @@ func TestVertexClaudeMessagesRefusesUnsafeModel(t *testing.T) {
 			if tt.aliasModel != "" {
 				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: tt.model, Config: &schemas.AliasConfig{ModelID: tt.aliasModel}})
 			}
-			req := func() *schemas.BifrostPassthroughRequest {
-				return &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Model: tt.model, Body: []byte(`{}`), ClaudeMessages: true}
+			req := func(route schemas.ClaudeRoute) *schemas.BifrostPassthroughRequest {
+				return &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Model: tt.model, Body: []byte(`{}`), ClaudeRoute: route}
 			}
-			_, unaryErr := provider.Passthrough(ctx, key, req())
-			_, streamErr := provider.PassthroughStream(ctx, nil, nil, key, req())
-			for name, bifrostErr := range map[string]*schemas.BifrostError{"Passthrough": unaryErr, "PassthroughStream": streamErr} {
+			_, unaryErr := provider.Passthrough(ctx, key, req(schemas.ClaudeRouteMessages))
+			_, streamErr := provider.PassthroughStream(ctx, nil, nil, key, req(schemas.ClaudeRouteMessages))
+			_, countErr := provider.Passthrough(ctx, key, req(schemas.ClaudeRouteCountTokens))
+			for name, bifrostErr := range map[string]*schemas.BifrostError{"Passthrough": unaryErr, "PassthroughStream": streamErr, "count-tokens": countErr} {
 				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
 					t.Fatalf("%s: want a 400, got %+v", name, bifrostErr)
 				}
