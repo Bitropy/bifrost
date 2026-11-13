@@ -24,12 +24,7 @@ var claudeModelRe = regexp.MustCompile(`^[A-Za-z0-9._@:-]+$`)
 // ":streamRawPredict"); count-tokens calls the shared count-tokens model on the model's host. A model
 // that is not a single safe path segment is a 400.
 func (provider *VertexProvider) claudeRouteURL(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest, projectID, keyRegion, method string) (string, string, *schemas.BifrostError) {
-	// req.Model may be a routing name that key selection resolved through an alias; the
-	// alias's ModelID is the Vertex model to call.
-	model := req.Model
-	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.ModelID != "" {
-		model = ra.Config.ModelID
-	}
+	model := claudeRouteModel(ctx, req)
 	if !claudeModelRe.MatchString(model) {
 		return "", "", providerUtils.NewBifrostBadRequestError(fmt.Sprintf("Claude route passthrough: %q is not a Vertex model ID", model))
 	}
@@ -47,6 +42,15 @@ func (provider *VertexProvider) claudeRouteURL(ctx *schemas.BifrostContext, key 
 	return requestURL, path, nil
 }
 
+// claudeRouteModel is the Vertex model a ClaudeRoute request calls: req.Model may be a routing name
+// that key selection resolved through an alias, whose ModelID is then the model.
+func claudeRouteModel(ctx *schemas.BifrostContext, req *schemas.BifrostPassthroughRequest) string {
+	if ra := schemas.GetResolvedAlias(ctx); ra != nil && ra.Config != nil && ra.Config.ModelID != "" {
+		return ra.Config.ModelID
+	}
+	return req.Model
+}
+
 // setClaudeRouteBody puts the Vertex form of a ClaudeRoute body (claudeRouteBody) on fasthttpReq,
 // after the headers, and returns the betas Vertex does not support. The body is never
 // regex-rewritten.
@@ -55,35 +59,50 @@ func (provider *VertexProvider) setClaudeRouteBody(ctx *schemas.BifrostContext, 
 	// Vertex reads betas from the body only.
 	fasthttpReq.Header.Del(anthropic.AnthropicBetaHeader)
 	// count-tokens reads the model from the body; rawPredict takes it from the URL.
-	fasthttpReq.SetBodyRaw(claudeRouteBody(req.Body, kept, req.ClaudeRoute == schemas.ClaudeRouteCountTokens))
+	var bodyModel string
+	if req.ClaudeRoute == schemas.ClaudeRouteCountTokens {
+		bodyModel = claudeRouteModel(ctx, req)
+	}
+	fasthttpReq.SetBodyRaw(claudeRouteBody(req.Body, kept, bodyModel))
 	return dropped
 }
 
-// claudeRouteBody adapts an Anthropic body to Vertex rawPredict: the top-level model is removed
-// unless keepModel (the URL names it), anthropic_version is added when absent, and anthropic_beta is
+// claudeRouteBody adapts an Anthropic body to Vertex rawPredict: the top-level model is removed when
+// bodyModel is empty (the URL names it), else its value is bodyModel, in place (count-tokens reads it
+// from the body, so it must name the Vertex model the alias resolved to), anthropic_version is added when absent, and anthropic_beta is
 // set to betas (removed when betas is empty; a client's own anthropic_beta member is replaced, so
 // the filtered header betas are the only ones sent). Every other member is copied byte for byte,
 // in one pass into one buffer. A body that is not a valid JSON object is returned unchanged for
 // Vertex to refuse.
-func claudeRouteBody(body []byte, betas []string, keepModel bool) []byte {
+func claudeRouteBody(body []byte, betas []string, bodyModel string) []byte {
 	raw := unsafe.String(unsafe.SliceData(body), len(body)) // read-only view, no copy
 	parsed := gjson.Parse(raw)
 	if !parsed.IsObject() || !gjson.Valid(raw) {
 		return body
 	}
-	var betaJSON []byte
+	var betaJSON, modelJSON []byte
 	if len(betas) > 0 {
 		betaJSON, _ = json.Marshal(betas) // a []string always marshals
 	}
-	out := make([]byte, 0, len(body)+len(`,"anthropic_version":""`)+len(anthropic.VertexAnthropicVersion)+len(`,"anthropic_beta":`)+len(betaJSON))
+	if bodyModel != "" {
+		modelJSON, _ = json.Marshal(bodyModel) // a string always marshals
+	}
+	out := make([]byte, 0, len(body)+len(`,"anthropic_version":""`)+len(anthropic.VertexAnthropicVersion)+len(`,"anthropic_beta":`)+len(betaJSON)+len(modelJSON))
 	out = append(out, '{')
 	hasVersion := false
 	parsed.ForEach(func(k, v gjson.Result) bool {
 		switch k.Str {
 		case "model":
-			if !keepModel {
+			if modelJSON == nil {
 				return true
 			}
+			if len(out) > 1 {
+				out = append(out, ',')
+			}
+			out = append(out, body[k.Index:k.Index+len(k.Raw)]...)
+			out = append(out, ':')
+			out = append(out, modelJSON...)
+			return true
 		case "anthropic_beta":
 			return true
 		case "anthropic_version":
