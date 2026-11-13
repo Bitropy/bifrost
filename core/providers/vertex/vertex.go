@@ -4754,14 +4754,15 @@ func (provider *VertexProvider) Passthrough(
 	}
 
 	var requestURL, authQuery string
+	var urlErr *schemas.BifrostError
 	upstreamPath := req.Path
 	if req.ClaudeMessages {
-		requestURL, upstreamPath = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":rawPredict")
+		requestURL, upstreamPath, urlErr = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":rawPredict")
 	} else {
-		var urlErr *schemas.BifrostError
-		if requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion); urlErr != nil {
-			return nil, urlErr
-		}
+		requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion)
+	}
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	// Prepare fasthttp request
@@ -4808,7 +4809,7 @@ func (provider *VertexProvider) Passthrough(
 
 	var droppedBetas []string
 	if req.ClaudeMessages {
-		droppedBetas = provider.setClaudeMessagesBody(fasthttpReq, req)
+		droppedBetas = provider.setClaudeMessagesBody(ctx, fasthttpReq, req)
 	} else {
 		setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
 	}
@@ -4890,14 +4891,15 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	var requestURL, authQuery string
+	var urlErr *schemas.BifrostError
 	upstreamPath := req.Path
 	if req.ClaudeMessages {
-		requestURL, upstreamPath = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict")
+		requestURL, upstreamPath, urlErr = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict")
 	} else {
-		var urlErr *schemas.BifrostError
-		if requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion); urlErr != nil {
-			return nil, urlErr
-		}
+		requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion)
+	}
+	if urlErr != nil {
+		return nil, urlErr
 	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
@@ -4942,7 +4944,7 @@ func (provider *VertexProvider) PassthroughStream(
 
 	var droppedBetas []string
 	if req.ClaudeMessages {
-		droppedBetas = provider.setClaudeMessagesBody(fasthttpReq, req)
+		droppedBetas = provider.setClaudeMessagesBody(ctx, fasthttpReq, req)
 	} else {
 		setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
 	}

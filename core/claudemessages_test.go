@@ -53,6 +53,24 @@ func TestClaudeMessagesRefusedWhereUnsupported(t *testing.T) {
 		})
 	}
 
+	t.Run("empty model", func(t *testing.T) {
+		req := func() *schemas.BifrostPassthroughRequest {
+			r := newReq()
+			r.Model = ""
+			return r
+		}
+		_, unaryErr := client.Passthrough(newPassthroughContext(t), schemas.Anthropic, req())
+		_, streamErr := client.PassthroughStream(newPassthroughContext(t), schemas.Anthropic, req())
+		for name, bifrostErr := range map[string]*schemas.BifrostError{"Passthrough": unaryErr, "PassthroughStream": streamErr} {
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s: want a 400, got %+v", name, bifrostErr)
+			}
+		}
+		if hits.Load() != 0 {
+			t.Fatal("the upstream was called")
+		}
+	})
+
 	t.Run("anthropic control", func(t *testing.T) {
 		resp, bifrostErr := client.Passthrough(newPassthroughContext(t), schemas.Anthropic, newReq())
 		if bifrostErr != nil || resp.StatusCode != http.StatusOK || hits.Load() != 1 {

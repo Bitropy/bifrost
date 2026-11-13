@@ -6260,13 +6260,23 @@ func TestClaudeMessagesBetas(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			kept, dropped := ClaudeMessagesBetas(tt.client, extra, tt.provider, nil)
+			kept, dropped := ClaudeMessagesBetas(context.Background(), tt.client, extra, tt.provider, nil)
 			if !reflect.DeepEqual(kept, tt.wantKept) || !reflect.DeepEqual(dropped, tt.wantDropped) {
 				t.Fatalf("kept %#v dropped %#v, want %#v %#v", kept, dropped, tt.wantKept, tt.wantDropped)
 			}
 		})
 	}
-	if kept, dropped := ClaudeMessagesBetas(nil, nil, schemas.Vertex, nil); kept != nil || dropped != nil {
+	// Betas in the context's extra headers are written onto the request too, so they are filtered
+	// and reported like the client's, not removed silently with the header.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"anthropic-beta": {"files-api-2025-04-14,interleaved-thinking-2025-05-14"}})
+	// The OAuth passthrough headers are Anthropic-only and never reach Vertex or Azure.
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughHeaders, map[string][]string{"anthropic-beta": {"oauth-2025-04-20"}})
+	kept, dropped := ClaudeMessagesBetas(ctx, map[string]string{"anthropic-beta": "interleaved-thinking-2025-05-14"}, extra, schemas.Vertex, nil)
+	if !reflect.DeepEqual(kept, []string{"context-1m-2025-08-07", "interleaved-thinking-2025-05-14"}) || !reflect.DeepEqual(dropped, []string{"files-api-2025-04-14"}) {
+		t.Fatalf("context betas: kept %#v dropped %#v", kept, dropped)
+	}
+	if kept, dropped := ClaudeMessagesBetas(context.Background(), nil, nil, schemas.Vertex, nil); kept != nil || dropped != nil {
 		t.Fatalf("no betas: kept %#v dropped %#v", kept, dropped)
 	}
 }

@@ -3782,7 +3782,7 @@ func (provider *AzureProvider) setClaudeMessagesHeaders(ctx *schemas.BifrostCont
 		fasthttpReq.Header.Set("anthropic-version", resolveAnthropicVersion(ctx))
 	}
 
-	kept, dropped := anthropic.ClaudeMessagesBetas(req.SafeHeaders, provider.networkConfig.ExtraHeaders, schemas.Azure, provider.networkConfig.BetaHeaderOverrides)
+	kept, dropped := anthropic.ClaudeMessagesBetas(ctx, req.SafeHeaders, provider.networkConfig.ExtraHeaders, schemas.Azure, provider.networkConfig.BetaHeaderOverrides)
 	if len(kept) > 0 {
 		fasthttpReq.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(kept, ","))
 	} else {

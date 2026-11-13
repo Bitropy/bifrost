@@ -242,9 +242,13 @@ func (bifrost *Bifrost) checkStreamedPassthrough(provider schemas.ModelProvider,
 	return nil
 }
 
-// checkClaudeMessages refuses ClaudeMessages on a provider that does not declare it
-// (schemas.ClaudeMessagesProvider).
-func (bifrost *Bifrost) checkClaudeMessages(provider schemas.ModelProvider) *schemas.BifrostError {
+// checkClaudeMessages refuses ClaudeMessages without a Model, which names the endpoint, or on a provider that does not
+// declare it (schemas.ClaudeMessagesProvider).
+func (bifrost *Bifrost) checkClaudeMessages(provider schemas.ModelProvider, model string) *schemas.BifrostError {
+	// Key selection, model access and alias resolution all key on Model.
+	if model == "" {
+		return providerUtils.NewBifrostBadRequestError("Claude Messages passthrough requires a model")
+	}
 	if p, ok := bifrost.getProviderByKey(provider).(schemas.ClaudeMessagesProvider); ok && p.ClaudeMessagesSupport() {
 		return nil
 	}
@@ -3298,7 +3302,7 @@ func (bifrost *Bifrost) Passthrough(
 		}
 	}
 	if req.ClaudeMessages {
-		if err := bifrost.checkClaudeMessages(provider); err != nil {
+		if err := bifrost.checkClaudeMessages(provider, req.Model); err != nil {
 			return nil, err
 		}
 	}
@@ -3342,7 +3346,7 @@ func (bifrost *Bifrost) PassthroughStream(
 		return nil, providerUtils.NewBifrostBadRequestError("passthrough streams take a byte body; BodyReader and StreamResponseBody are for Passthrough")
 	}
 	if req.ClaudeMessages {
-		if err := bifrost.checkClaudeMessages(provider); err != nil {
+		if err := bifrost.checkClaudeMessages(provider, req.Model); err != nil {
 			return nil, err
 		}
 	}
