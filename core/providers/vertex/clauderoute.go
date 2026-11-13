@@ -14,9 +14,10 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// claudeModelRe is what a Vertex model ID may contain. The model is spliced into the URL path, and a
-// passthrough policy only sees POST /v1/messages, so "x/../../endpoints/1" or "m?key=1" would
-// otherwise reach another Vertex resource with the key's token.
+// claudeModelRe is what a Vertex model ID may contain. The model is spliced into the URL (the path on
+// Messages, the host and location on count-tokens), and a passthrough policy only sees the route
+// the client called, so "x/../../endpoints/1" or "m?key=1" would otherwise reach another Vertex
+// resource with the key's token.
 var claudeModelRe = regexp.MustCompile(`^[A-Za-z0-9._@:-]+$`)
 
 // claudeRouteURL returns the Anthropic publisher URL of a ClaudeRoute request for the resolved model,
@@ -67,10 +68,10 @@ func (provider *VertexProvider) setClaudeRouteBody(ctx *schemas.BifrostContext, 
 	return dropped
 }
 
-// claudeRouteBody adapts an Anthropic body to Vertex rawPredict: the top-level model is removed when
-// bodyModel is empty (the URL names it), else its value is bodyModel, in place (count-tokens reads it
-// from the body, so it must name the Vertex model the alias resolved to), anthropic_version is added when absent, and anthropic_beta is
-// set to betas (removed when betas is empty; a client's own anthropic_beta member is replaced, so
+// claudeRouteBody adapts an Anthropic body to Vertex rawPredict. With bodyModel empty the top-level
+// model is removed, since the URL names it. Otherwise model is set to bodyModel, in place or appended
+// when absent: count-tokens reads the model from the body, so it must name the Vertex model the alias
+// resolved to. anthropic_version is added when absent, and anthropic_beta is set to betas (removed when betas is empty; a client's own anthropic_beta member is replaced, so
 // the filtered header betas are the only ones sent). Every other member is copied byte for byte,
 // in one pass into one buffer. A body that is not a valid JSON object is returned unchanged for
 // Vertex to refuse.
@@ -87,20 +88,20 @@ func claudeRouteBody(body []byte, betas []string, bodyModel string) []byte {
 	if bodyModel != "" {
 		modelJSON, _ = json.Marshal(bodyModel) // a string always marshals
 	}
-	out := make([]byte, 0, len(body)+len(`,"anthropic_version":""`)+len(anthropic.VertexAnthropicVersion)+len(`,"anthropic_beta":`)+len(betaJSON)+len(modelJSON))
+	out := make([]byte, 0, len(body)+len(`,"model":`)+len(modelJSON)+len(`,"anthropic_version":""`)+len(anthropic.VertexAnthropicVersion)+len(`,"anthropic_beta":`)+len(betaJSON))
 	out = append(out, '{')
-	hasVersion := false
+	hasVersion, hasModel := false, false
 	parsed.ForEach(func(k, v gjson.Result) bool {
 		switch k.Str {
 		case "model":
-			if modelJSON == nil {
+			if modelJSON == nil || hasModel {
 				return true
 			}
+			hasModel = true
 			if len(out) > 1 {
 				out = append(out, ',')
 			}
-			out = append(out, body[k.Index:k.Index+len(k.Raw)]...)
-			out = append(out, ':')
+			out = append(out, `"model":`...)
 			out = append(out, modelJSON...)
 			return true
 		case "anthropic_beta":
@@ -115,6 +116,13 @@ func claudeRouteBody(body []byte, betas []string, bodyModel string) []byte {
 		out = append(out, body[k.Index:v.Index+len(v.Raw)]...)
 		return true
 	})
+	if modelJSON != nil && !hasModel {
+		if len(out) > 1 {
+			out = append(out, ',')
+		}
+		out = append(out, `"model":`...)
+		out = append(out, modelJSON...)
+	}
 	if !hasVersion {
 		if len(out) > 1 {
 			out = append(out, ',')
