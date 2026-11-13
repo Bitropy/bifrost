@@ -3435,11 +3435,8 @@ func (provider *AnthropicProvider) StreamedPassthroughSupport() (requestBody, re
 // passthroughPath is the upstream path of req: the route's endpoint for a ClaudeRoute request. Usage
 // is parsed by path, so it follows the route: Messages only.
 func passthroughPath(req *schemas.BifrostPassthroughRequest) string {
-	switch req.ClaudeRoute {
-	case schemas.ClaudeRouteMessages:
-		return "/v1/messages"
-	case schemas.ClaudeRouteCountTokens:
-		return "/v1/messages/count_tokens"
+	if req.ClaudeRoute != "" {
+		return req.ClaudeRoute.AnthropicPath()
 	}
 	return req.Path
 }

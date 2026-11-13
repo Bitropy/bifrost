@@ -246,7 +246,8 @@ func (bifrost *Bifrost) checkStreamedPassthrough(provider schemas.ModelProvider,
 // runs, so provider branches assume a valid route. The route needs a Model (key selection, model
 // access and alias resolution key on it), no Path (the provider builds the endpoint), and a provider
 // built on anthropic, vertex or azure; count-tokens is unary only, and azure has no count-tokens
-// endpoint, which it answers as AzureProvider.CountTokens does.
+// endpoint, which it answers as AzureProvider.CountTokens does. A malformed route is the calling
+// code's error, not the client's, so it is a configuration error (no status), not a 400.
 func (bifrost *Bifrost) validateClaudeRoute(provider schemas.ModelProvider, req *schemas.BifrostPassthroughRequest, stream bool) *schemas.BifrostError {
 	switch req.ClaudeRoute {
 	case "":

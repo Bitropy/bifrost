@@ -49,6 +49,8 @@ func TestClaudeRouteBody(t *testing.T) {
 			claudeRouteTestBody[:len(claudeRouteTestBody)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["a-1"]}`},
 		{"count-tokens model set in place", ` {"a":1, "model" : "tok__x","b":2}`, nil, "claude-sonnet-4-5@20250929",
 			`{"a":1,"model":"claude-sonnet-4-5@20250929","b":2,"anthropic_version":"vertex-2023-10-16"}`},
+		{"count-tokens model appended when absent", `{"a":1}`, nil, "claude-x",
+			`{"a":1,"model":"claude-x","anthropic_version":"vertex-2023-10-16"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

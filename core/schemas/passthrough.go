@@ -158,12 +158,28 @@ type BifrostPassthroughRequest struct {
 // Path-driven pass-through. Bifrost.Passthrough and Bifrost.PassthroughStream refuse every
 // combination no provider serves before any provider code runs. RawQuery is forwarded on anthropic,
 // whose endpoint is the client's own, and dropped on vertex and azure, whose endpoints take none.
+//
+// Client anthropic-beta values: native anthropic forwards them unfiltered; vertex and azure keep the
+// ones they support; a custom provider built on anthropic sends none, since its upstream need not
+// accept any. Every value not sent is reported in BifrostPassthroughResponse.DroppedBetas.
 type ClaudeRoute string
 
 const (
 	ClaudeRouteMessages    ClaudeRoute = "messages"     // Anthropic Messages, unary or stream by entry point
 	ClaudeRouteCountTokens ClaudeRoute = "count_tokens" // Anthropic count-tokens, unary only; azure has none (unsupported_operation)
 )
+
+// AnthropicPath is the Anthropic API path the route names, as a client calls it; "" for any other
+// value.
+func (r ClaudeRoute) AnthropicPath() string {
+	switch r {
+	case ClaudeRouteMessages:
+		return "/v1/messages"
+	case ClaudeRouteCountTokens:
+		return "/v1/messages/count_tokens"
+	}
+	return ""
+}
 
 // StreamedPassthroughProvider is implemented by a provider whose Passthrough sends a BodyReader as it
 // is read (requestBody) and returns a 2xx body as BodyStream (responseBody). Bifrost.Passthrough

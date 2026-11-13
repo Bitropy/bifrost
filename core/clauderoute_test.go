@@ -42,28 +42,34 @@ func TestValidateClaudeRoute(t *testing.T) {
 	}
 	t.Cleanup(client.Shutdown)
 
-	base := map[schemas.ModelProvider]schemas.ModelProvider{customAnthropic: schemas.Anthropic, customOpenAI: schemas.OpenAI}
-	// want is the spec's validation table: "" for valid, else "config" or "unsupported_operation".
+	// Answers with no Path: "" valid, else "config" or "unsupported_operation". A provider not listed
+	// (every other standard one, and the custom provider built on openai) answers "config" everywhere.
+	type answers struct{ messages, messagesStream, countTokens, countTokensStream string }
+	served := map[schemas.ModelProvider]answers{
+		schemas.Anthropic: {"", "", "", "config"},
+		schemas.Vertex:    {"", "", "", "config"},
+		schemas.Azure:     {"", "", "unsupported_operation", "config"},
+		customAnthropic:   {"", "", "", "config"},
+	}
 	want := func(provider schemas.ModelProvider, route schemas.ClaudeRoute, path string, stream bool) string {
-		b := provider
-		if mapped, ok := base[provider]; ok {
-			b = mapped
+		if route == "" {
+			return "" // the Path-driven pass-through, not validated here
+		}
+		a, ok := served[provider]
+		if !ok || path != "" {
+			a = answers{"config", "config", "config", "config"}
 		}
 		switch {
-		case route == "":
-			return ""
-		case route != schemas.ClaudeRouteMessages && route != schemas.ClaudeRouteCountTokens:
-			return "config"
-		case path != "":
-			return "config"
-		case b != schemas.Anthropic && b != schemas.Vertex && b != schemas.Azure:
-			return "config"
-		case route == schemas.ClaudeRouteCountTokens && stream:
-			return "config"
-		case route == schemas.ClaudeRouteCountTokens && b == schemas.Azure:
-			return "unsupported_operation"
+		case route == schemas.ClaudeRouteMessages && !stream:
+			return a.messages
+		case route == schemas.ClaudeRouteMessages:
+			return a.messagesStream
+		case route == schemas.ClaudeRouteCountTokens && !stream:
+			return a.countTokens
+		case route == schemas.ClaudeRouteCountTokens:
+			return a.countTokensStream
 		}
-		return ""
+		return "config" // an unknown route value
 	}
 	kind := func(bifrostErr *schemas.BifrostError) string {
 		switch {

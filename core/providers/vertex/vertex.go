@@ -4832,11 +4832,15 @@ func (provider *VertexProvider) Passthrough(
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	var servedModel string
 	var providerJob *schemas.BifrostPassthroughJob
-	// count-tokens records no spend.
-	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 && req.ClaudeRoute != schemas.ClaudeRouteCountTokens {
+	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		switch passthroughWireFormat(req) {
 		case schemas.Anthropic:
-			passthroughUsage = anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", req.Body, body)
+			if req.ClaudeRoute != "" {
+				// By the route's Anthropic path, so count-tokens parses none.
+				passthroughUsage = anthropic.ExtractAnthropicPassthroughUsage(req.ClaudeRoute.AnthropicPath(), req.Body, body)
+			} else {
+				passthroughUsage = anthropic.ExtractAnthropicMessagesUsage(body)
+			}
 		case schemas.Mistral:
 			passthroughUsage = openai.ExtractOAIChatUsage(body)
 		case schemas.OpenAI:
