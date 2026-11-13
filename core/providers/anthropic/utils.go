@@ -3452,9 +3452,9 @@ func mergeBetaValues(providerExtraHeaders map[string]schemas.SecretVar, sources 
 	return all
 }
 
-// ClaudeMessagesBetas returns the anthropic-beta values a ClaudeMessages request carries that
-// provider accepts, and those it does not as dropped, nil when none.
-func ClaudeMessagesBetas(ctx context.Context, safeHeaders map[string]string, providerExtraHeaders map[string]schemas.SecretVar, provider schemas.ModelProvider, overrides map[string]bool) (kept, dropped []string) {
+// ClaudeRouteBetas returns the anthropic-beta values a ClaudeRoute request carries that provider
+// accepts, and those it does not as dropped, nil when none.
+func ClaudeRouteBetas(ctx context.Context, safeHeaders map[string]string, providerExtraHeaders map[string]schemas.SecretVar, provider schemas.ModelProvider, overrides map[string]bool) (kept, dropped []string) {
 	// Only the extra headers: SetExtraHeaders writes them onto every request, while the OAuth
 	// passthrough headers are Anthropic-only and must not reach Vertex or Azure.
 	merged := mergeBetaValues(providerExtraHeaders, contextBetaValues(ctx, schemas.BifrostContextKeyExtraHeaders), headerBetaValues(safeHeaders))
