@@ -3429,11 +3429,14 @@ func headerBetaValues(headers map[string]string) iter.Seq[string] {
 // mergeBetaValues splits the anthropic-beta values of providerExtraHeaders, then of each source in
 // order, on commas and returns them trimmed and deduplicated in first-seen order.
 func mergeBetaValues(providerExtraHeaders map[string]schemas.SecretVar, sources ...iter.Seq[string]) []string {
-	seen := make(map[string]bool)
+	var seen map[string]bool // allocated on the first value, so no betas cost nothing
 	var all []string
 	add := func(v string) {
 		for part := range strings.SplitSeq(v, ",") {
 			if t := strings.TrimSpace(part); t != "" && !seen[t] {
+				if seen == nil {
+					seen = make(map[string]bool)
+				}
 				seen[t] = true
 				all = append(all, t)
 			}
