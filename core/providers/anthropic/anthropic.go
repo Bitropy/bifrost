@@ -3432,18 +3432,31 @@ func (provider *AnthropicProvider) StreamedPassthroughSupport() (requestBody, re
 	return true, true
 }
 
-// ClaudeMessagesSupport declares that Passthrough serves ClaudeMessages requests.
-func (provider *AnthropicProvider) ClaudeMessagesSupport() bool {
-	return true
-}
-
-// passthroughPath is the upstream path of req: the Messages endpoint for a ClaudeMessages request.
-// Its betas go out as today, unfiltered, so the native path does no extra work.
+// passthroughPath is the upstream path of req: the route's endpoint for a ClaudeRoute request. Usage
+// is parsed by path, so it follows the route: Messages only.
 func passthroughPath(req *schemas.BifrostPassthroughRequest) string {
-	if req.ClaudeMessages {
-		return "/v1/messages"
+	if req.ClaudeRoute != "" {
+		return req.ClaudeRoute.AnthropicPath()
 	}
 	return req.Path
+}
+
+// setPassthroughSafeHeaders copies the client headers onto fasthttpReq and returns the client
+// anthropic-beta values it withheld. A custom provider built on anthropic sends none on a ClaudeRoute
+// request, since its upstream need not accept them; native anthropic sends them unfiltered, so the
+// dominant native path does no extra work.
+func (provider *AnthropicProvider) setPassthroughSafeHeaders(fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest) []string {
+	withhold := req.ClaudeRoute != "" && provider.customProviderConfig != nil
+	for k, v := range req.SafeHeaders {
+		if withhold && strings.EqualFold(k, AnthropicBetaHeader) {
+			continue
+		}
+		fasthttpReq.Header.Set(k, v)
+	}
+	if !withhold {
+		return nil
+	}
+	return mergeBetaValues(nil, headerBetaValues(req.SafeHeaders))
 }
 
 func (provider *AnthropicProvider) Passthrough(
@@ -3473,9 +3486,7 @@ func (provider *AnthropicProvider) Passthrough(
 	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
 
 	providerUtils.StripCallerAuthForInsecureURL(url, req.SafeHeaders)
-	for k, v := range req.SafeHeaders {
-		fasthttpReq.Header.Set(k, v)
-	}
+	droppedBetas := provider.setPassthroughSafeHeaders(fasthttpReq, req)
 
 	if key.Value.GetValue() != "" {
 		setKeyAuth(fasthttpReq, key)
@@ -3488,6 +3499,7 @@ func (provider *AnthropicProvider) Passthrough(
 		streamed, bifrostErr := providerUtils.DoPassthroughStreamResponse(ctx, provider.streamingClient, fasthttpReq, path, provider.networkConfig.StreamIdleTimeoutInSeconds)
 		if bifrostErr == nil {
 			provider.dropRejectedToken(key, streamed.StatusCode)
+			streamed.DroppedBetas = droppedBetas
 		}
 		return streamed, bifrostErr
 	}
@@ -3524,6 +3536,7 @@ func (provider *AnthropicProvider) Passthrough(
 			PassthroughPath:         path,
 		},
 		PassthroughUsage: passthroughUsage,
+		DroppedBetas:     droppedBetas,
 	}
 
 	return bifrostResponse, nil
@@ -3562,9 +3575,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
 
 	providerUtils.StripCallerAuthForInsecureURL(url, req.SafeHeaders)
-	for k, v := range req.SafeHeaders {
-		fasthttpReq.Header.Set(k, v)
-	}
+	droppedBetas := provider.setPassthroughSafeHeaders(fasthttpReq, req)
 
 	fasthttpReq.Header.Set("Connection", "close")
 
@@ -3628,6 +3639,7 @@ func (provider *AnthropicProvider) PassthroughStream(
 			CancellationBody: req.Body,
 			StartTime:        startTime,
 			Logger:           provider.logger,
+			DroppedBetas:     droppedBetas,
 			HasUsage:         HasAnthropicPassthroughUsage,
 			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
 				if messagesUsage != nil {

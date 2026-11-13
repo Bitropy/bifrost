@@ -3755,16 +3755,12 @@ func (provider *AzureProvider) StreamedPassthroughSupport() (requestBody, respon
 	return true, true
 }
 
-// ClaudeMessagesSupport declares that Passthrough serves ClaudeMessages requests.
-func (provider *AzureProvider) ClaudeMessagesSupport() bool {
-	return true
-}
-
-// passthroughRoute returns the upstream URL and path of req. A ClaudeMessages request goes to the
-// deployment's Anthropic Messages endpoint, which takes no api-version and no client query.
+// passthroughRoute returns the upstream URL and path of req. A ClaudeRoute request (Messages; core
+// refuses count-tokens, which Azure lacks) goes to the deployment's Anthropic Messages endpoint,
+// which takes no api-version and no client query.
 func (provider *AzureProvider) passthroughRoute(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (string, string, *schemas.BifrostError) {
 	path, rawQuery := req.Path, req.RawQuery
-	if req.ClaudeMessages {
+	if req.ClaudeRoute != "" {
 		path, rawQuery = "/anthropic/v1/messages", ""
 	}
 	url, err := provider.buildPassthroughURL(ctx, key, path, rawQuery)
@@ -3774,15 +3770,15 @@ func (provider *AzureProvider) passthroughRoute(ctx *schemas.BifrostContext, key
 	return url, path, nil
 }
 
-// setClaudeMessagesHeaders sets anthropic-version (the client's, else the alias's or default) and
-// the betas Azure supports on a ClaudeMessages request, and returns the betas it dropped.
-func (provider *AzureProvider) setClaudeMessagesHeaders(ctx *schemas.BifrostContext, fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest) []string {
+// setClaudeRouteHeaders sets anthropic-version (the client's, else the alias's or default) and the
+// betas Azure supports on a ClaudeRoute request, and returns the betas it dropped.
+func (provider *AzureProvider) setClaudeRouteHeaders(ctx *schemas.BifrostContext, fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest) []string {
 	// The client's anthropic-version, if any, is already on fasthttpReq from SafeHeaders.
 	if len(fasthttpReq.Header.Peek("anthropic-version")) == 0 {
 		fasthttpReq.Header.Set("anthropic-version", resolveAnthropicVersion(ctx))
 	}
 
-	kept, dropped := anthropic.ClaudeMessagesBetas(ctx, req.SafeHeaders, provider.networkConfig.ExtraHeaders, schemas.Azure, provider.networkConfig.BetaHeaderOverrides)
+	kept, dropped := anthropic.ClaudeRouteBetas(ctx, req.SafeHeaders, provider.networkConfig.ExtraHeaders, schemas.Azure, provider.networkConfig.BetaHeaderOverrides)
 	if len(kept) > 0 {
 		fasthttpReq.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(kept, ","))
 	} else {
@@ -3814,7 +3810,7 @@ func (provider *AzureProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	isAnthropic := req.ClaudeMessages || schemas.IsAnthropicModelFamily(ctx, req.Model)
+	isAnthropic := req.ClaudeRoute != "" || schemas.IsAnthropicModelFamily(ctx, req.Model)
 	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, isAnthropic)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3823,8 +3819,8 @@ func (provider *AzureProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 	var droppedBetas []string
-	if req.ClaudeMessages {
-		droppedBetas = provider.setClaudeMessagesHeaders(ctx, fasthttpReq, req)
+	if req.ClaudeRoute != "" {
+		droppedBetas = provider.setClaudeRouteHeaders(ctx, fasthttpReq, req)
 	}
 
 	providerUtils.SetPassthroughRequestBody(fasthttpReq, req)
@@ -3904,7 +3900,7 @@ func (provider *AzureProvider) PassthroughStream(
 
 	fasthttpReq.Header.Set("Connection", "close")
 
-	isAnthropic := req.ClaudeMessages || schemas.IsAnthropicModelFamily(ctx, req.Model)
+	isAnthropic := req.ClaudeRoute != "" || schemas.IsAnthropicModelFamily(ctx, req.Model)
 	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, isAnthropic)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -3913,8 +3909,8 @@ func (provider *AzureProvider) PassthroughStream(
 		fasthttpReq.Header.Set(k, v)
 	}
 	var droppedBetas []string
-	if req.ClaudeMessages {
-		droppedBetas = provider.setClaudeMessagesHeaders(ctx, fasthttpReq, req)
+	if req.ClaudeRoute != "" {
+		droppedBetas = provider.setClaudeRouteHeaders(ctx, fasthttpReq, req)
 	}
 
 	fasthttpReq.SetBody(req.Body)

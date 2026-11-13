@@ -6243,7 +6243,7 @@ const claudeMessagesTestBody = `{"model":"claude-x","max_tokens":64,"thinking":{
 	`"messages":[{"role":"user","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"doc"},"citations":{"enabled":true},"cache_control":{"type":"ephemeral"}},` +
 	`{"type":"text","text":"see projects/x/locations/y and \"models/z\" please"}]}],"x_unknown":{"a":  1}}`
 
-func TestClaudeMessagesBetas(t *testing.T) {
+func TestClaudeRouteBetas(t *testing.T) {
 	extra := map[string]schemas.SecretVar{"Anthropic-Beta": *schemas.NewSecretVar("context-1m-2025-08-07")}
 	tests := []struct {
 		name        string
@@ -6260,7 +6260,7 @@ func TestClaudeMessagesBetas(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			kept, dropped := ClaudeMessagesBetas(context.Background(), tt.client, extra, tt.provider, nil)
+			kept, dropped := ClaudeRouteBetas(context.Background(), tt.client, extra, tt.provider, nil)
 			if !reflect.DeepEqual(kept, tt.wantKept) || !reflect.DeepEqual(dropped, tt.wantDropped) {
 				t.Fatalf("kept %#v dropped %#v, want %#v %#v", kept, dropped, tt.wantKept, tt.wantDropped)
 			}
@@ -6272,19 +6272,20 @@ func TestClaudeMessagesBetas(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"anthropic-beta": {"files-api-2025-04-14,interleaved-thinking-2025-05-14"}})
 	// The OAuth passthrough headers are Anthropic-only and never reach Vertex or Azure.
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughHeaders, map[string][]string{"anthropic-beta": {"oauth-2025-04-20"}})
-	kept, dropped := ClaudeMessagesBetas(ctx, map[string]string{"anthropic-beta": "interleaved-thinking-2025-05-14"}, extra, schemas.Vertex, nil)
+	kept, dropped := ClaudeRouteBetas(ctx, map[string]string{"anthropic-beta": "interleaved-thinking-2025-05-14"}, extra, schemas.Vertex, nil)
 	if !reflect.DeepEqual(kept, []string{"context-1m-2025-08-07", "interleaved-thinking-2025-05-14"}) || !reflect.DeepEqual(dropped, []string{"files-api-2025-04-14"}) {
 		t.Fatalf("context betas: kept %#v dropped %#v", kept, dropped)
 	}
-	if kept, dropped := ClaudeMessagesBetas(context.Background(), nil, nil, schemas.Vertex, nil); kept != nil || dropped != nil {
+	if kept, dropped := ClaudeRouteBetas(context.Background(), nil, nil, schemas.Vertex, nil); kept != nil || dropped != nil {
 		t.Fatalf("no betas: kept %#v dropped %#v", kept, dropped)
 	}
 }
 
-// TestAnthropicClaudeMessagesPassthrough: the native provider sends a ClaudeMessages request to
-// /v1/messages whatever Path says, keeps the client query, forwards the body and betas unchanged
-// (an unknown beta included, nothing filtered or reported) and parses Messages usage.
-func TestAnthropicClaudeMessagesPassthrough(t *testing.T) {
+// TestAnthropicClaudeRoutePassthrough: the provider sends a ClaudeRoute request to the route's
+// endpoint, keeps the client query and forwards the body unchanged. Native anthropic forwards the
+// client betas unfiltered (an unknown one included) and reports none; a custom provider built on
+// anthropic withholds and reports them. Usage is parsed on Messages only.
+func TestAnthropicClaudeRoutePassthrough(t *testing.T) {
 	type seen struct{ path, query, apiKey, betas, body string }
 	got := make(chan seen, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -6298,30 +6299,55 @@ func TestAnthropicClaudeMessagesPassthrough(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/count_tokens") {
+			_, _ = io.WriteString(w, `{"input_tokens":7}`)
+			return
+		}
 		_, _ = io.WriteString(w, `{"type":"message","usage":{"input_tokens":7,"output_tokens":5}}`)
 	}))
 	t.Cleanup(srv.Close)
-	provider := NewAnthropicProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}, truncationTestLogger{})
+	native := NewAnthropicProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}, truncationTestLogger{})
+	custom := NewAnthropicProvider(&schemas.ProviderConfig{
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: srv.URL},
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "my-anthropic", BaseProviderType: schemas.Anthropic},
+	}, truncationTestLogger{})
 	key := schemas.Key{Value: *schemas.NewSecretVar("sk-ant")}
 	const betas = "interleaved-thinking-2025-05-14,totally-unknown-2099"
 
-	for _, stream := range []bool{false, true} {
-		name := "unary"
-		body := claudeMessagesTestBody
-		if stream {
-			name = "stream"
-			body = strings.Replace(body, `"max_tokens":64`, `"max_tokens":64,"stream":true`, 1)
-		}
-		t.Run(name, func(t *testing.T) {
+	tests := []struct {
+		name        string
+		provider    *AnthropicProvider
+		route       schemas.ClaudeRoute
+		stream      bool
+		wantPath    string
+		wantBetas   string
+		wantDropped []string
+	}{
+		{"native messages unary", native, schemas.ClaudeRouteMessages, false, "/v1/messages", betas, nil},
+		{"native messages stream", native, schemas.ClaudeRouteMessages, true, "/v1/messages", betas, nil},
+		{"native count-tokens", native, schemas.ClaudeRouteCountTokens, false, "/v1/messages/count_tokens", betas, nil},
+		{"custom anthropic-base messages unary", custom, schemas.ClaudeRouteMessages, false, "/v1/messages", "",
+			[]string{"interleaved-thinking-2025-05-14", "totally-unknown-2099"}},
+		{"custom anthropic-base messages stream", custom, schemas.ClaudeRouteMessages, true, "/v1/messages", "",
+			[]string{"interleaved-thinking-2025-05-14", "totally-unknown-2099"}},
+		{"custom anthropic-base count-tokens", custom, schemas.ClaudeRouteCountTokens, false, "/v1/messages/count_tokens", "",
+			[]string{"interleaved-thinking-2025-05-14", "totally-unknown-2099"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := claudeMessagesTestBody
+			if tt.stream {
+				body = strings.Replace(body, `"max_tokens":64`, `"max_tokens":64,"stream":true`, 1)
+			}
 			req := &schemas.BifrostPassthroughRequest{
-				Method: http.MethodPost, Path: "/v1/models", RawQuery: "beta=true", Model: "claude-x",
-				Body: []byte(body), SafeHeaders: map[string]string{"anthropic-beta": betas}, ClaudeMessages: true,
+				Method: http.MethodPost, RawQuery: "beta=true", Model: "claude-x",
+				Body: []byte(body), SafeHeaders: map[string]string{"Anthropic-Beta": betas}, ClaudeRoute: tt.route,
 			}
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			var dropped []string
 			var usage *schemas.BifrostPassthroughUsage
-			if stream {
-				ch, bifrostErr := provider.PassthroughStream(ctx, truncationPassthroughPostHook, nil, key, req)
+			if tt.stream {
+				ch, bifrostErr := tt.provider.PassthroughStream(ctx, truncationPassthroughPostHook, nil, key, req)
 				if bifrostErr != nil {
 					t.Fatalf("PassthroughStream: %s", bifrostErr.GetErrorString())
 				}
@@ -6336,9 +6362,10 @@ func TestAnthropicClaudeMessagesPassthrough(t *testing.T) {
 						if chunk.BifrostError != nil {
 							t.Fatalf("stream error: %s", chunk.BifrostError.GetErrorString())
 						}
-						if chunk.BifrostPassthroughResponse.DroppedBetas != nil {
-							dropped = chunk.BifrostPassthroughResponse.DroppedBetas
+						if !reflect.DeepEqual(chunk.BifrostPassthroughResponse.DroppedBetas, tt.wantDropped) {
+							t.Fatalf("chunk DroppedBetas = %#v, want %#v", chunk.BifrostPassthroughResponse.DroppedBetas, tt.wantDropped)
 						}
+						dropped = chunk.BifrostPassthroughResponse.DroppedBetas
 						if u := chunk.BifrostPassthroughResponse.PassthroughUsage; u != nil {
 							usage = u
 						}
@@ -6347,17 +6374,23 @@ func TestAnthropicClaudeMessagesPassthrough(t *testing.T) {
 					}
 				}
 			} else {
-				resp, bifrostErr := provider.Passthrough(ctx, key, req)
+				resp, bifrostErr := tt.provider.Passthrough(ctx, key, req)
 				if bifrostErr != nil {
 					t.Fatalf("Passthrough: %s", bifrostErr.GetErrorString())
 				}
 				dropped, usage = resp.DroppedBetas, resp.PassthroughUsage
 			}
-			if g, want := <-got, (seen{"/v1/messages", "beta=true", "sk-ant", betas, body}); g != want {
+			if g, want := <-got, (seen{tt.wantPath, "beta=true", "sk-ant", tt.wantBetas, body}); g != want {
 				t.Fatalf("upstream saw\n %+v\nwant\n %+v", g, want)
 			}
-			if dropped != nil {
-				t.Fatalf("DroppedBetas = %#v, want nil", dropped)
+			if !reflect.DeepEqual(dropped, tt.wantDropped) {
+				t.Fatalf("DroppedBetas = %#v, want %#v", dropped, tt.wantDropped)
+			}
+			if tt.route == schemas.ClaudeRouteCountTokens {
+				if usage != nil {
+					t.Fatalf("count-tokens parsed usage %+v", usage)
+				}
+				return
 			}
 			if usage == nil || usage.LLMUsage == nil || usage.LLMUsage.PromptTokens != 7 || usage.LLMUsage.CompletionTokens != 5 {
 				t.Fatalf("usage = %+v", usage)

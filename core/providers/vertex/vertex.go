@@ -4477,11 +4477,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	var completeURL string
 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		// Use model-aware host based on request.Model, but URL path uses "count-tokens"
-		forceSingleRegion := resolveVertexForceSingleRegion(ctx, key)
-		effectiveRegion := getVertexEffectiveRegion(region, request.Model, forceSingleRegion)
-		baseURL := getVertexModelAwareAPIBaseURL(provider.networkConfig.BaseURL, region, "v1", request.Model, forceSingleRegion, provider.logger)
-		completeURL = fmt.Sprintf("%s/projects/%s/locations/%s/publishers/%s/models/%s%s", baseURL, projectID, effectiveRegion, "anthropic", "count-tokens", ":rawPredict")
+		completeURL = getVertexAnthropicCountTokensURL(provider.networkConfig.BaseURL, region, projectID, request.Model, resolveVertexForceSingleRegion(ctx, key), provider.logger)
 	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
@@ -4729,10 +4725,9 @@ func setPassthroughBody(fasthttpReq *fasthttp.Request, req *schemas.BifrostPasst
 	}
 }
 
-// passthroughWireFormat is the API req speaks: Anthropic Messages for a ClaudeMessages request,
-// whatever its path, else the path's.
+// passthroughWireFormat is the API req speaks: Anthropic for a ClaudeRoute request, else the path's.
 func passthroughWireFormat(req *schemas.BifrostPassthroughRequest) schemas.ModelProvider {
-	if req.ClaudeMessages {
+	if req.ClaudeRoute != "" {
 		return schemas.Anthropic
 	}
 	return PassthroughWireFormat(req.Path)
@@ -4756,8 +4751,8 @@ func (provider *VertexProvider) Passthrough(
 	var requestURL, authQuery string
 	var urlErr *schemas.BifrostError
 	upstreamPath := req.Path
-	if req.ClaudeMessages {
-		requestURL, upstreamPath, urlErr = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":rawPredict")
+	if req.ClaudeRoute != "" {
+		requestURL, upstreamPath, urlErr = provider.claudeRouteURL(ctx, key, req, projectID, keyRegion, ":rawPredict")
 	} else {
 		requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion)
 	}
@@ -4808,8 +4803,8 @@ func (provider *VertexProvider) Passthrough(
 	}
 
 	var droppedBetas []string
-	if req.ClaudeMessages {
-		droppedBetas = provider.setClaudeMessagesBody(ctx, fasthttpReq, req)
+	if req.ClaudeRoute != "" {
+		droppedBetas = provider.setClaudeRouteBody(ctx, fasthttpReq, req)
 	} else {
 		setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
 	}
@@ -4840,7 +4835,12 @@ func (provider *VertexProvider) Passthrough(
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		switch passthroughWireFormat(req) {
 		case schemas.Anthropic:
-			passthroughUsage = anthropic.ExtractAnthropicMessagesUsage(body)
+			if req.ClaudeRoute != "" {
+				// By the route's Anthropic path, so count-tokens parses none.
+				passthroughUsage = anthropic.ExtractAnthropicPassthroughUsage(req.ClaudeRoute.AnthropicPath(), req.Body, body)
+			} else {
+				passthroughUsage = anthropic.ExtractAnthropicMessagesUsage(body)
+			}
 		case schemas.Mistral:
 			passthroughUsage = openai.ExtractOAIChatUsage(body)
 		case schemas.OpenAI:
@@ -4893,8 +4893,8 @@ func (provider *VertexProvider) PassthroughStream(
 	var requestURL, authQuery string
 	var urlErr *schemas.BifrostError
 	upstreamPath := req.Path
-	if req.ClaudeMessages {
-		requestURL, upstreamPath, urlErr = provider.claudeMessagesURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict")
+	if req.ClaudeRoute != "" {
+		requestURL, upstreamPath, urlErr = provider.claudeRouteURL(ctx, key, req, projectID, keyRegion, ":streamRawPredict")
 	} else {
 		requestURL, authQuery, urlErr = provider.passthroughURL(key, req, projectID, keyRegion)
 	}
@@ -4943,8 +4943,8 @@ func (provider *VertexProvider) PassthroughStream(
 	}
 
 	var droppedBetas []string
-	if req.ClaudeMessages {
-		droppedBetas = provider.setClaudeMessagesBody(ctx, fasthttpReq, req)
+	if req.ClaudeRoute != "" {
+		droppedBetas = provider.setClaudeRouteBody(ctx, fasthttpReq, req)
 	} else {
 		setPassthroughBody(fasthttpReq, req, projectID, keyRegion)
 	}

@@ -242,17 +242,39 @@ func (bifrost *Bifrost) checkStreamedPassthrough(provider schemas.ModelProvider,
 	return nil
 }
 
-// checkClaudeMessages refuses ClaudeMessages without a Model, which names the endpoint, or on a provider that does not
-// declare it (schemas.ClaudeMessagesProvider).
-func (bifrost *Bifrost) checkClaudeMessages(provider schemas.ModelProvider, model string) *schemas.BifrostError {
-	// Key selection, model access and alias resolution all key on Model.
-	if model == "" {
-		return providerUtils.NewBifrostBadRequestError("Claude Messages passthrough requires a model")
-	}
-	if p, ok := bifrost.getProviderByKey(provider).(schemas.ClaudeMessagesProvider); ok && p.ClaudeMessagesSupport() {
+// validateClaudeRoute refuses every ClaudeRoute request no provider serves, before any provider code
+// runs, so provider branches assume a valid route. The route needs a Model (key selection, model
+// access and alias resolution key on it), no Path (the provider builds the endpoint), and a provider
+// built on anthropic, vertex or azure; count-tokens is unary only, and azure has no count-tokens
+// endpoint, which it answers as AzureProvider.CountTokens does. A malformed route is the calling
+// code's error, not the client's, so it is a configuration error (no status), not a 400.
+func (bifrost *Bifrost) validateClaudeRoute(provider schemas.ModelProvider, req *schemas.BifrostPassthroughRequest, stream bool) *schemas.BifrostError {
+	switch req.ClaudeRoute {
+	case "":
 		return nil
+	case schemas.ClaudeRouteMessages, schemas.ClaudeRouteCountTokens:
+	default:
+		return providerUtils.NewConfigurationError(fmt.Sprintf("unknown Claude route %q", req.ClaudeRoute))
 	}
-	return providerUtils.NewBifrostBadRequestError(fmt.Sprintf("Claude Messages passthrough is not supported by the %s provider", provider))
+	if req.Path != "" {
+		return providerUtils.NewConfigurationError("a Claude route request takes no Path")
+	}
+	if req.Model == "" {
+		return providerUtils.NewBifrostBadRequestError("a Claude route request requires a model")
+	}
+	base := bifrost.baseProviderType(provider)
+	if base != schemas.Anthropic && base != schemas.Vertex && base != schemas.Azure {
+		return providerUtils.NewConfigurationError(fmt.Sprintf("Claude route %s is not served by the %s provider", req.ClaudeRoute, provider))
+	}
+	if req.ClaudeRoute == schemas.ClaudeRouteCountTokens {
+		if stream {
+			return providerUtils.NewConfigurationError("Claude route count_tokens has no stream")
+		}
+		if base == schemas.Azure {
+			return providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider)
+		}
+	}
+	return nil
 }
 
 // signalClosing signals the closing of the provider queue.
@@ -3301,10 +3323,8 @@ func (bifrost *Bifrost) Passthrough(
 			return nil, err
 		}
 	}
-	if req.ClaudeMessages {
-		if err := bifrost.checkClaudeMessages(provider, req.Model); err != nil {
-			return nil, err
-		}
+	if err := bifrost.validateClaudeRoute(provider, req, false); err != nil {
+		return nil, err
 	}
 
 	req.Provider = provider
@@ -3345,10 +3365,8 @@ func (bifrost *Bifrost) PassthroughStream(
 	if req.BodyReader != nil || req.StreamResponseBody {
 		return nil, providerUtils.NewBifrostBadRequestError("passthrough streams take a byte body; BodyReader and StreamResponseBody are for Passthrough")
 	}
-	if req.ClaudeMessages {
-		if err := bifrost.checkClaudeMessages(provider, req.Model); err != nil {
-			return nil, err
-		}
+	if err := bifrost.validateClaudeRoute(provider, req, true); err != nil {
+		return nil, err
 	}
 
 	req.Provider = provider
