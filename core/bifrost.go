@@ -262,7 +262,11 @@ func (bifrost *Bifrost) validateClaudeRoute(provider schemas.ModelProvider, req 
 	if req.Model == "" {
 		return providerUtils.NewBifrostBadRequestError("a Claude route request requires a model")
 	}
-	base := bifrost.baseProviderType(provider)
+	// A standard provider is its own base; only a custom one needs the account, whose answer is a copy.
+	base := provider
+	if !IsStandardProvider(provider) {
+		base = bifrost.baseProviderType(provider)
+	}
 	if base != schemas.Anthropic && base != schemas.Vertex && base != schemas.Azure {
 		return providerUtils.NewConfigurationError(fmt.Sprintf("Claude route %s is not served by the %s provider", req.ClaudeRoute, provider))
 	}

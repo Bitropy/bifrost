@@ -135,6 +135,14 @@ func TestValidateClaudeRoute(t *testing.T) {
 		}
 	})
 
+	// The mock account copies the config like a real one does, so asking it would allocate.
+	t.Run("standard provider resolves without the account", func(t *testing.T) {
+		req := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Model: "claude-x", Body: []byte(`{"model":"claude-x"}`), ClaudeRoute: schemas.ClaudeRouteMessages}
+		if allocs := testing.AllocsPerRun(100, func() { _ = client.validateClaudeRoute(schemas.Anthropic, req, false) }); allocs != 0 {
+			t.Fatalf("allocs/op = %v, want 0", allocs)
+		}
+	})
+
 	t.Run("anthropic control", func(t *testing.T) {
 		before := hits.Load()
 		req := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Model: "claude-x", Body: []byte(`{"model":"claude-x"}`), ClaudeRoute: schemas.ClaudeRouteMessages}
