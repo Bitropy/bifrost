@@ -3514,10 +3514,10 @@ func passthroughPath(req *schemas.BifrostPassthroughRequest) string {
 
 // setPassthroughSafeHeaders copies the client headers onto fasthttpReq and returns the client
 // anthropic-beta values it withheld. A custom provider built on anthropic sends none on a ClaudeRoute
-// request, since its upstream need not accept them; native anthropic sends them unfiltered, so the
-// dominant native path does no extra work.
+// request, since its upstream need not accept them; native anthropic, and a native instance split off
+// by endpoint (ClaudeNativeVendor), sends them unfiltered, so the dominant native path does no extra work.
 func (provider *AnthropicProvider) setPassthroughSafeHeaders(fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest) []string {
-	withhold := req.ClaudeRoute != "" && provider.customProviderConfig != nil
+	withhold := req.ClaudeRoute != "" && provider.customProviderConfig != nil && !req.ClaudeNativeVendor
 	for k, v := range req.SafeHeaders {
 		if withhold && strings.EqualFold(k, AnthropicBetaHeader) {
 			continue

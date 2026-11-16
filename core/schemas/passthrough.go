@@ -155,6 +155,10 @@ type BifrostPassthroughRequest struct {
 	BodySize           int64       // BodyReader's length; negative = unknown, sent chunked
 	StreamResponseBody bool        // return a 2xx body as BifrostPassthroughResponse.BodyStream
 	ClaudeRoute        ClaudeRoute // when set, Body goes to Model's Anthropic endpoint the provider builds; Path must be empty
+	// ClaudeNativeVendor marks the entry as a native vendor's instance split off by endpoint, not a
+	// custom provider on that base: with ClaudeRoute set it is served as the native vendor (client
+	// betas forwarded unfiltered, none withheld). Ignored without ClaudeRoute.
+	ClaudeNativeVendor bool
 }
 
 // ClaudeRoute is the Anthropic endpoint a pass-through request is sent to, built by the provider for
