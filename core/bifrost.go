@@ -262,7 +262,7 @@ func (bifrost *Bifrost) validateClaudeRoute(provider schemas.ModelProvider, req 
 	if req.Model == "" {
 		return providerUtils.NewBifrostBadRequestError("a Claude route request requires a model")
 	}
-	base := bifrost.baseProviderType(provider)
+	base := bifrost.claudeRouteBase(provider)
 	if base != schemas.Anthropic && base != schemas.Vertex && base != schemas.Azure {
 		return providerUtils.NewConfigurationError(fmt.Sprintf("Claude route %s is not served by the %s provider", req.ClaudeRoute, provider))
 	}
@@ -275,6 +275,24 @@ func (bifrost *Bifrost) validateClaudeRoute(provider schemas.ModelProvider, req 
 		}
 	}
 	return nil
+}
+
+// claudeRouteBase answers which of the Claude-route bases (anthropic, vertex, azure) provider is
+// built on, or "" for any other. It reads the provider instance createBaseProvider built, the same
+// base the worker dispatches on, because baseProviderType asks the account, whose answer may be a
+// per-request copy. An uninitialized provider falls back to the account.
+func (bifrost *Bifrost) claudeRouteBase(provider schemas.ModelProvider) schemas.ModelProvider {
+	switch bifrost.getProviderByKey(provider).(type) {
+	case *anthropic.AnthropicProvider:
+		return schemas.Anthropic
+	case *vertex.VertexProvider:
+		return schemas.Vertex
+	case *azure.AzureProvider:
+		return schemas.Azure
+	case nil:
+		return bifrost.baseProviderType(provider)
+	}
+	return ""
 }
 
 // signalClosing signals the closing of the provider queue.
@@ -5537,12 +5555,7 @@ func (bifrost *Bifrost) KeySupportsModel(providerKey schemas.ModelProvider, key 
 }
 
 // baseProviderType returns the provider type a custom provider is built on, or providerKey itself.
-// A standard provider is its own base (no custom provider may take a standard name), so only a
-// custom one asks the account, whose answer may be a per-call copy.
 func (bifrost *Bifrost) baseProviderType(providerKey schemas.ModelProvider) schemas.ModelProvider {
-	if IsStandardProvider(providerKey) {
-		return providerKey
-	}
 	if config, err := bifrost.account.GetConfigForProvider(providerKey); err == nil && config != nil &&
 		config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
 		return config.CustomProviderConfig.BaseProviderType
