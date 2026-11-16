@@ -151,10 +151,7 @@ type BifrostPassthroughRequest struct {
 	BodySize           int64       // BodyReader's length; negative = unknown, sent chunked
 	StreamResponseBody bool        // return a 2xx body as BifrostPassthroughResponse.BodyStream
 	ClaudeRoute        ClaudeRoute // when set, Body goes to Model's Anthropic endpoint the provider builds; Path must be empty
-	// ClaudeNativeVendor marks the entry as a native vendor's instance split off by endpoint, not a
-	// custom provider on that base: with ClaudeRoute set it is served as the native vendor (client
-	// betas forwarded unfiltered, none withheld). Ignored without ClaudeRoute.
-	ClaudeNativeVendor bool
+	ClaudeNativeVendor bool        // the entry is a native vendor's instance split off by endpoint, served as native on a ClaudeRoute (see ClaudeRoute)
 }
 
 // ClaudeRoute is the Anthropic endpoint a pass-through request is sent to, built by the provider for
@@ -165,7 +162,10 @@ type BifrostPassthroughRequest struct {
 //
 // Client anthropic-beta values: native anthropic forwards them unfiltered; vertex and azure keep the
 // ones they support; a custom provider built on anthropic sends none, since its upstream need not
-// accept any. Every value not sent is reported in BifrostPassthroughResponse.DroppedBetas.
+// accept any, unless the request marks it ClaudeNativeVendor (a native anthropic instance split off
+// by endpoint, which forwards them as native). ClaudeNativeVendor changes nothing on vertex, azure or
+// without a ClaudeRoute, where no entry withholds by being custom. Every value not sent is reported
+// in BifrostPassthroughResponse.DroppedBetas.
 type ClaudeRoute string
 
 const (
