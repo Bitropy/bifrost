@@ -6284,7 +6284,8 @@ func TestClaudeRouteBetas(t *testing.T) {
 // TestAnthropicClaudeRoutePassthrough: the provider sends a ClaudeRoute request to the route's
 // endpoint, keeps the client query and forwards the body unchanged. Native anthropic forwards the
 // client betas unfiltered (an unknown one included) and reports none; a custom provider built on
-// anthropic withholds and reports them. Usage is parsed on Messages only.
+// anthropic withholds and reports them, unless the entry is a native vendor's split-off instance
+// (ClaudeNativeVendor), which is served as native. Usage is parsed on Messages only.
 func TestAnthropicClaudeRoutePassthrough(t *testing.T) {
 	type seen struct{ path, query, apiKey, betas, body string }
 	got := make(chan seen, 1)
@@ -6318,20 +6319,24 @@ func TestAnthropicClaudeRoutePassthrough(t *testing.T) {
 		name        string
 		provider    *AnthropicProvider
 		route       schemas.ClaudeRoute
+		nativeVend  bool
 		stream      bool
 		wantPath    string
 		wantBetas   string
 		wantDropped []string
 	}{
-		{"native messages unary", native, schemas.ClaudeRouteMessages, false, "/v1/messages", betas, nil},
-		{"native messages stream", native, schemas.ClaudeRouteMessages, true, "/v1/messages", betas, nil},
-		{"native count-tokens", native, schemas.ClaudeRouteCountTokens, false, "/v1/messages/count_tokens", betas, nil},
-		{"custom anthropic-base messages unary", custom, schemas.ClaudeRouteMessages, false, "/v1/messages", "",
+		{"native messages unary", native, schemas.ClaudeRouteMessages, false, false, "/v1/messages", betas, nil},
+		{"native messages stream", native, schemas.ClaudeRouteMessages, false, true, "/v1/messages", betas, nil},
+		{"native count-tokens", native, schemas.ClaudeRouteCountTokens, false, false, "/v1/messages/count_tokens", betas, nil},
+		{"custom anthropic-base messages unary", custom, schemas.ClaudeRouteMessages, false, false, "/v1/messages", "",
 			[]string{"interleaved-thinking-2025-05-14", "totally-unknown-2099"}},
-		{"custom anthropic-base messages stream", custom, schemas.ClaudeRouteMessages, true, "/v1/messages", "",
+		{"custom anthropic-base messages stream", custom, schemas.ClaudeRouteMessages, false, true, "/v1/messages", "",
 			[]string{"interleaved-thinking-2025-05-14", "totally-unknown-2099"}},
-		{"custom anthropic-base count-tokens", custom, schemas.ClaudeRouteCountTokens, false, "/v1/messages/count_tokens", "",
+		{"custom anthropic-base count-tokens", custom, schemas.ClaudeRouteCountTokens, false, false, "/v1/messages/count_tokens", "",
 			[]string{"interleaved-thinking-2025-05-14", "totally-unknown-2099"}},
+		{"split-off native vendor messages unary", custom, schemas.ClaudeRouteMessages, true, false, "/v1/messages", betas, nil},
+		{"split-off native vendor messages stream", custom, schemas.ClaudeRouteMessages, true, true, "/v1/messages", betas, nil},
+		{"split-off native vendor count-tokens", custom, schemas.ClaudeRouteCountTokens, true, false, "/v1/messages/count_tokens", betas, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -6342,6 +6347,7 @@ func TestAnthropicClaudeRoutePassthrough(t *testing.T) {
 			req := &schemas.BifrostPassthroughRequest{
 				Method: http.MethodPost, RawQuery: "beta=true", Model: "claude-x",
 				Body: []byte(body), SafeHeaders: map[string]string{"Anthropic-Beta": betas}, ClaudeRoute: tt.route,
+				ClaudeNativeVendor: tt.nativeVend,
 			}
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			var dropped []string
@@ -6396,5 +6402,20 @@ func TestAnthropicClaudeRoutePassthrough(t *testing.T) {
 				t.Fatalf("usage = %+v", usage)
 			}
 		})
+	}
+}
+
+// TestClaudeNativeVendorIgnoredWithoutClaudeRoute: without ClaudeRoute no entry withholds betas, so
+// ClaudeNativeVendor changes nothing there and needs no validation.
+func TestClaudeNativeVendorIgnoredWithoutClaudeRoute(t *testing.T) {
+	custom := NewAnthropicProvider(&schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "my-anthropic", BaseProviderType: schemas.Anthropic},
+	}, truncationTestLogger{})
+	for _, nativeVendor := range []bool{false, true} {
+		var fr fasthttp.Request
+		req := &schemas.BifrostPassthroughRequest{SafeHeaders: map[string]string{"Anthropic-Beta": "b1"}, ClaudeNativeVendor: nativeVendor}
+		if dropped := custom.setPassthroughSafeHeaders(&fr, req); dropped != nil || string(fr.Header.Peek("Anthropic-Beta")) != "b1" {
+			t.Fatalf("ClaudeNativeVendor=%v: dropped %#v, beta %q", nativeVendor, dropped, fr.Header.Peek("Anthropic-Beta"))
+		}
 	}
 }
