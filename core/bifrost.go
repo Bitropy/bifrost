@@ -262,11 +262,7 @@ func (bifrost *Bifrost) validateClaudeRoute(provider schemas.ModelProvider, req 
 	if req.Model == "" {
 		return providerUtils.NewBifrostBadRequestError("a Claude route request requires a model")
 	}
-	// A standard provider is its own base; only a custom one needs the account, whose answer is a copy.
-	base := provider
-	if !IsStandardProvider(provider) {
-		base = bifrost.baseProviderType(provider)
-	}
+	base := bifrost.baseProviderType(provider)
 	if base != schemas.Anthropic && base != schemas.Vertex && base != schemas.Azure {
 		return providerUtils.NewConfigurationError(fmt.Sprintf("Claude route %s is not served by the %s provider", req.ClaudeRoute, provider))
 	}
@@ -5541,7 +5537,12 @@ func (bifrost *Bifrost) KeySupportsModel(providerKey schemas.ModelProvider, key 
 }
 
 // baseProviderType returns the provider type a custom provider is built on, or providerKey itself.
+// A standard provider is its own base (no custom provider may take a standard name), so only a
+// custom one asks the account, whose answer may be a per-call copy.
 func (bifrost *Bifrost) baseProviderType(providerKey schemas.ModelProvider) schemas.ModelProvider {
+	if IsStandardProvider(providerKey) {
+		return providerKey
+	}
 	if config, err := bifrost.account.GetConfigForProvider(providerKey); err == nil && config != nil &&
 		config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
 		return config.CustomProviderConfig.BaseProviderType
