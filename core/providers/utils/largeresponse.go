@@ -86,6 +86,11 @@ func abandonStreamingResponse(ctx *schemas.BifrostContext, bodyStream io.Reader)
 	closeBodyStream(bodyStream, errResponseBodyAbandoned)
 }
 
+// MaxVideoDownloadStreamBytes caps a streamed video artifact download (512 MiB). The client's
+// body cap stays the enforcement point for a runaway body even though streamed bodies are read
+// lazily, so providers that stream video downloads raise it well above fasthttp's 4 MiB default.
+const MaxVideoDownloadStreamBytes int64 = 512 << 20
+
 // BuildLargeResponseClient creates a streaming-enabled fasthttp client for large response detection.
 // The client caps buffering at the threshold and enables response body streaming.
 //

@@ -29,6 +29,7 @@ type GeminiProvider struct {
 	logger               schemas.Logger                // Logger for provider operations
 	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
 	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	videoDownloadClient  *fasthttp.Client              // Streams video artifact downloads (StreamResponseBody, raised MaxResponseBodySize): artifacts are far past the buffered client's cap and must not be materialized
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
 	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
@@ -104,6 +105,7 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 		logger:               logger,
 		client:               client,
 		streamingClient:      streamingClient,
+		videoDownloadClient:  providerUtils.BuildLargeResponseClient(client, providerUtils.MaxVideoDownloadStreamBytes),
 		networkConfig:        config.NetworkConfig,
 		customProviderConfig: config.CustomProviderConfig,
 		sendBackRawRequest:   config.SendBackRawRequest,
@@ -2652,6 +2654,96 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 
 	return bifrostResp, nil
+}
+
+// VideoDownloadStream is the unbuffered VideoDownload: the artifact URL is fetched with the
+// streaming download client and handed back as a raw body reader the caller must Close.
+// Redirects are followed up to 5 hops, matching the buffered download. An artifact the provider
+// only holds inline in the retrieve response (base64) is refused — streaming it would
+// materialize the whole artifact, which is what this entry point exists to avoid; the buffered
+// VideoDownload serves that case.
+func (provider *GeminiProvider) VideoDownloadStream(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadStreamRequest) (*schemas.BifrostVideoDownloadStreamResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.VideoDownloadStreamRequest); err != nil {
+		return nil, err
+	}
+	if request == nil || request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
+	}
+	// Retrieve operation first so download behavior follows retrieve status.
+	videoResp, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{
+		Provider: request.Provider,
+		ID:       request.ID,
+	})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if videoResp.Status != schemas.VideoStatusCompleted {
+		return nil, providerUtils.NewBifrostOperationError(
+			fmt.Sprintf("video not ready, current status: %s", videoResp.Status),
+			nil,
+		)
+	}
+	if len(videoResp.Videos) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
+	}
+	if videoResp.Videos[0].Type != schemas.VideoOutputTypeURL || videoResp.Videos[0].URL == nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"streamed video download requires a provider URL; the artifact was returned inline, use the buffered download",
+			nil,
+		)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	// Preserve custom headers and add API key for Gemini file download endpoint.
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.SetMethod(http.MethodGet)
+	req.SetRequestURI(*videoResp.Videos[0].URL)
+	setGeminiAuthHeader(req, key.Value.GetValue())
+
+	startTime := time.Now()
+	doErr := providerUtils.DoStreamingRequestFollowRedirects(ctx, provider.videoDownloadClient, req, resp, 5)
+	if doErr != nil {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		if errors.Is(doErr, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   doErr,
+				},
+			}
+		}
+		if errors.Is(doErr, fasthttp.ErrTimeout) || errors.Is(doErr, context.DeadlineExceeded) {
+			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, doErr)
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr)
+	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		provider.logger.Error("failed to download video: status %d", resp.StatusCode())
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
+			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
+			nil,
+		), time.Since(startTime))
+	}
+
+	// Ownership of resp passes to the reader: it releases the response (and closes the
+	// connection on cancellation) when the caller Closes the body.
+	reader := providerUtils.WrapStreamingResponseBody(ctx, resp)
+	contentType := "video/mp4"
+	if ct := string(resp.Header.ContentType()); ct != "" {
+		contentType = ct
+	}
+	return &schemas.BifrostVideoDownloadStreamResponse{
+		VideoID:     request.ID,
+		Body:        reader,
+		ContentType: contentType,
+	}, nil
 }
 
 // VideoDelete is not supported by the Gemini provider.

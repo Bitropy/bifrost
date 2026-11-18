@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"sort"
 	"strings"
@@ -2547,6 +2548,84 @@ func (bifrost *Bifrost) VideoDownloadRequest(ctx *schemas.BifrostContext, req *s
 		return nil, err
 	}
 	return response.VideoDownloadResponse, nil
+}
+
+// VideoDownloadStreamRequest downloads video content from the provider without buffering it:
+// it returns the artifact as a body stream plus its content type, and the caller must Close
+// the reader. It runs the same request pipeline as VideoDownloadRequest (PreRequestHooks, key
+// selection, retries across keys on pre-stream errors, post-LLM hooks over the response's
+// metadata), but the artifact itself is never read by core — a post hook that replaced the
+// response would drop the stream, so plugins must treat a VideoDownloadStreamResponse as
+// pass-through. Errors are only retryable before a reader has been produced.
+func (bifrost *Bifrost) VideoDownloadStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostVideoDownloadStreamRequest) (io.ReadCloser, string, *schemas.BifrostError) {
+	if req == nil {
+		return nil, "", &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "video download request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoDownloadStreamRequest,
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, "", &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for video download request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoDownloadStreamRequest,
+			},
+		}
+	}
+	if req.ID == "" {
+		return nil, "", &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "video_id is required for video download request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoDownloadStreamRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.VideoDownloadStreamRequest
+	bifrostReq.VideoDownloadStreamRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, "", err
+	}
+	if response == nil || response.VideoDownloadStreamResponse == nil {
+		return nil, "", &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "received nil response from provider",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoDownloadStreamRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	if response.VideoDownloadStreamResponse.Body == nil {
+		return nil, "", &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider returned no download body",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoDownloadStreamRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
+	return response.VideoDownloadStreamResponse.Body, response.VideoDownloadStreamResponse.ContentType, nil
 }
 
 func (bifrost *Bifrost) VideoRemixRequest(ctx *schemas.BifrostContext, req *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
@@ -9687,6 +9766,20 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.VideoDownloadResponse = videoDownloadResponse
+	case schemas.VideoDownloadStreamRequest:
+		// Optional capability: only providers that can hand the artifact back unbuffered
+		// implement it; the rest answer unsupported_operation like any unimplemented verb.
+		streamProvider, ok := provider.(schemas.VideoDownloadStreamProvider)
+		if !ok {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDownloadStreamRequest, provider.GetProviderKey())
+		}
+		videoDownloadStreamResponse, bifrostError := callAcrossKeys(req.Context, key, keys, func(k schemas.Key) (*schemas.BifrostVideoDownloadStreamResponse, *schemas.BifrostError) {
+			return streamProvider.VideoDownloadStream(req.Context, k, req.BifrostRequest.VideoDownloadStreamRequest)
+		})
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.VideoDownloadStreamResponse = videoDownloadStreamResponse
 	case schemas.VideoListRequest:
 		videoListResponse, bifrostError := listVideosAcrossKeys(req.Context, provider, key, keys, req.BifrostRequest.VideoListRequest, bifrost.logger)
 		if bifrostError != nil {
@@ -11163,6 +11256,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.VideoEditRequest = nil
 	req.VideoRetrieveRequest = nil
 	req.VideoDownloadRequest = nil
+	req.VideoDownloadStreamRequest = nil
 	req.VideoListRequest = nil
 	req.VideoRemixRequest = nil
 	req.VideoDeleteRequest = nil
