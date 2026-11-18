@@ -689,7 +689,7 @@ func isContainerRequestType(reqType schemas.RequestType) bool {
 // the source is uploaded and omits it when the source is an existing video ID — belongs here too.
 func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 	switch reqType {
-	case schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest,
+	case schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDownloadStreamRequest, schemas.VideoListRequest,
 		schemas.VideoDeleteRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		return true
 	default:

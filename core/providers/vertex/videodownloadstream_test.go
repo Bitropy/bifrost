@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -256,5 +258,105 @@ func TestVertexVideoDownloadStreamNotReady(t *testing.T) {
 	}
 	if msg := bifrostErr.GetErrorString(); !strings.Contains(msg, "video not ready") {
 		t.Fatalf("error = %q, want video not ready", msg)
+	}
+}
+
+// A body that runs past MaxVideoDownloadStreamBytes errors at exactly the cap instead of
+// streaming forever, and the capped read never buffers the artifact: heap is sampled while
+// reading and has to stay within 4 MiB of the pre-request baseline, as in the 64 MiB proof.
+func TestVertexVideoDownloadStreamCapExceeded(t *testing.T) {
+	const (
+		chunkSize = 64 << 10
+		heapCeil  = 4 << 20
+	)
+	block := make([]byte, 1<<20)
+	retrieve := "unset"
+	server := startVideoStreamServer(t, &retrieve, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		for {
+			if _, err := w.Write(block); err != nil {
+				return
+			}
+		}
+	})
+	retrieve = completedOperationJSON(streamTestOperation, server.URL+"/video.bin")
+
+	provider := newVideoStreamProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	runtime.GC()
+	var base runtime.MemStats
+	runtime.ReadMemStats(&base)
+
+	resp, bifrostErr := provider.VideoDownloadStream(ctx, newVideoStreamKey(), streamRequest(streamTestOperation))
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownloadStream: %v", bifrostErr.GetErrorString())
+	}
+	defer resp.Body.Close()
+
+	buf := make([]byte, chunkSize)
+	var total int64
+	for {
+		n, err := resp.Body.Read(buf)
+		total += int64(n)
+		if total%(32<<20) < chunkSize {
+			var ms runtime.MemStats
+			runtime.ReadMemStats(&ms)
+			if grew := int64(ms.HeapAlloc) - int64(base.HeapAlloc); grew > heapCeil {
+				t.Fatalf("heap grew by %d MiB after %d MiB read; the artifact is being buffered", grew>>20, total>>20)
+			}
+		}
+		if err != nil {
+			if !errors.Is(err, utils.ErrVideoDownloadStreamCapExceeded) {
+				t.Fatalf("read at %d MiB: %v, want the byte-cap error", total>>20, err)
+			}
+			break
+		}
+	}
+	if total != utils.MaxVideoDownloadStreamBytes {
+		t.Fatalf("read %d bytes before the cap error, want exactly the cap (%d)", total, utils.MaxVideoDownloadStreamBytes)
+	}
+}
+
+// The drain ReleaseStreamingResponse runs for a non-200 response is bounded at the same cap:
+// a 500 whose body never ends must still produce the HTTP error instead of blocking forever
+// on an unbounded drain.
+func TestVertexVideoDownloadStreamNon200DrainIsCapped(t *testing.T) {
+	block := make([]byte, 1<<20)
+	retrieve := "unset"
+	server := startVideoStreamServer(t, &retrieve, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		for {
+			if _, err := w.Write(block); err != nil {
+				return
+			}
+		}
+	})
+	retrieve = completedOperationJSON(streamTestOperation, server.URL+"/video.bin")
+
+	provider := newVideoStreamProvider(t, server.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	// Empty string means the download failed with the HTTP 500 error as it should.
+	result := make(chan string, 1)
+	go func() {
+		_, bifrostErr := provider.VideoDownloadStream(ctx, newVideoStreamKey(), streamRequest(streamTestOperation))
+		if bifrostErr == nil {
+			result <- "download of an endless 500 body succeeded"
+			return
+		}
+		if msg := bifrostErr.GetErrorString(); !strings.Contains(msg, "HTTP 500") {
+			result <- fmt.Sprintf("error = %q, want HTTP 500", msg)
+			return
+		}
+		result <- ""
+	}()
+	select {
+	case failure := <-result:
+		if failure != "" {
+			t.Fatal(failure)
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("non-200 download did not return within 2m; the release drain is unbounded")
 	}
 }

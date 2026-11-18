@@ -4952,8 +4952,16 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
 			return
 		}
-		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+		// Bound the drain at the video download cap: streamed bodies have no client-side
+		// size limit, and an error (or otherwise unwanted) body can be arbitrarily large.
+		// cap+1 lets a body of exactly the cap still read EOF and release cleanly; a body
+		// past the cap cannot return a clean connection, so abandon it like the parked paths.
+		drained, err := io.Copy(io.Discard, io.LimitReader(bodyStream, MaxVideoDownloadStreamBytes+1))
+		if err != nil {
 			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		} else if drained > MaxVideoDownloadStreamBytes {
+			closeBodyStream(bodyStream, ErrVideoDownloadStreamCapExceeded)
+			return
 		}
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp
