@@ -306,6 +306,8 @@ func TestVertexGeminiSpeechReturnsRawPCMWithoutAFormat(t *testing.T) {
 	assert.Equal(t, pcm, response.Audio)
 }
 
+// Fork (BIT-3036): the API key is used when it is the key's only credential; a key that also
+// carries service-account credentials uses the OAuth bearer (TestVertexSpeechKeyWithValueAndCredentialsUsesBearer).
 func TestVertexGeminiSpeechAuthenticatesWithAnAPIKeyWhenTheKeyHasOne(t *testing.T) {
 	provider, key := newSpeechTestProvider(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "api-key", r.URL.Query().Get("key"))
@@ -313,6 +315,7 @@ func TestVertexGeminiSpeechAuthenticatesWithAnAPIKeyWhenTheKeyHasOne(t *testing.
 		_, _ = w.Write([]byte(geminiAudioEvent([]byte("pcm"), "")))
 	})
 	key.Value = *schemas.NewSecretVar("api-key")
+	key.VertexKeyConfig.AuthCredentials = schemas.SecretVar{}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	_, bifrostErr := provider.Speech(ctx, key, geminiSpeechRequest("hello", speechParams("Kore")))
 	require.Nil(t, bifrostErr)
