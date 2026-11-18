@@ -171,6 +171,7 @@ type VertexProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
 	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	videoDownloadClient *fasthttp.Client      // Streams video artifact downloads (StreamResponseBody, raised MaxResponseBodySize): artifacts are far past the buffered client's cap and must not be materialized
 	authHTTPClient      *http.Client          // net/http client for OAuth token exchange and refresh, routed through proxy_config like the fasthttp clients
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
@@ -205,10 +206,12 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
+	videoDownloadClient := providerUtils.BuildLargeResponseClient(client, providerUtils.MaxVideoDownloadStreamBytes)
 	return &VertexProvider{
 		logger:              logger,
 		client:              client,
 		streamingClient:     streamingClient,
+		videoDownloadClient: videoDownloadClient,
 		authHTTPClient:      providerUtils.NewProviderHTTPClient(config.ProxyConfig, config.NetworkConfig, logger),
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
@@ -2823,31 +2826,9 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		defer fasthttp.ReleaseRequest(req)
 		defer fasthttp.ReleaseResponse(resp)
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(*videoResp.Videos[0].URL)
 		req.Header.SetMethod(http.MethodGet)
-		// Add authentication for Vertex video downloads
-		authQuery := ""
-		if key.Value.GetValue() != "" {
-			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
-		}
-		if authQuery != "" {
-			uri := *videoResp.Videos[0].URL
-			if strings.Contains(uri, "?") {
-				uri += "&" + authQuery
-			} else {
-				uri += "?" + authQuery
-			}
-			req.SetRequestURI(uri)
-		} else {
-			tokenSource, err := provider.getAuthTokenSource(key)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err)
-			}
-			token, err := tokenSource.Token()
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError("error getting token", err)
-			}
-			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+		if bifrostErr := provider.setVideoDownloadAuth(key, req, *videoResp.Videos[0].URL); bifrostErr != nil {
+			return nil, bifrostErr
 		}
 		var bifrostErr *schemas.BifrostError
 		var wait func()
@@ -2883,6 +2864,116 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	return bifrostResp, nil
+}
+
+// setVideoDownloadAuth points a GET at rawURL with the key's credential for a video artifact
+// download: the API key in the query string when one is set, else an OAuth bearer token from
+// the key's token source.
+func (provider *VertexProvider) setVideoDownloadAuth(key schemas.Key, req *fasthttp.Request, rawURL string) *schemas.BifrostError {
+	if keyValue := key.Value.GetValue(); keyValue != "" {
+		authQuery := fmt.Sprintf("key=%s", url.QueryEscape(keyValue))
+		if strings.Contains(rawURL, "?") {
+			rawURL += "&" + authQuery
+		} else {
+			rawURL += "?" + authQuery
+		}
+		req.SetRequestURI(rawURL)
+		return nil
+	}
+	tokenSource, err := provider.getAuthTokenSource(key)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("error creating auth token source", err)
+	}
+	token, err := tokenSource.Token()
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("error getting token", err)
+	}
+	req.SetRequestURI(rawURL)
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	return nil
+}
+
+// VideoDownloadStream is the unbuffered VideoDownload: the artifact URL is fetched with the
+// streaming download client and handed back as a raw body reader the caller must Close.
+// Redirects are not followed, matching the buffered download. An artifact the provider only
+// holds inline in the retrieve response (base64) is refused — streaming it would materialize
+// the whole artifact, which is what this entry point exists to avoid; the buffered
+// VideoDownload serves that case.
+func (provider *VertexProvider) VideoDownloadStream(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadStreamRequest) (*schemas.BifrostVideoDownloadStreamResponse, *schemas.BifrostError) {
+	if request == nil || request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
+	}
+	// Retrieve operation first to get the video URL.
+	videoResp, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{
+		Provider: request.Provider,
+		ID:       request.ID,
+	})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if videoResp.Status != schemas.VideoStatusCompleted {
+		return nil, providerUtils.NewBifrostOperationError(
+			fmt.Sprintf("video not ready, current status: %s", videoResp.Status),
+			nil)
+	}
+	if len(videoResp.Videos) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
+	}
+	if videoResp.Videos[0].Type != schemas.VideoOutputTypeURL || videoResp.Videos[0].URL == nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"streamed video download requires a provider URL; the artifact was returned inline, use the buffered download",
+			nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.SetMethod(http.MethodGet)
+	if bifrostErr := provider.setVideoDownloadAuth(key, req, *videoResp.Videos[0].URL); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	startTime := time.Now()
+	doErr := providerUtils.DoStreamingRequest(ctx, provider.videoDownloadClient, req, resp)
+	if doErr != nil {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		if errors.Is(doErr, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   doErr,
+				},
+			}
+		}
+		if errors.Is(doErr, fasthttp.ErrTimeout) || errors.Is(doErr, context.DeadlineExceeded) {
+			return nil, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, doErr)
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr)
+	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
+			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
+			nil), time.Since(startTime))
+	}
+
+	// Ownership of resp passes to the reader: it releases the response (and closes the
+	// connection on cancellation) when the caller Closes the body.
+	reader := providerUtils.WrapVideoDownloadStreamBody(ctx, resp)
+	contentType := "video/mp4"
+	if ct := string(resp.Header.ContentType()); ct != "" {
+		contentType = ct
+	}
+	return &schemas.BifrostVideoDownloadStreamResponse{
+		VideoID:     request.ID,
+		Body:        reader,
+		ContentType: contentType,
+	}, nil
 }
 
 // VideoDelete is not supported by the Vertex provider.

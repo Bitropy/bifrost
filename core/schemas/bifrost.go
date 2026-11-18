@@ -181,6 +181,7 @@ const (
 	VideoEditRequest               RequestType = "video_edit"
 	VideoRetrieveRequest           RequestType = "video_retrieve"
 	VideoDownloadRequest           RequestType = "video_download"
+	VideoDownloadStreamRequest     RequestType = "video_download_stream"
 	VideoDeleteRequest             RequestType = "video_delete"
 	VideoListRequest               RequestType = "video_list"
 	VideoRemixRequest              RequestType = "video_remix"
@@ -859,6 +860,7 @@ type BifrostRequest struct {
 	VideoEditRequest             *BifrostVideoEditRequest
 	VideoRetrieveRequest         *BifrostVideoRetrieveRequest
 	VideoDownloadRequest         *BifrostVideoDownloadRequest
+	VideoDownloadStreamRequest   *BifrostVideoDownloadStreamRequest
 	VideoListRequest             *BifrostVideoListRequest
 	VideoRemixRequest            *BifrostVideoRemixRequest
 	VideoDeleteRequest           *BifrostVideoDeleteRequest
@@ -942,6 +944,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.VideoRetrieveRequest.Provider, "", nil
 	case br.VideoDownloadRequest != nil:
 		return br.VideoDownloadRequest.Provider, "", nil
+	case br.VideoDownloadStreamRequest != nil:
+		return br.VideoDownloadStreamRequest.Provider, "", nil
 	case br.VideoListRequest != nil:
 		return br.VideoListRequest.Provider, "", nil
 	case br.VideoDeleteRequest != nil:
@@ -1102,6 +1106,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.VideoRetrieveRequest.Provider = provider
 	case br.VideoDownloadRequest != nil:
 		br.VideoDownloadRequest.Provider = provider
+	case br.VideoDownloadStreamRequest != nil:
+		br.VideoDownloadStreamRequest.Provider = provider
 	case br.VideoListRequest != nil:
 		br.VideoListRequest.Provider = provider
 	case br.VideoDeleteRequest != nil:
@@ -1506,6 +1512,7 @@ type BifrostResponse struct {
 	ImageGenerationStreamResponse *BifrostImageGenerationStreamResponse
 	VideoGenerationResponse       *BifrostVideoGenerationResponse
 	VideoDownloadResponse         *BifrostVideoDownloadResponse
+	VideoDownloadStreamResponse   *BifrostVideoDownloadStreamResponse
 	VideoListResponse             *BifrostVideoListResponse
 	LiveSession                   *LiveSessionLog // GPT Live: what a session's closing unit reports for its log row
 	VideoDeleteResponse           *BifrostVideoDeleteResponse
@@ -1597,6 +1604,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.VideoGenerationResponse.ExtraFields
 	case r.VideoDownloadResponse != nil:
 		return &r.VideoDownloadResponse.ExtraFields
+	case r.VideoDownloadStreamResponse != nil:
+		return &r.VideoDownloadStreamResponse.ExtraFields
 	case r.VideoListResponse != nil:
 		return &r.VideoListResponse.ExtraFields
 	case r.VideoDeleteResponse != nil:
@@ -1824,6 +1833,8 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		setCoreExtraFields(&r.VideoGenerationResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoDownloadResponse != nil:
 		setCoreExtraFields(&r.VideoDownloadResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
+	case r.VideoDownloadStreamResponse != nil:
+		setCoreExtraFields(&r.VideoDownloadStreamResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoListResponse != nil:
 		setCoreExtraFields(&r.VideoListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoDeleteResponse != nil:

@@ -513,6 +513,18 @@ func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasth
 	return err
 }
 
+// DoStreamingRequestFollowRedirects is DoStreamingRequest with fasthttp's DoRedirects, for
+// streamed downloads whose provider answers with redirects (Gemini's file download endpoint).
+// Same contract: returns at response headers, the final response's body is consumed lazily.
+func DoStreamingRequestFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) error {
+	unbind := bindRequestContext(req, ctx)
+	startTime := time.Now()
+	err := client.DoRedirects(req, resp, maxRedirects)
+	unbind()
+	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
+	return err
+}
+
 // upstreamTimingBody wraps a response body so time blocked reading it counts as
 // upstream latency. net/http's client.Do returns at response headers; the body
 // still streams from the provider's socket, and an untimed io.ReadAll would
@@ -4623,8 +4635,16 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
 			return
 		}
-		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+		// Bound the drain at the video download cap: streamed bodies have no client-side
+		// size limit, and an error (or otherwise unwanted) body can be arbitrarily large.
+		// cap+1 lets a body of exactly the cap still read EOF and release cleanly; a body
+		// past the cap cannot return a clean connection, so abandon it like the parked paths.
+		drained, err := io.Copy(io.Discard, io.LimitReader(bodyStream, MaxVideoDownloadStreamBytes+1))
+		if err != nil {
 			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		} else if drained > MaxVideoDownloadStreamBytes {
+			closeBodyStream(bodyStream, ErrVideoDownloadStreamCapExceeded)
+			return
 		}
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp
