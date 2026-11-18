@@ -550,6 +550,18 @@ func DoStreamingRequest(ctx context.Context, client *fasthttp.Client, req *fasth
 	return err
 }
 
+// DoStreamingRequestFollowRedirects is DoStreamingRequest with fasthttp's DoRedirects, for
+// streamed downloads whose provider answers with redirects (Gemini's file download endpoint).
+// Same contract: returns at response headers, the final response's body is consumed lazily.
+func DoStreamingRequestFollowRedirects(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response, maxRedirects int) error {
+	unbind := bindRequestContext(req, ctx)
+	startTime := time.Now()
+	err := client.DoRedirects(req, resp, maxRedirects)
+	unbind()
+	schemas.AddUpstreamLatency(ctx, time.Since(startTime))
+	return err
+}
+
 // upstreamTimingBody wraps a response body so time blocked reading it counts as
 // upstream latency. net/http's client.Do returns at response headers; the body
 // still streams from the provider's socket, and an untimed io.ReadAll would

@@ -660,7 +660,7 @@ func isFileRequestType(reqType schemas.RequestType) bool {
 func isKeyScopedLookupRequest(br *schemas.BifrostRequest) bool {
 	switch br.RequestType {
 	case schemas.ContainerFileCreateRequest,
-		schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
+		schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDownloadStreamRequest, schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
 		return true
 	case schemas.VideoEditRequest:
 		return br.VideoEditRequest != nil && br.VideoEditRequest.Input != nil && br.VideoEditRequest.Input.Video.ID != ""

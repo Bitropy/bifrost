@@ -426,6 +426,7 @@ var modelAddressingByRequestType = map[string]bool{
 	"VideoEditRequest":               false,
 	"VideoRetrieveRequest":           false,
 	"VideoDownloadRequest":           false,
+	"VideoDownloadStreamRequest":     false,
 	"VideoDeleteRequest":             false,
 	"VideoListRequest":               false,
 	"VideoRemixRequest":              false,

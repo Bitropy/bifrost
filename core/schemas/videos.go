@@ -1,5 +1,7 @@
 package schemas
 
+import "io"
+
 // VideoStatus is the lifecycle status of a video job.
 type VideoStatus string
 
@@ -317,6 +319,27 @@ type BifrostVideoDownloadResponse struct {
 	VideoID     string `json:"video_id"`
 	Content     []byte `json:"-"`                      // Raw video content (not serialized)
 	ContentType string `json:"content_type,omitempty"` // MIME type (e.g., "video/mp4", "image/png" for thumbnails)
+
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// BifrostVideoDownloadStreamRequest is VideoDownloadRequest without the body buffering: the
+// provider returns the artifact as an unbuffered stream (BifrostVideoDownloadStreamResponse.Body)
+// that the caller reads and must Close. Providers that only hold the artifact inline in the
+// retrieve response (base64) refuse the streamed download instead of materializing it.
+type BifrostVideoDownloadStreamRequest struct {
+	Provider ModelProvider         `json:"provider"`
+	ID       string                `json:"id"`
+	Variant  *VideoDownloadVariant `json:"variant,omitempty"`
+}
+
+// BifrostVideoDownloadStreamResponse carries the downloaded artifact as a stream. Nothing in
+// core reads or buffers Body; it flows from the provider socket to the caller, bounded by the
+// caller's context, and is released when Body is Closed.
+type BifrostVideoDownloadStreamResponse struct {
+	VideoID     string `json:"video_id"`
+	Body        io.ReadCloser `json:"-"`                      // Artifact stream; the caller must Close it
+	ContentType string        `json:"content_type,omitempty"` // MIME type (e.g., "video/mp4", "image/png" for thumbnails)
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

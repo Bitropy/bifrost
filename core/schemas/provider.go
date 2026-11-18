@@ -543,6 +543,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.VideoRetrieve
 	case VideoDownloadRequest:
 		return ar.VideoDownload
+	case VideoDownloadStreamRequest:
+		// The streamed download is the video_download operation against the same asset, so the
+		// existing video_download capability governs it too.
+		return ar.VideoDownload
 	case VideoDeleteRequest:
 		return ar.VideoDelete
 	case VideoListRequest:
@@ -917,6 +921,15 @@ type Provider interface {
 	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
 	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
 	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, postHookSpanFinalizer func(context.Context), key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
+}
+
+// VideoDownloadStreamProvider is an optional interface for providers that can serve a video
+// download as an unbuffered body stream: the artifact rides BifrostVideoDownloadStreamResponse.Body
+// straight from the provider socket to the caller, so no tier buffers it. Checked via type
+// assertion in core dispatch; providers that do not implement it answer the streamed download
+// with unsupported_operation, and the buffered Provider.VideoDownload stays the API for them.
+type VideoDownloadStreamProvider interface {
+	VideoDownloadStream(ctx *BifrostContext, key Key, request *BifrostVideoDownloadStreamRequest) (*BifrostVideoDownloadStreamResponse, *BifrostError)
 }
 
 // ResponsesLifecycleProvider is an optional interface for OpenAI-style Responses API
