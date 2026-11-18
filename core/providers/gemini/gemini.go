@@ -2734,7 +2734,7 @@ func (provider *GeminiProvider) VideoDownloadStream(ctx *schemas.BifrostContext,
 
 	// Ownership of resp passes to the reader: it releases the response (and closes the
 	// connection on cancellation) when the caller Closes the body.
-	reader := providerUtils.WrapStreamingResponseBody(ctx, resp)
+	reader := providerUtils.WrapVideoDownloadStreamBody(ctx, resp)
 	contentType := "video/mp4"
 	if ct := string(resp.Header.ContentType()); ct != "" {
 		contentType = ct

@@ -6866,6 +6866,11 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		}
 		drainAndAttachPluginLogs(msg.Context)
 		if bifrostErr != nil {
+			// The errored post-hook dropped the response the worker produced; a streamed
+			// download body nobody will read anymore must be closed here or its connection leaks.
+			if result != nil && result.VideoDownloadStreamResponse != nil && result.VideoDownloadStreamResponse.Body != nil {
+				result.VideoDownloadStreamResponse.Body.Close()
+			}
 			bifrost.releaseChannelMessage(msg)
 			return nil, bifrostErr
 		}

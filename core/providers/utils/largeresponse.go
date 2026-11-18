@@ -86,10 +86,16 @@ func abandonStreamingResponse(ctx *schemas.BifrostContext, bodyStream io.Reader)
 	closeBodyStream(bodyStream, errResponseBodyAbandoned)
 }
 
-// MaxVideoDownloadStreamBytes caps a streamed video artifact download (512 MiB). The client's
-// body cap stays the enforcement point for a runaway body even though streamed bodies are read
-// lazily, so providers that stream video downloads raise it well above fasthttp's 4 MiB default.
+// MaxVideoDownloadStreamBytes caps a streamed video artifact download (512 MiB). With
+// StreamResponseBody on, fasthttp ignores the client's MaxResponseBodySize, so this cap is
+// enforced by the reader handed to the caller (WrapVideoDownloadStreamBody) and by the capped
+// drain in ReleaseStreamingResponse — the client enforces nothing on this path.
 const MaxVideoDownloadStreamBytes int64 = 512 << 20
+
+// ErrVideoDownloadStreamCapExceeded is returned by a capped stream reader whose body ran past
+// MaxVideoDownloadStreamBytes: the artifact was cut short, so the bytes read so far are not a
+// whole file. ReleaseStreamingResponse also uses it to abandon an oversized drain.
+var ErrVideoDownloadStreamCapExceeded = errors.New("streamed body exceeded MaxVideoDownloadStreamBytes")
 
 // BuildLargeResponseClient creates a streaming-enabled fasthttp client for large response detection.
 // The client caps buffering at the threshold and enables response body streaming.
@@ -357,9 +363,25 @@ func ParseOpenAIUsageFromBytes(data []byte) *schemas.BifrostLLMUsage {
 // decompressed, failing after the stream idle timeout when the provider stalls, closed when the
 // request context ends, and releasing resp on Close. The caller must not release resp itself.
 func WrapStreamingResponseBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) *LargeResponseReader {
+	return wrapStreamingResponseBody(ctx, resp, 0)
+}
+
+// WrapVideoDownloadStreamBody is WrapStreamingResponseBody with a hard byte cap at
+// MaxVideoDownloadStreamBytes: a read that would pass the cap fails with
+// ErrVideoDownloadStreamCapExceeded instead of truncating the artifact silently. Streamed
+// bodies bypass fasthttp's MaxResponseBodySize, so this reader is the only bound on a
+// runaway artifact body.
+func WrapVideoDownloadStreamBody(ctx *schemas.BifrostContext, resp *fasthttp.Response) *LargeResponseReader {
+	return wrapStreamingResponseBody(ctx, resp, MaxVideoDownloadStreamBytes)
+}
+
+func wrapStreamingResponseBody(ctx *schemas.BifrostContext, resp *fasthttp.Response, byteCap int64) *LargeResponseReader {
 	reader, releaseGzip := DecompressStreamBody(resp)
 	reader, stopIdleTimeout := NewIdleTimeoutReader(reader, resp.BodyStream(), GetStreamIdleTimeout(ctx), ctx)
 	stopCancellation := SetupStreamCancellation(ctx, resp.BodyStream(), nil)
+	if byteCap > 0 {
+		reader = &capErrorReader{r: reader, remaining: byteCap}
+	}
 	return &LargeResponseReader{
 		Reader: reader,
 		Resp:   resp,
@@ -370,6 +392,26 @@ func WrapStreamingResponseBody(ctx *schemas.BifrostContext, resp *fasthttp.Respo
 			releaseGzip()
 		},
 	}
+}
+
+// capErrorReader fails a read that would cross the cap rather than truncating like
+// io.LimitReader: a caller streaming a capped body must learn it was cut short, not mistake
+// the cap for EOF.
+type capErrorReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (c *capErrorReader) Read(p []byte) (int, error) {
+	if c.remaining <= 0 {
+		return 0, ErrVideoDownloadStreamCapExceeded
+	}
+	if int64(len(p)) > c.remaining {
+		p = p[:c.remaining]
+	}
+	n, err := c.r.Read(p)
+	c.remaining -= int64(n)
+	return n, err
 }
 
 // SetupStreamingPassthrough configures large response passthrough for streaming
