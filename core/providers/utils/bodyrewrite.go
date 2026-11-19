@@ -28,7 +28,8 @@ var ErrRequestBodyRewrite = errors.New("bifrost: request body rewrite aborted")
 // materialising the replacement. A memory-bounded gateway uses it to let core
 // map a small request in which large strings are placeholders, and splice the
 // original bytes back in on the wire. It is carried on the request context under
-// schemas.BifrostContextKeyRequestBodyRewriter; any other value type is ignored.
+// schemas.BifrostContextKeyRequestBodyRewriter, bare or as the Rewrite of a
+// *RequestBodyRewriteHook; any other value type is ignored.
 //
 // body is the exact payload the provider built for this wire attempt (for SigV4
 // providers, the payload that is signed). The rewriter must neither retain nor
@@ -55,14 +56,28 @@ var ErrRequestBodyRewrite = errors.New("bifrost: request body rewrite aborted")
 // ClearContextForInternalRequest drop the rewriter.
 type RequestBodyRewriter func(body []byte) (r io.Reader, size int64, err error)
 
-// RequestBodyRewriterFromContext returns the rewriter carried on ctx, or nil.
+// RequestBodyRewriteHook carries a RequestBodyRewriter together with the call's
+// refusal mode (schemas.FeatureRefusal). An embedder stores a pointer to it under
+// schemas.BifrostContextKeyRequestBodyRewriter instead of a bare RequestBodyRewriter;
+// a nil Rewrite rewrites nothing.
+type RequestBodyRewriteHook = schemas.RequestBodyRewriteHook
+
+// RequestBodyRewriterFromContext returns the rewriter carried on ctx, bare or in a
+// *RequestBodyRewriteHook, or nil.
 func RequestBodyRewriterFromContext(ctx context.Context) RequestBodyRewriter {
 	// A nil *schemas.BifrostContext is a non-nil context.Context whose Value panics.
 	if bc, isBifrost := ctx.(*schemas.BifrostContext); ctx == nil || (isBifrost && bc == nil) {
 		return nil
 	}
-	rw, _ := ctx.Value(schemas.BifrostContextKeyRequestBodyRewriter).(RequestBodyRewriter)
-	return rw
+	switch rw := ctx.Value(schemas.BifrostContextKeyRequestBodyRewriter).(type) {
+	case RequestBodyRewriter:
+		return rw
+	case *RequestBodyRewriteHook:
+		if rw != nil {
+			return rw.Rewrite
+		}
+	}
+	return nil
 }
 
 // rewriteBody runs rw over body and validates its result. A nil reader with a
