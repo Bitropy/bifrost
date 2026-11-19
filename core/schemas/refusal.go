@@ -62,6 +62,14 @@ func AddAdaptation(ctx *BifrostContext, a Adaptation) {
 	})
 }
 
+// ResetAdaptations drops the adaptations core recorded on ctx and keeps the set the embedder left on
+// a parent context: core's describe one provider attempt, the embedder's edits hold for the whole call.
+func ResetAdaptations(ctx *BifrostContext) {
+	if ctx != nil {
+		ctx.deleteValue(BifrostContextKeyAdaptations)
+	}
+}
+
 // AdaptationsFromContext returns the attempt's adaptation set.
 func AdaptationsFromContext(ctx context.Context) Adaptation {
 	if bc, isBifrost := ctx.(*BifrostContext); ctx == nil || (isBifrost && bc == nil) {

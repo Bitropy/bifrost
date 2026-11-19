@@ -481,7 +481,7 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	// What one attempt's request builder removed and adapted describes that attempt's
 	// request only; the next provider's builder records its own.
 	ctx.ClearValue(schemas.BifrostContextKeyRemovedFeatures)
-	ctx.ClearValue(schemas.BifrostContextKeyAdaptations)
+	schemas.ResetAdaptations(ctx)
 }
 
 // restoreProviderResponseHeaders puts headers, the primary attempt's provider response headers,

@@ -172,6 +172,28 @@ func TestRefusalMode_FallbackAttemptStartsWithEmptySets(t *testing.T) {
 	assert.Zero(t, schemas.AdaptationsFromContext(ctx))
 }
 
+// A core fallback drops the failed attempt's adaptations but keeps the ones the embedder recorded
+// on the call's parent context: the embedder's edit holds for every attempt.
+func TestRefusalMode_FallbackAttemptKeepsEmbedderAdaptations(t *testing.T) {
+	failing, _ := refusalUpstream(t, http.StatusInternalServerError)
+	serving, servingHits := refusalUpstream(t, 0)
+	account := NewMockAccount()
+	configureUpstream(account, schemas.Azure, "key-azure", failing.URL, 0)
+	configureUpstream(account, schemas.Anthropic, "key-anthropic", serving.URL, 0)
+	client := refusalClient(t, account)
+
+	req := refusalChat(schemas.Azure, "claude-opus-4-7", &schemas.ChatParameters{
+		MaxCompletionTokens: schemas.Ptr(64), Temperature: schemas.Ptr(0.5),
+	})
+	req.Fallbacks = []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5"}}
+	parent := context.WithValue(context.Background(), schemas.BifrostContextKeyAdaptations, schemas.AdaptationReasoning)
+	ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, req)
+	require.Nil(t, bifrostErr)
+	require.Equal(t, int32(1), servingHits.Load())
+	assert.Equal(t, schemas.AdaptationReasoning, resp.ExtraFields.Adaptations)
+}
+
 // D-6: a hook with a nil Rewrite rewrites nothing; a bare rewriter still works.
 func TestRequestBodyRewriteHook_NilRewriteSkipped(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

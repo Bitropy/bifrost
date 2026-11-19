@@ -786,6 +786,21 @@ func (bc *BifrostContext) updateValue(key any, update func(current any) any) {
 	bc.userValues[key] = update(current)
 }
 
+// deleteValue removes key from this context's own values, so a parent context's value shows
+// through again; ClearValue instead shadows it.
+func (bc *BifrostContext) deleteValue(key any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.deleteValue(key)
+		return
+	}
+	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
+		return
+	}
+	bc.valuesMu.Lock()
+	delete(bc.userValues, key)
+	bc.valuesMu.Unlock()
+}
+
 // GetUserValues returns a copy of all user-set values in this context.
 // If the parent is also a PluginContext, the values are merged with parent values
 // (this context's values take precedence over parent values).
