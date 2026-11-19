@@ -64,7 +64,7 @@ func estimate(ctx *schemas.BifrostContext, snapshot *schemas.BifrostResponse, re
 			reported = u
 		}
 	}
-	estimatePrompt, estimateCompletion := reported == nil, reported == nil
+	estimatePrompt, estimateCompletion := reported == nil && hasPrompt(request), reported == nil
 	// Claude streams report a provisional output count in message_start; only a
 	// later message_delta (or a finished stream) makes it authoritative. Every host
 	// of the shared Anthropic stream handlers (Vertex, Bedrock, Azure, ...) marks
@@ -124,6 +124,12 @@ func estimate(ctx *schemas.BifrostContext, snapshot *schemas.BifrostResponse, re
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 	usage.Estimation = &schemas.TokenUsageEstimation{Prompt: estimatePrompt, Completion: estimateCompletion, Tokenizer: c.name}
 	failure.ExtraFields.BilledUsage = usage
+}
+
+// hasPrompt reports whether request carries a payload to estimate the prompt from;
+// a caller that skips prompt estimation passes none.
+func hasPrompt(request *schemas.BifrostRequest) bool {
+	return request != nil && (request.ChatRequest != nil || request.ResponsesRequest != nil || request.TextCompletionRequest != nil)
 }
 
 // finished reports whether the snapshot shows the stream ended: a chat or text

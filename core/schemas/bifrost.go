@@ -48,6 +48,11 @@ type BifrostConfig struct {
 	MCPPerUserDiscoveryStore MCPDiscoveryStore
 
 	UsageEstimationTokenizers []string // Tokenizer families for cancelled-stream usage estimation; process-wide, see streamusage.Configure
+	// SkipPromptUsageEstimation keeps a streamed attempt from retaining its decoded request
+	// for the stream's lifetime: a cancelled stream's prompt is then never estimated
+	// (completion estimation and provider-reported usage are unchanged). For embedders
+	// whose requests do not hold the prompt text, or that bill without the estimate.
+	SkipPromptUsageEstimation bool
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.

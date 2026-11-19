@@ -925,3 +925,14 @@ func BenchmarkVocabularyLoad(b *testing.B) {
 		})
 	}
 }
+
+// A request without a payload (the caller skips prompt estimation) estimates the
+// received output only.
+func TestEstimateWithoutPromptPayload(t *testing.T) {
+	err := cancellation()
+	estimateFrom(newContext(), chatSnapshot("hello world", false), &schemas.BifrostRequest{}, "unknown", err)
+	got := err.ExtraFields.BilledUsage
+	if got == nil || got.Estimation == nil || got.Estimation.Prompt || !got.Estimation.Completion || got.PromptTokens != 0 || got.CompletionTokens == 0 {
+		t.Fatalf("usage=%+v estimation=%+v", got, got.Estimation)
+	}
+}

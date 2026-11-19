@@ -1179,3 +1179,57 @@ func TestExecuteRequestWithRetries_SubmittedMachGenTaskIsNotResubmittedOnRotatio
 		t.Errorf("status=%v, want MachGen's 401 kept for the caller", bErr.StatusCode)
 	}
 }
+
+// SkipPromptUsageEstimation keeps the decoded request out of the streamed attempt's
+// post-hook closure, so a cancelled stream's prompt is not estimated while the
+// output the accumulator received still is.
+func TestCancelledStreamPromptEstimateFollowsSkipPromptUsageEstimation(t *testing.T) {
+	for _, skip := range []bool{false, true} {
+		t.Run(map[bool]string{false: "estimated", true: "skipped"}[skip], func(t *testing.T) {
+			const provider schemas.ModelProvider = "cancel-estimate-prompt"
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(provider, 1, 16, stallingStreamUpstream(t).URL)
+			account.configs[provider].NetworkConfig.MaxRetries = 0
+			account.SetCustomProviderConfig(provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI})
+			account.SetKeysForProvider(provider, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("mock"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+			recorder := &cancelledUsageRecorder{usage: make(chan *schemas.BifrostLLMUsage, 2)}
+			tracer := &snapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: Ptr("hello world")},
+				}}}},
+			}}}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{recorder}, Tracer: tracer, SkipPromptUsageEstimation: skip,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(client.Shutdown)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-skip-prompt")
+			stream, streamErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: provider, Model: "m", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: Ptr("a prompt of several words")}}},
+			})
+			if streamErr != nil {
+				t.Fatal(streamErr.GetErrorString())
+			}
+			for chunk := range stream {
+				if chunk.BifrostError == nil {
+					cancel()
+				}
+			}
+			select {
+			case usage := <-recorder.usage:
+				if usage == nil || usage.Estimation == nil || !usage.Estimation.Completion || usage.CompletionTokens == 0 {
+					t.Fatalf("output not estimated: %+v", usage)
+				}
+				if usage.Estimation.Prompt == skip || (usage.PromptTokens > 0) == skip {
+					t.Fatalf("skip=%v: prompt estimated=%v tokens=%d", skip, usage.Estimation.Prompt, usage.PromptTokens)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("cancellation never reached accounting")
+			}
+		})
+	}
+}
