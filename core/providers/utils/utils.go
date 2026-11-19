@@ -3608,6 +3608,18 @@ func NewBifrostBadRequestError(message string) *schemas.BifrostError {
 	}
 }
 
+// NewBifrostUnsupportedOnTargetError is the 400 a request builder answers a refusal with: code
+// unsupported_on_target, param the refused feature, and the typed refusal on ErrorField.Error so
+// the embedder finds it with errors.As.
+func NewBifrostUnsupportedOnTargetError(refusal *schemas.UnsupportedOnTargetError) *schemas.BifrostError {
+	bifrostErr := NewBifrostBadRequestError(refusal.Error())
+	code := schemas.ErrorCodeUnsupportedOnTarget
+	bifrostErr.Error.Code = &code
+	bifrostErr.Error.Param = refusal.Feature
+	bifrostErr.Error.Error = refusal
+	return bifrostErr
+}
+
 // invalidRequestError marks a converter failure as caller input rather than an internal
 // Bifrost fault. Converters return a plain error (see the note on ResolveChatFileURLs for
 // why), and CheckContextAndGetRequestBody wraps whatever comes back as

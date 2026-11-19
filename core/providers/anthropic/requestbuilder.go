@@ -188,7 +188,10 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
 		bifrostErr := providerUtils.NewBifrostOperationError(msg, err)
-		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+		var refusal *schemas.UnsupportedOnTargetError
+		if errors.As(err, &refusal) {
+			bifrostErr = providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
+		} else if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
 			bifrostErr = badRequest
 		}
 		return providerUtils.EnrichError(
@@ -303,7 +306,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			// request.Model is the alias-resolved model id; pass it so
 			// computer-use / text-editor / bash tools get normalized to the
 			// canonical {type, name} pair Anthropic expects for the model's generation.
-			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, capModel)
+			jsonBody, err = RemapRawToolVersionsForProviderReport(ctx, jsonBody, cfg.Provider, capModel)
 			if err != nil {
 				return nil, newErr(err.Error(), nil, jsonBody)
 			}
@@ -316,7 +319,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 		}
 
-		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, cfg.Provider, capModel)
+		jsonBody, err = StripUnsupportedFieldsFromRawBodyReport(ctx, jsonBody, cfg.Provider, capModel)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
@@ -363,6 +366,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			// and the Bedrock Responses path. Use a shallow copy so the shared
 			// (possibly pooled) request and its Params are never mutated.
 			if keep, dropped := ValidateResponsesToolsForProvider(request.Params.Tools, schemas.ResolveModelCaps(cfg.Provider, capModel)); len(dropped) > 0 {
+				addRemoved(ctx, FeatureServerTool)
 				reqCopy := *request
 				paramsCopy := *request.Params
 				paramsCopy.Tools = keep
@@ -419,7 +423,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		// model-capability predicates match on canonical Anthropic model names,
 		// so a Bifrost alias would otherwise match none of them and skip every
 		// model-level strip. The raw path above already uses capModel.
-		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
+		stripUnsupportedAnthropicFields(ctx, reqBody, cfg.Provider, capModel)
 		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
 
 		// stripUnsupportedAnthropicFields above rewrites thinking for the whole
@@ -461,6 +465,13 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
+				// The typed strip never saw the merged keys; in refusal mode they are gated here.
+				if schemas.FeatureRefusal(ctx) {
+					jsonBody, err = stripMergedBody(ctx, jsonBody, cfg.Provider, capModel)
+					if err != nil {
+						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+					}
 				}
 				addBetaHeadersForMergedExtraParams(ctx, jsonBody, cfg.Provider, capModel)
 			}
@@ -559,6 +570,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
+	reportClientBetas(ctx, cfg.Provider, cfg.BetaHeaderOverrides)
+	if err := refusalError(ctx, cfg.Provider); err != nil {
+		return nil, newErr(err.Error(), err, jsonBody)
+	}
+
 	// Last, so no later edit appends a key after messages.
 	if defaults.CachePrefixKeysLast {
 		jsonBody = moveCachePrefixKeysLast(jsonBody)
@@ -587,7 +603,10 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 
 	newErr := func(msg string, err error, reqBody []byte) *schemas.BifrostError {
 		bifrostErr := providerUtils.NewBifrostOperationError(msg, err)
-		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+		var refusal *schemas.UnsupportedOnTargetError
+		if errors.As(err, &refusal) {
+			bifrostErr = providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
+		} else if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
 			bifrostErr = badRequest
 		}
 		return providerUtils.EnrichError(
@@ -665,7 +684,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 
 		if defaults.RemapToolVersions {
-			jsonBody, err = RemapRawToolVersionsForProvider(jsonBody, cfg.Provider, capModel)
+			jsonBody, err = RemapRawToolVersionsForProviderReport(ctx, jsonBody, cfg.Provider, capModel)
 			if err != nil {
 				return nil, newErr(err.Error(), nil, jsonBody)
 			}
@@ -678,7 +697,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			}
 		}
 
-		jsonBody, err = StripUnsupportedFieldsFromRawBody(jsonBody, cfg.Provider, capModel)
+		jsonBody, err = StripUnsupportedFieldsFromRawBodyReport(ctx, jsonBody, cfg.Provider, capModel)
 		if err != nil {
 			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
@@ -762,7 +781,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		// behaviour when the two diverge. Gate on capModel for the same reason
 		// as the responses builder: the model predicates match canonical
 		// Anthropic model names, not Bifrost aliases.
-		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
+		stripUnsupportedAnthropicFields(ctx, reqBody, cfg.Provider, capModel)
 		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
 
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
@@ -786,6 +805,13 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+				}
+				// The typed strip never saw the merged keys; in refusal mode they are gated here.
+				if schemas.FeatureRefusal(ctx) {
+					jsonBody, err = stripMergedBody(ctx, jsonBody, cfg.Provider, capModel)
+					if err != nil {
+						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
+					}
 				}
 				addBetaHeadersForMergedExtraParams(ctx, jsonBody, cfg.Provider, capModel)
 			}
@@ -864,6 +890,11 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+	}
+
+	reportClientBetas(ctx, cfg.Provider, cfg.BetaHeaderOverrides)
+	if err := refusalError(ctx, cfg.Provider); err != nil {
+		return nil, newErr(err.Error(), err, jsonBody)
 	}
 
 	// Last, so no later edit appends a key after messages.
