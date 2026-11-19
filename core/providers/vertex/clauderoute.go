@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 	"unsafe"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -53,42 +54,43 @@ func claudeRouteModel(ctx *schemas.BifrostContext, req *schemas.BifrostPassthrou
 }
 
 // setClaudeRouteBody puts the Vertex form of a ClaudeRoute body (claudeRouteBody) on fasthttpReq,
-// after the headers, and returns the betas Vertex does not support. The body is never
-// regex-rewritten.
+// after the headers, sets the anthropic-beta header to the betas Vertex supports, and returns
+// the ones it does not. The body is never regex-rewritten.
 func (provider *VertexProvider) setClaudeRouteBody(ctx *schemas.BifrostContext, fasthttpReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest) []string {
 	kept, dropped := anthropic.ClaudeRouteBetas(ctx, req.SafeHeaders, provider.networkConfig.ExtraHeaders, schemas.Vertex, provider.networkConfig.BetaHeaderOverrides)
-	// Vertex reads betas from the body only.
-	fasthttpReq.Header.Del(anthropic.AnthropicBetaHeader)
+	// Vertex reads betas from the anthropic-beta header only; it ignores the body field.
+	if len(kept) > 0 {
+		fasthttpReq.Header.Set(anthropic.AnthropicBetaHeader, strings.Join(kept, ","))
+	} else {
+		fasthttpReq.Header.Del(anthropic.AnthropicBetaHeader)
+	}
 	// count-tokens reads the model from the body; rawPredict takes it from the URL.
 	var bodyModel string
 	if req.ClaudeRoute == schemas.ClaudeRouteCountTokens {
 		bodyModel = claudeRouteModel(ctx, req)
 	}
-	fasthttpReq.SetBodyRaw(claudeRouteBody(req.Body, kept, bodyModel))
+	fasthttpReq.SetBodyRaw(claudeRouteBody(req.Body, bodyModel))
 	return dropped
 }
 
 // claudeRouteBody adapts an Anthropic body to Vertex rawPredict. With bodyModel empty the top-level
 // model is removed, since the URL names it. Otherwise model is set to bodyModel, in place or appended
 // when absent: count-tokens reads the model from the body, so it must name the Vertex model the alias
-// resolved to. anthropic_version is added when absent, and anthropic_beta is set to betas (removed when betas is empty; a client's own anthropic_beta member is replaced, so
-// the filtered header betas are the only ones sent). Every other member is copied byte for byte,
+// resolved to. anthropic_version is added when absent, and a client's anthropic_beta member is
+// removed, so the filtered header betas are the only ones sent. Every other member is copied byte for byte,
 // in one pass into one buffer. A body that is not a valid JSON object is returned unchanged for
 // Vertex to refuse.
-func claudeRouteBody(body []byte, betas []string, bodyModel string) []byte {
+func claudeRouteBody(body []byte, bodyModel string) []byte {
 	raw := unsafe.String(unsafe.SliceData(body), len(body)) // read-only view, no copy
 	parsed := gjson.Parse(raw)
 	if !parsed.IsObject() || !gjson.Valid(raw) {
 		return body
 	}
-	var betaJSON, modelJSON []byte
-	if len(betas) > 0 {
-		betaJSON, _ = json.Marshal(betas) // a []string always marshals
-	}
+	var modelJSON []byte
 	if bodyModel != "" {
 		modelJSON, _ = json.Marshal(bodyModel) // a string always marshals
 	}
-	out := make([]byte, 0, len(body)+len(`,"model":`)+len(modelJSON)+len(`,"anthropic_version":""`)+len(anthropic.VertexAnthropicVersion)+len(`,"anthropic_beta":`)+len(betaJSON))
+	out := make([]byte, 0, len(body)+len(`,"model":`)+len(modelJSON)+len(`,"anthropic_version":""`)+len(anthropic.VertexAnthropicVersion))
 	out = append(out, '{')
 	// member appends key (a quoted name and colon, or "" when value is a whole body member) and
 	// value after the separator.
@@ -122,9 +124,6 @@ func claudeRouteBody(body []byte, betas []string, bodyModel string) []byte {
 	}
 	if !hasVersion {
 		member(`"anthropic_version":`, []byte(`"`+anthropic.VertexAnthropicVersion+`"`))
-	}
-	if betaJSON != nil {
-		member(`"anthropic_beta":`, betaJSON)
 	}
 	return append(out, '}')
 }

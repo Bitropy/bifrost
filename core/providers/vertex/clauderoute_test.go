@@ -30,31 +30,28 @@ var claudeRouteTestRest = strings.Replace(claudeRouteTestBody, `"model":"claude-
 func TestClaudeRouteBody(t *testing.T) {
 	tests := []struct {
 		name, body string
-		betas      []string
 		bodyModel  string
 		want       string
 	}{
-		{"model removed, version and betas added", claudeRouteTestBody, []string{"a-1", "b-2"}, "",
-			claudeRouteTestRest[:len(claudeRouteTestRest)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["a-1","b-2"]}`},
-		{"no betas, no member", claudeRouteTestBody, nil, "",
+		{"model removed, version added", claudeRouteTestBody, "",
 			claudeRouteTestRest[:len(claudeRouteTestRest)-1] + `,"anthropic_version":"vertex-2023-10-16"}`},
-		{"existing version kept, client anthropic_beta replaced", ` {"anthropic_version":"v-own", "model":"m","anthropic_beta":["x"],"a":[1, 2]}`, []string{"k"}, "",
-			`{"anthropic_version":"v-own","a":[1, 2],"anthropic_beta":["k"]}`},
-		{"client anthropic_beta removed when none kept", `{"anthropic_beta":["x"],"a":1}`, nil, "",
+		{"existing version kept, client anthropic_beta removed", ` {"anthropic_version":"v-own", "model":"m","anthropic_beta":["x"],"a":[1, 2]}`, "",
+			`{"anthropic_version":"v-own","a":[1, 2]}`},
+		{"client anthropic_beta removed", `{"anthropic_beta":["x"],"a":1}`, "",
 			`{"a":1,"anthropic_version":"vertex-2023-10-16"}`},
-		{"empty object", `{}`, nil, "", `{"anthropic_version":"vertex-2023-10-16"}`},
-		{"invalid JSON unchanged", `{"model":"m",`, []string{"k"}, "", `{"model":"m",`},
-		{"array unchanged", `[1]`, nil, "", `[1]`},
-		{"count-tokens keeps model", claudeRouteTestBody, []string{"a-1"}, "claude-x",
-			claudeRouteTestBody[:len(claudeRouteTestBody)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["a-1"]}`},
-		{"count-tokens model set in place", ` {"a":1, "model" : "tok__x","b":2}`, nil, "claude-sonnet-4-5@20250929",
+		{"empty object", `{}`, "", `{"anthropic_version":"vertex-2023-10-16"}`},
+		{"invalid JSON unchanged", `{"model":"m",`, "", `{"model":"m",`},
+		{"array unchanged", `[1]`, "", `[1]`},
+		{"count-tokens keeps model", claudeRouteTestBody, "claude-x",
+			claudeRouteTestBody[:len(claudeRouteTestBody)-1] + `,"anthropic_version":"vertex-2023-10-16"}`},
+		{"count-tokens model set in place", ` {"a":1, "model" : "tok__x","b":2}`, "claude-sonnet-4-5@20250929",
 			`{"a":1,"model":"claude-sonnet-4-5@20250929","b":2,"anthropic_version":"vertex-2023-10-16"}`},
-		{"count-tokens model appended when absent", `{"a":1}`, nil, "claude-x",
+		{"count-tokens model appended when absent", `{"a":1}`, "claude-x",
 			`{"a":1,"model":"claude-x","anthropic_version":"vertex-2023-10-16"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := string(claudeRouteBody([]byte(tt.body), tt.betas, tt.bodyModel)); got != tt.want {
+			if got := string(claudeRouteBody([]byte(tt.body), tt.bodyModel)); got != tt.want {
 				t.Fatalf("got  %s\nwant %s", got, tt.want)
 			}
 		})
@@ -102,24 +99,25 @@ func TestVertexClaudeRoutePassthrough(t *testing.T) {
 		alias             *schemas.ResolvedAlias
 		wantModel         string // the upstream model segment, before the method
 		wantBody          string
+		wantBetaHeader    string
 		wantDropped       []string
 	}{
 		{"betas filtered", claudeRouteTestBody, "interleaved-thinking-2025-05-14, files-api-2025-04-14,totally-unknown-2099", schemas.ClaudeRouteMessages, "claude-x", nil, "claude-x",
-			claudeRouteTestRest[:len(claudeRouteTestRest)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["context-1m-2025-08-07","interleaved-thinking-2025-05-14"]}`,
-			[]string{"files-api-2025-04-14", "totally-unknown-2099"}},
+			claudeRouteTestRest[:len(claudeRouteTestRest)-1] + `,"anthropic_version":"vertex-2023-10-16"}`,
+			"context-1m-2025-08-07,interleaved-thinking-2025-05-14", []string{"files-api-2025-04-14", "totally-unknown-2099"}},
 		{"version kept, nothing dropped", versioned, "", schemas.ClaudeRouteMessages, "claude-x", nil, "claude-x",
-			`{"anthropic_version":"v-own","messages":[],"anthropic_beta":["context-1m-2025-08-07"]}`, nil},
+			`{"anthropic_version":"v-own","messages":[]}`, "context-1m-2025-08-07", nil},
 		{"resolved alias names the model", versioned, "", schemas.ClaudeRouteMessages, "tok__claude-x",
 			&schemas.ResolvedAlias{Key: "tok__claude-x", Config: &schemas.AliasConfig{ModelID: "claude-sonnet-4-5@20250929"}}, "claude-sonnet-4-5@20250929",
-			`{"anthropic_version":"v-own","messages":[],"anthropic_beta":["context-1m-2025-08-07"]}`, nil},
+			`{"anthropic_version":"v-own","messages":[]}`, "context-1m-2025-08-07", nil},
 		{"count-tokens keeps model, betas filtered", claudeRouteTestBody, "files-api-2025-04-14", schemas.ClaudeRouteCountTokens, "claude-x", nil, "count-tokens",
-			claudeRouteTestBody[:len(claudeRouteTestBody)-1] + `,"anthropic_version":"vertex-2023-10-16","anthropic_beta":["context-1m-2025-08-07"]}`,
-			[]string{"files-api-2025-04-14"}},
+			claudeRouteTestBody[:len(claudeRouteTestBody)-1] + `,"anthropic_version":"vertex-2023-10-16"}`,
+			"context-1m-2025-08-07", []string{"files-api-2025-04-14"}},
 		{"count-tokens version kept", versioned, "", schemas.ClaudeRouteCountTokens, "claude-x", nil, "count-tokens",
-			`{"anthropic_version":"v-own","model":"claude-x","messages":[],"anthropic_beta":["context-1m-2025-08-07"]}`, nil},
+			`{"anthropic_version":"v-own","model":"claude-x","messages":[]}`, "context-1m-2025-08-07", nil},
 		{"count-tokens body names the resolved alias model", versioned, "", schemas.ClaudeRouteCountTokens, "tok__claude-x",
 			&schemas.ResolvedAlias{Key: "tok__claude-x", Config: &schemas.AliasConfig{ModelID: "claude-sonnet-4-5@20250929"}}, "count-tokens",
-			`{"anthropic_version":"v-own","model":"claude-sonnet-4-5@20250929","messages":[],"anthropic_beta":["context-1m-2025-08-07"]}`, nil},
+			`{"anthropic_version":"v-own","model":"claude-sonnet-4-5@20250929","messages":[]}`, "context-1m-2025-08-07", nil},
 	}
 	for _, tt := range tests {
 		for _, stream := range []bool{false, true} {
@@ -161,7 +159,7 @@ func TestVertexClaudeRoutePassthrough(t *testing.T) {
 					}
 				}
 				got := <-seen
-				want := claudeUpstreamSeen{upstreamPrefix + tt.wantModel + method, "", "Bearer t", "", tt.wantBody}
+				want := claudeUpstreamSeen{upstreamPrefix + tt.wantModel + method, "", "Bearer t", tt.wantBetaHeader, tt.wantBody}
 				if got != want {
 					t.Fatalf("upstream saw\n %+v\nwant\n %+v", got, want)
 				}
