@@ -93,7 +93,7 @@ func TestAdaptiveOnlyThinkingStrip(t *testing.T) {
 				Thinking:  &AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(10000)},
 			}
 
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, model)
 
 			if req.Thinking == nil {
 				t.Fatalf("%s: thinking was dropped entirely, want type \"adaptive\"", model)
@@ -115,7 +115,7 @@ func TestAdaptiveOnlyThinkingStrip(t *testing.T) {
 				Thinking:  &AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(10000)},
 			}
 
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, model)
 
 			if req.Thinking == nil || req.Thinking.Type != "enabled" {
 				t.Errorf("%s: expected \"enabled\" preserved, got %+v", model, req.Thinking)
@@ -168,7 +168,7 @@ func TestAdaptiveOnlyThinkingStrip(t *testing.T) {
 				Thinking:  &AnthropicThinking{Type: "adaptive", BudgetTokens: schemas.Ptr(10000)},
 			}
 
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, model)
 
 			if req.Thinking == nil {
 				t.Fatalf("%s: thinking was dropped entirely, want type \"adaptive\"", model)
@@ -347,7 +347,7 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 				MaxTokens: 64000,
 				Thinking:  &AnthropicThinking{Type: "adaptive", Display: new("summarized")},
 			}
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, model)
 			if req.Thinking == nil || req.Thinking.Type != "enabled" {
 				t.Fatalf("%s: thinking = %+v, want type \"enabled\"", model, req.Thinking)
 			}
@@ -368,7 +368,7 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 				Thinking:     &AnthropicThinking{Type: "adaptive"},
 				OutputConfig: &AnthropicOutputConfig{Effort: new("low")},
 			}
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, model)
 			if req.Thinking == nil || req.Thinking.BudgetTokens == nil || *req.Thinking.BudgetTokens != lowBudget {
 				t.Errorf("%s: thinking = %+v, want budget %d", model, req.Thinking, lowBudget)
 			}
@@ -384,7 +384,7 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 			MaxTokens: 64000,
 			Thinking:  &AnthropicThinking{Type: "adaptive", BudgetTokens: new(10000)},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-haiku-4-5")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-haiku-4-5")
 		if req.Thinking == nil || req.Thinking.Type != "enabled" || req.Thinking.BudgetTokens == nil || *req.Thinking.BudgetTokens != 10000 {
 			t.Errorf("thinking = %+v, want enabled with budget 10000", req.Thinking)
 		}
@@ -397,7 +397,7 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 				MaxTokens: 64000,
 				Thinking:  &AnthropicThinking{Type: "adaptive", BudgetTokens: new(budget)},
 			}
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-haiku-4-5")
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-haiku-4-5")
 			if req.Thinking == nil || req.Thinking.BudgetTokens == nil || *req.Thinking.BudgetTokens != highBudget {
 				t.Errorf("budget %d: thinking = %+v, want budget %d", budget, req.Thinking, highBudget)
 			}
@@ -410,7 +410,7 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 			MaxTokens: 1024,
 			Thinking:  &AnthropicThinking{Type: "adaptive"},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-haiku-4-5")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-haiku-4-5")
 		if req.Thinking != nil {
 			t.Errorf("thinking = %+v, want dropped", req.Thinking)
 		}
@@ -423,7 +423,7 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 				MaxTokens: 64000,
 				Thinking:  &AnthropicThinking{Type: "adaptive"},
 			}
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, model)
 			if req.Thinking == nil || req.Thinking.Type != "adaptive" || req.Thinking.BudgetTokens != nil {
 				t.Errorf("%s: thinking = %+v, want adaptive kept", model, req.Thinking)
 			}
@@ -436,7 +436,7 @@ func TestAdaptiveThinkingOnPreAdaptiveModels(t *testing.T) {
 			MaxTokens: 8192,
 			Thinking:  &AnthropicThinking{Type: "adaptive"},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.DeepSeek, "deepseek-chat")
+		stripUnsupportedAnthropicFields(nil, req, schemas.DeepSeek, "deepseek-chat")
 		if req.Thinking == nil || req.Thinking.Type != "adaptive" {
 			t.Errorf("thinking = %+v, want adaptive kept", req.Thinking)
 		}
@@ -477,7 +477,7 @@ func TestDisabledThinkingStrip(t *testing.T) {
 				Thinking:  &AnthropicThinking{Type: "disabled"},
 			}
 
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, model)
 
 			if req.Thinking != nil && req.Thinking.Type == "disabled" {
 				t.Errorf("%s: thinking.Type = \"disabled\" survived; upstream rejects it with a 400", model)
@@ -492,7 +492,7 @@ func TestDisabledThinkingStrip(t *testing.T) {
 			Thinking:  &AnthropicThinking{Type: "disabled", Display: schemas.Ptr("omitted")},
 		}
 
-		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-fable-5")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-fable-5")
 
 		if req.Thinking == nil {
 			t.Fatalf("thinking dropped entirely; display:\"omitted\" was the caller's way to hide thinking text")
@@ -514,7 +514,7 @@ func TestDisabledThinkingStrip(t *testing.T) {
 				OutputConfig: &AnthropicOutputConfig{Effort: schemas.Ptr(effort)},
 			}
 
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-5")
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-opus-5")
 
 			if req.Thinking != nil && req.Thinking.Type == "disabled" {
 				t.Errorf("effort %q: thinking.Type = \"disabled\" survived; Opus 5 rejects it above effort \"high\"", effort)
@@ -534,7 +534,7 @@ func TestDisabledThinkingStrip(t *testing.T) {
 				OutputConfig: &AnthropicOutputConfig{Effort: schemas.Ptr(effort)},
 			}
 
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-5")
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-opus-5")
 
 			if req.Thinking == nil || req.Thinking.Type != "disabled" {
 				t.Errorf("effort %q: Opus 5 accepts \"disabled\" at effort \"high\" or below, got %+v", effort, req.Thinking)
@@ -549,7 +549,7 @@ func TestDisabledThinkingStrip(t *testing.T) {
 			Thinking:  &AnthropicThinking{Type: "disabled"},
 		}
 
-		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-5")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-opus-5")
 
 		if req.Thinking == nil || req.Thinking.Type != "disabled" {
 			t.Errorf("no effort set means the default (below xhigh), so \"disabled\" is accepted; got %+v", req.Thinking)
@@ -565,7 +565,7 @@ func TestDisabledThinkingStrip(t *testing.T) {
 				OutputConfig: &AnthropicOutputConfig{Effort: schemas.Ptr("xhigh")},
 			}
 
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, model)
 
 			if req.Thinking == nil || req.Thinking.Type != "disabled" {
 				t.Errorf("%s: accepts \"disabled\" at any effort, got %+v", model, req.Thinking)
@@ -655,7 +655,7 @@ func TestDisabledThinkingStrip(t *testing.T) {
 				Thinking:     &AnthropicThinking{Type: "disabled"},
 				OutputConfig: &AnthropicOutputConfig{Effort: schemas.Ptr(tc.effort)},
 			}
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, model)
 			if req.Thinking == nil || req.Thinking.Type != tc.want {
 				t.Errorf("typed, effort %q: thinking = %+v, want type %q", tc.effort, req.Thinking, tc.want)
 			}
@@ -753,7 +753,7 @@ func TestMythosPreviewKeepsExtendedThinking(t *testing.T) {
 			Thinking:  &AnthropicThinking{Type: "enabled", BudgetTokens: schemas.Ptr(10000)},
 		}
 
-		stripUnsupportedAnthropicFields(req, schemas.Anthropic, model)
+		stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, model)
 
 		if req.Thinking == nil {
 			t.Fatalf("thinking dropped entirely, want \"enabled\" preserved")
@@ -838,7 +838,7 @@ func TestBetweenToolsThinkingStrip(t *testing.T) {
 				Thinking:  &AnthropicThinking{Type: "between_tools"},
 			}
 
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, tc.model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, tc.model)
 
 			if req.Thinking == nil || req.Thinking.Type != tc.wantType {
 				t.Errorf("%s: thinking = %+v, want type %q", tc.model, req.Thinking, tc.wantType)
@@ -926,7 +926,7 @@ func TestThinkingDisplayUpdatesStrip(t *testing.T) {
 							MaxTokens: 4096,
 							Thinking:  &AnthropicThinking{Type: thinkingType, Display: new(display)},
 						}
-						stripUnsupportedAnthropicFields(req, provider, model)
+						stripUnsupportedAnthropicFields(nil, req, provider, model)
 						if req.Thinking == nil || req.Thinking.Display == nil || *req.Thinking.Display != want {
 							t.Errorf("thinking = %+v, want display %q", req.Thinking, want)
 						}
@@ -951,7 +951,7 @@ func TestThinkingDisplayUpdatesStrip(t *testing.T) {
 	t.Run("absent display stays absent", func(t *testing.T) {
 		setThinkingDisplayUpdates(t, schemas.Bedrock, false)
 		req := &AnthropicMessageRequest{Model: model, MaxTokens: 4096, Thinking: &AnthropicThinking{Type: "adaptive"}}
-		stripUnsupportedAnthropicFields(req, schemas.Bedrock, model)
+		stripUnsupportedAnthropicFields(nil, req, schemas.Bedrock, model)
 		if req.Thinking.Display != nil {
 			t.Errorf("display = %q, want it left unset", *req.Thinking.Display)
 		}
@@ -1008,7 +1008,7 @@ func TestThinkingDisplayUpdatesModelGate(t *testing.T) {
 			t.Run("typed/"+name, func(t *testing.T) {
 				setResolver(t)
 				req := &AnthropicMessageRequest{Model: tc.model, MaxTokens: 4096, Thinking: &AnthropicThinking{Type: "adaptive", Display: new("updates")}}
-				stripUnsupportedAnthropicFields(req, provider, tc.model)
+				stripUnsupportedAnthropicFields(nil, req, provider, tc.model)
 				if req.Thinking == nil || req.Thinking.Display == nil || *req.Thinking.Display != tc.want {
 					t.Errorf("thinking = %+v, want display %q", req.Thinking, tc.want)
 				}

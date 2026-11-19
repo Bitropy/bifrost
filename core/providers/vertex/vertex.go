@@ -792,7 +792,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) && jsonBody != nil {
 		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProvider(jsonBody, schemas.Vertex, capModel)
+		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProviderReport(ctx, jsonBody, schemas.Vertex, capModel)
 		if remapErr != nil {
 			if mt != nil {
 				mt.EndSpan(mh, schemas.SpanStatusError, remapErr.Error())
@@ -803,7 +803,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 		// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
 		var stripErr error
-		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonBody, schemas.Vertex, capModel)
+		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBodyReport(ctx, jsonBody, schemas.Vertex, capModel)
 		if stripErr != nil {
 			if mt != nil {
 				mt.EndSpan(mh, schemas.SpanStatusError, stripErr.Error())
@@ -812,6 +812,9 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		}
 		if mt != nil {
 			mt.EndSpan(mh, schemas.SpanStatusOk, "")
+		}
+		if refusal := anthropic.RefuseRemovedFeatures(ctx, schemas.Vertex); refusal != nil {
+			return nil, providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
 		}
 	}
 
@@ -1056,7 +1059,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 			capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
 			var remapErr error
-			jsonData, remapErr = anthropic.RemapRawToolVersionsForProvider(jsonData, schemas.Vertex, capModel)
+			jsonData, remapErr = anthropic.RemapRawToolVersionsForProviderReport(ctx, jsonData, schemas.Vertex, capModel)
 			if remapErr != nil {
 				if mt != nil {
 					mt.EndSpan(mh, schemas.SpanStatusError, remapErr.Error())
@@ -1066,7 +1069,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 			// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
 			var stripErr error
-			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBody(jsonData, schemas.Vertex, capModel)
+			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBodyReport(ctx, jsonData, schemas.Vertex, capModel)
 			if stripErr != nil {
 				if mt != nil {
 					mt.EndSpan(mh, schemas.SpanStatusError, stripErr.Error())
@@ -1075,6 +1078,9 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			}
 			if mt != nil {
 				mt.EndSpan(mh, schemas.SpanStatusOk, "")
+			}
+			if refusal := anthropic.RefuseRemovedFeatures(ctx, schemas.Vertex); refusal != nil {
+				return nil, providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
 			}
 		}
 

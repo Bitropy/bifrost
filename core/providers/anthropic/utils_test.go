@@ -1915,7 +1915,7 @@ func TestStripUnsupportedAnthropicFields_DiagnosticsGating(t *testing.T) {
 			Model:       "claude-opus-4-7",
 			Diagnostics: &AnthropicDiagnostics{PreviousMessageID: nil},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-7")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-opus-4-7")
 		if req.Diagnostics == nil {
 			t.Error("expected diagnostics preserved for Anthropic")
 		}
@@ -1927,7 +1927,7 @@ func TestStripUnsupportedAnthropicFields_DiagnosticsGating(t *testing.T) {
 				Model:       "claude-opus-4-7",
 				Diagnostics: &AnthropicDiagnostics{PreviousMessageID: nil},
 			}
-			stripUnsupportedAnthropicFields(req, provider, "claude-opus-4-7")
+			stripUnsupportedAnthropicFields(nil, req, provider, "claude-opus-4-7")
 			if req.Diagnostics != nil {
 				t.Errorf("expected diagnostics stripped for %s", provider)
 			}
@@ -1949,7 +1949,7 @@ func TestStripUnsupportedAnthropicFields_ContainerSkillsGating(t *testing.T) {
 				},
 			},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-opus-4-6")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Bedrock, "claude-opus-4-6")
 		if req.Container == nil {
 			t.Fatalf("expected container preserved (bare form valid with empty skills), got nil")
 		}
@@ -1968,7 +1968,7 @@ func TestStripUnsupportedAnthropicFields_ContainerSkillsGating(t *testing.T) {
 				},
 			},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-opus-4-6")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Bedrock, "claude-opus-4-6")
 		if req.Container != nil {
 			t.Errorf("expected whole container dropped for non-empty skills on Skills=false, got %v", req.Container)
 		}
@@ -1984,7 +1984,7 @@ func TestStripUnsupportedAnthropicFields_ContainerSkillsGating(t *testing.T) {
 				},
 			},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-6")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-opus-4-6")
 		if req.Container == nil || req.Container.ContainerObject == nil {
 			t.Fatalf("expected container preserved on Skills=true provider, got %v", req.Container)
 		}
@@ -2007,7 +2007,7 @@ func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
 				{Name: "search", DeferLoading: schemas.Ptr(true)},
 			},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.Vertex, "claude-sonnet-4-5")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Vertex, "claude-sonnet-4-5")
 		if req.Tools[0].DeferLoading == nil || !*req.Tools[0].DeferLoading {
 			t.Errorf("expected defer_loading to survive for Vertex (ToolSearch=true), got %v", req.Tools[0].DeferLoading)
 		}
@@ -2022,7 +2022,7 @@ func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
 				{Name: "search", DeferLoading: schemas.Ptr(true)},
 			},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-sonnet-4-5")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Bedrock, "claude-sonnet-4-5")
 		if req.Tools[0].DeferLoading == nil || !*req.Tools[0].DeferLoading {
 			t.Errorf("expected defer_loading to survive for Bedrock (ToolSearch=true via InvokeModel routing), got %v", req.Tools[0].DeferLoading)
 		}
@@ -2034,7 +2034,7 @@ func TestStripUnsupportedAnthropicFields_ToolSearchGating(t *testing.T) {
 			Model: "claude-opus-5.5",
 			Tools: []AnthropicTool{{Name: "search", DeferLoading: schemas.Ptr(true)}},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.GithubCopilot, "claude-opus-5.5")
+		stripUnsupportedAnthropicFields(nil, req, schemas.GithubCopilot, "claude-opus-5.5")
 		if req.Tools[0].DeferLoading == nil || !*req.Tools[0].DeferLoading {
 			t.Errorf("expected defer_loading to survive for GitHub Copilot, got %v", req.Tools[0].DeferLoading)
 		}
@@ -2086,7 +2086,7 @@ func TestStripUnsupportedAnthropicFields_StrictGating(t *testing.T) {
 				Model: "claude-opus-4-8",
 				Tools: []AnthropicTool{{Name: "t1", Strict: schemas.Ptr(strict)}},
 			}
-			stripUnsupportedAnthropicFields(req, schemas.BedrockMantle, "claude-opus-4-8")
+			stripUnsupportedAnthropicFields(nil, req, schemas.BedrockMantle, "claude-opus-4-8")
 			if req.Tools[0].Strict != nil {
 				t.Errorf("expected strict cleared for Bedrock Mantle, got %v", *req.Tools[0].Strict)
 			}
@@ -2101,7 +2101,7 @@ func TestStripUnsupportedAnthropicFields_StrictGating(t *testing.T) {
 			Model: "claude-opus-4-8",
 			Tools: []AnthropicTool{{Name: "t1", Strict: schemas.Ptr(true)}},
 		}
-		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-8")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-opus-4-8")
 		if req.Tools[0].Strict == nil || !*req.Tools[0].Strict {
 			t.Errorf("expected strict preserved on StructuredOutputs=true provider, got %v", req.Tools[0].Strict)
 		}
@@ -3231,7 +3231,7 @@ func TestStripUnsupportedAnthropicFields_EffortGating(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			stripUnsupportedAnthropicFields(tt.req, schemas.Anthropic, tt.model)
+			stripUnsupportedAnthropicFields(nil, tt.req, schemas.Anthropic, tt.model)
 			if tt.wantOCNil {
 				if tt.req.OutputConfig != nil {
 					t.Fatalf("expected OutputConfig nil, got %+v", tt.req.OutputConfig)
@@ -3358,7 +3358,7 @@ func TestStripUnsupportedFields_EffortLevelClamp(t *testing.T) {
 		})
 		t.Run(tt.model+"/"+tt.effort+"/typed", func(t *testing.T) {
 			req := &AnthropicMessageRequest{Model: tt.model, OutputConfig: &AnthropicOutputConfig{Effort: new(tt.effort)}}
-			stripUnsupportedAnthropicFields(req, schemas.Anthropic, tt.model)
+			stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, tt.model)
 			if req.OutputConfig == nil || req.OutputConfig.Effort == nil || *req.OutputConfig.Effort != tt.want {
 				t.Errorf("OutputConfig = %+v, want effort %q", req.OutputConfig, tt.want)
 			}
@@ -5200,7 +5200,7 @@ func TestSafeguardsBetaGatesAndOverrides(t *testing.T) {
 				if present {
 					req.Safeguards = json.RawMessage(`{}`)
 				}
-				stripUnsupportedAnthropicFields(req, provider, model)
+				stripUnsupportedAnthropicFields(nil, req, provider, model)
 				if err := AddMissingBetaHeadersToContext(ctx, req, provider); err != nil {
 					t.Fatal(err)
 				}
@@ -5295,7 +5295,7 @@ func TestStripUnsupportedAnthropicFieldsSafeguards(t *testing.T) {
 	}
 
 	req := mk("claude-opus-4-8")
-	stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-8")
+	stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-opus-4-8")
 	out, err := sonic.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
@@ -5307,7 +5307,7 @@ func TestStripUnsupportedAnthropicFieldsSafeguards(t *testing.T) {
 	// Anthropic direct is still model-gated: Haiku is outside the auto-mode model
 	// set, so the field is stripped rather than sent to a model that refuses it.
 	req = mk("claude-haiku-4-5")
-	stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-haiku-4-5")
+	stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-haiku-4-5")
 	out, err = sonic.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
@@ -5319,7 +5319,7 @@ func TestStripUnsupportedAnthropicFieldsSafeguards(t *testing.T) {
 	for _, provider := range []schemas.ModelProvider{schemas.Azure, schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex} {
 		for _, model := range []string{"claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5"} {
 			req := mk(model)
-			stripUnsupportedAnthropicFields(req, provider, model)
+			stripUnsupportedAnthropicFields(nil, req, provider, model)
 			out, err := sonic.Marshal(req)
 			if err != nil {
 				t.Fatalf("marshal request for %s/%s: %v", provider, model, err)

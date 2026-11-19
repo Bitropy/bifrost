@@ -431,6 +431,9 @@ const (
 	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"                      // bool (triggers additional key validation during provider add/update)
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
 	BifrostContextKeyDroppedUnsupportedTools             BifrostContextKey = "bifrost-dropped-unsupported-tools"          // []string (set by provider request builders — tool type strings silently dropped because the target provider/model doesn't support them)
+	BifrostContextKeyAdaptations                         BifrostContextKey = "bifrost-adaptations"                        // Adaptation (ORed by request builders and the embedder — the attempt's adapted generic parameters; copied to ExtraFields.Adaptations)
+	BifrostContextKeyRemovedFeatures                     BifrostContextKey = "bifrost-removed-features"                   // anthropic.Feature (ORed by the Anthropic-family strips — explicit parameters removed because the target cannot carry them)
+	BifrostContextKeyClientAnthropicBeta                 BifrostContextKey = "bifrost-client-anthropic-beta"              // []string (set by the embedder — the client's own anthropic-beta values; forwarded, and refused in refusal mode when the target lacks them)
 	BifrostContextKeyMCPAddedTools                       BifrostContextKey = "bifrost-mcp-added-tools"                    // []string (set by bifrost - DO NOT SET THIS MANUALLY)) - list of tools added to the request by MCP, all the tool are in the format "clientName-toolName"
 	BifrostContextKeyMCPInstructionsInjected             BifrostContextKey = "bifrost-mcp-instructions-injected"          // bool (set by bifrost - DO NOT SET THIS MANUALLY) - guards the agent loop from stacking the instructions block on every turn
 	BifrostContextKeyMCPInstructionsText                 BifrostContextKey = "bifrost-mcp-instructions-text"              // *string (set by bifrost - DO NOT SET THIS MANUALLY) - the injected instructions block, so prompt-cache placement can skip it
@@ -454,7 +457,7 @@ const (
 	BifrostContextKeyDeferredGuardrail                   BifrostContextKey = "bifrost-deferred-guardrail"                 // *DeferredGuardrailResult (set by enterprise guardrails plugin — output guardrail results that finish after the response was delivered; the log writer holds the row until they land)
 	BifrostContextKeyStreamAccumulatedUsage              BifrostContextKey = "bifrost-stream-accumulated-usage"           // *BifrostLLMUsage handle, set ONCE by a streaming provider and mutated in place as usage arrives; read on cancel/timeout to bill partial usage that the provider already consumed
 	BifrostContextKeyDeferredLargePayloadMetadata        BifrostContextKey = "bifrost-deferred-large-payload-metadata"    // <-chan *LargePayloadMetadata (set by enterprise Phase B request — delivers metadata after body streaming)
-	BifrostContextKeyRequestBodyRewriter                 BifrostContextKey = "bifrost-request-body-rewriter"              // providerUtils.RequestBodyRewriter (set by the embedder — rewrites the provider-built request body at write time; see providers/utils/bodyrewrite.go)
+	BifrostContextKeyRequestBodyRewriter                 BifrostContextKey = "bifrost-request-body-rewriter"              // providerUtils.RequestBodyRewriter or *RequestBodyRewriteHook (set by the embedder — rewrites the provider-built request body at write time; see providers/utils/bodyrewrite.go)
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
 	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
@@ -2137,6 +2140,9 @@ type BifrostResponseExtraFields struct {
 	DroppedUnsupportedTools []string          `json:"dropped_unsupported_tools,omitempty"`
 	ProviderResponseHeaders map[string]string `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
 	PassthroughPath         string            `json:"passthrough_path,omitempty"`          // Stripped provider path for passthrough requests, e.g. "/v1/chat/completions"
+	// Adaptations is the attempt's adaptation set (BifrostContextKeyAdaptations), on the unary
+	// response and on every stream chunk. Never serialized.
+	Adaptations Adaptation `json:"-"`
 }
 
 type RoutingInfo struct {

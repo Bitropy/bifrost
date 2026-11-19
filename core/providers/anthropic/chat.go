@@ -389,8 +389,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// dropped and the model answers under the default "auto".
 	forcedToolChoiceSupported := caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(capModel))
 
+	// No output cap from the caller: max_tokens is the model's default ceiling.
+	if bifrostReq.Params == nil || bifrostReq.Params.MaxCompletionTokens == nil {
+		addAdaptation(ctx, schemas.AdaptationMaxTokens)
+	}
+
 	// Convert parameters
 	if bifrostReq.Params != nil {
+		noteIgnoredChatParams(ctx, bifrostReq.Params)
 		anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
 		if safeguards, exists := anthropicReq.ExtraParams["safeguards"]; exists {
 			// Copy before consuming the key: the input may be reused for a fallback.
@@ -438,11 +444,15 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		if bifrostReq.Params.MaxCompletionTokens != nil {
 			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxCompletionTokens)
+			if anthropicReq.MaxTokens != *bifrostReq.Params.MaxCompletionTokens {
+				addAdaptation(ctx, schemas.AdaptationMaxTokens)
+			}
 		}
 
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
 		// top_k with a 400 error.
-		if !caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
+		adaptiveOnly := caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model()))
+		if !adaptiveOnly {
 			// Anthropic doesn't allow both temperature and top_p to be specified.
 			// If both are present, prefer temperature (more commonly used).
 			if bifrostReq.Params.Temperature != nil {
@@ -451,18 +461,26 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				anthropicReq.TopP = bifrostReq.Params.TopP
 			}
 		}
+		if (adaptiveOnly && (bifrostReq.Params.Temperature != nil || bifrostReq.Params.TopP != nil)) ||
+			(bifrostReq.Params.Temperature != nil && bifrostReq.Params.TopP != nil) {
+			addAdaptation(ctx, schemas.AdaptationSampling)
+		}
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
 
 		// TopK — prefer the promoted neutral field; fall back to ExtraParams.
 		// Opus 4.7+ and the Fable/Mythos family reject top_k with a 400 error.
 		if bifrostReq.Params.TopK != nil {
-			if !caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
+			if !adaptiveOnly {
 				anthropicReq.TopK = bifrostReq.Params.TopK
+			} else {
+				addAdaptation(ctx, schemas.AdaptationTopK)
 			}
 		} else if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 			delete(anthropicReq.ExtraParams, "top_k")
-			if !caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
+			if !adaptiveOnly {
 				anthropicReq.TopK = topK
+			} else {
+				addAdaptation(ctx, schemas.AdaptationTopK)
 			}
 		}
 
@@ -657,6 +675,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 							Type: "tool",
 							Name: responseFormatTool.Name,
 						}
+					} else {
+						addAdaptation(ctx, schemas.AdaptationToolChoice)
 					}
 				}
 			} else {
@@ -685,7 +705,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			// kept. The dropped set is discarded — "silent strip + continue"
 			// policy per user direction. See Bedrock's convertToolConfig for
 			// the direct-Bedrock-path equivalent.
-			filtered, _ := ValidateChatToolsForProvider(bifrostReq.Params.Tools, caps)
+			filtered, dropped := ValidateChatToolsForProvider(bifrostReq.Params.Tools, caps)
+			if len(dropped) > 0 {
+				addRemoved(ctx, FeatureServerTool)
+			}
 			// Chat has no OpenAI counterpart for allowed_callers, but the neutral
 			// ChatTool carries it, so a "programmatic" caller still has to be renamed
 			// to the request's code execution version (see the Responses path).
@@ -725,6 +748,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		}
 
 		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
+		if forcedToolChoiceRejected {
+			addAdaptation(ctx, schemas.AdaptationToolChoice)
+		}
 
 		// Convert tool choice
 		if bifrostReq.Params.ToolChoice != nil && !forcedToolChoiceRejected {
@@ -772,6 +798,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 				case schemas.ChatToolChoiceTypeCustom:
 					toolChoice.Type = "auto"
+					addAdaptation(ctx, schemas.AdaptationToolChoice)
 				default:
 					toolChoice.Type = "auto"
 				}
@@ -1246,7 +1273,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// Strip request- and tool-level fields the target Anthropic-family
 	// provider does not support. Fail-closed tool validation stays in
 	// ValidateToolsForProvider; this is strip-silently for additive fields.
-	stripUnsupportedAnthropicFields(anthropicReq, bifrostReq.Provider, capModel)
+	stripUnsupportedAnthropicFields(ctx, anthropicReq, bifrostReq.Provider, capModel)
 
 	// Exceeding the provider's cache-checkpoint cap is a hard rejection, not a degradation, so
 	// trim the earliest markers rather than let the whole request fail. Runs last, after every
