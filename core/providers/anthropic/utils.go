@@ -474,6 +474,7 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 	if req.Thinking != nil && req.Thinking.BlockBinding != nil &&
 		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(req.Thinking.Type)) {
 		req.Thinking.BlockBinding = nil
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	if req.InferenceGeo != nil && !caps.SupportsInferenceGeo(features.InferenceGeo) {
 		req.InferenceGeo = nil
@@ -1117,6 +1118,9 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 	// thinking.type rewrites above, so it sees the type that is actually sent.
 	if providerUtils.JSONFieldExists(jsonBody, "thinking.block_binding") &&
 		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(providerUtils.GetJSONField(jsonBody, "thinking.type").String())) {
+		if rawMeaningful(providerUtils.GetJSONField(jsonBody, "thinking.block_binding")) {
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
+		}
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.block_binding")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw thinking.block_binding: %w", err)

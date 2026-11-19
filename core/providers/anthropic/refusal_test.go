@@ -651,3 +651,37 @@ func TestStripUnsupportedFieldsFromRawBodyReport_EmptyValuesNotRecorded(t *testi
 		assert.Equal(t, FeatureCacheControlScope, RemovedFeatures(ctx), nested)
 	}
 }
+
+// A thinking.block_binding the route cannot carry (no beta on the host, or a thinking type that
+// takes none) is dropped by both strips and reported as a reasoning adaptation, never silently.
+func TestStrip_BlockBindingDropIsReasoningAdaptation(t *testing.T) {
+	const bindingModel = "claude-opus-4-7" // takes adaptive thinking
+	rows := []struct {
+		name     string
+		provider schemas.ModelProvider
+		typ      string
+		want     schemas.Adaptation
+	}{
+		{"host without the beta", schemas.Vertex, "adaptive", schemas.AdaptationReasoning},
+		{"type takes none", schemas.Anthropic, "disabled", schemas.AdaptationReasoning},
+		{"carried", schemas.Anthropic, "adaptive", 0},
+	}
+	for _, row := range rows {
+		t.Run(row.name+"/typed", func(t *testing.T) {
+			ctx := refusalCtx(nil)
+			req := &AnthropicMessageRequest{Model: bindingModel, MaxTokens: 1024,
+				Thinking: &AnthropicThinking{Type: row.typ, BlockBinding: &AnthropicThinkingBlockBinding{PrefixMismatchBehavior: new("drop_block")}}}
+			stripUnsupportedAnthropicFields(ctx, req, row.provider, bindingModel)
+			assert.Equal(t, row.want != 0, req.Thinking == nil || req.Thinking.BlockBinding == nil)
+			assert.Equal(t, row.want, schemas.AdaptationsFromContext(ctx)&schemas.AdaptationReasoning)
+		})
+		t.Run(row.name+"/raw", func(t *testing.T) {
+			ctx := refusalCtx(nil)
+			body := `{"model":"` + bindingModel + `","max_tokens":1024,"thinking":{"type":"` + row.typ + `","block_binding":{"prefix_mismatch_behavior":"drop_block"}}}`
+			out, err := StripUnsupportedFieldsFromRawBodyReport(ctx, []byte(body), row.provider, bindingModel)
+			require.NoError(t, err)
+			assert.Equal(t, row.want != 0, !providerUtils.JSONFieldExists(out, "thinking.block_binding"))
+			assert.Equal(t, row.want, schemas.AdaptationsFromContext(ctx)&schemas.AdaptationReasoning)
+		})
+	}
+}
