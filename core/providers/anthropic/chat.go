@@ -391,7 +391,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	// No output cap from the caller: max_tokens is the model's default ceiling.
 	if bifrostReq.Params == nil || bifrostReq.Params.MaxCompletionTokens == nil {
-		addAdaptation(ctx, schemas.AdaptationMaxTokens)
+		schemas.AddAdaptation(ctx, schemas.AdaptationMaxTokens)
 	}
 
 	// Convert parameters
@@ -445,7 +445,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		if bifrostReq.Params.MaxCompletionTokens != nil {
 			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxCompletionTokens)
 			if anthropicReq.MaxTokens != *bifrostReq.Params.MaxCompletionTokens {
-				addAdaptation(ctx, schemas.AdaptationMaxTokens)
+				schemas.AddAdaptation(ctx, schemas.AdaptationMaxTokens)
 			}
 		}
 
@@ -463,7 +463,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		}
 		if (adaptiveOnly && (bifrostReq.Params.Temperature != nil || bifrostReq.Params.TopP != nil)) ||
 			(bifrostReq.Params.Temperature != nil && bifrostReq.Params.TopP != nil) {
-			addAdaptation(ctx, schemas.AdaptationSampling)
+			schemas.AddAdaptation(ctx, schemas.AdaptationSampling)
 		}
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
 
@@ -473,14 +473,14 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			if !adaptiveOnly {
 				anthropicReq.TopK = bifrostReq.Params.TopK
 			} else {
-				addAdaptation(ctx, schemas.AdaptationTopK)
+				schemas.AddAdaptation(ctx, schemas.AdaptationTopK)
 			}
 		} else if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
 			delete(anthropicReq.ExtraParams, "top_k")
 			if !adaptiveOnly {
 				anthropicReq.TopK = topK
 			} else {
-				addAdaptation(ctx, schemas.AdaptationTopK)
+				schemas.AddAdaptation(ctx, schemas.AdaptationTopK)
 			}
 		}
 
@@ -676,7 +676,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 							Name: responseFormatTool.Name,
 						}
 					} else {
-						addAdaptation(ctx, schemas.AdaptationToolChoice)
+						schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
 					}
 				}
 			} else {
@@ -749,7 +749,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
 		if forcedToolChoiceRejected {
-			addAdaptation(ctx, schemas.AdaptationToolChoice)
+			schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
 		}
 
 		// Convert tool choice
@@ -798,7 +798,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 				case schemas.ChatToolChoiceTypeCustom:
 					toolChoice.Type = "auto"
-					addAdaptation(ctx, schemas.AdaptationToolChoice)
+					schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
 				default:
 					toolChoice.Type = "auto"
 				}

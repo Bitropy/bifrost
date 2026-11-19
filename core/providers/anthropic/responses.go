@@ -4904,7 +4904,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 	// No output cap from the caller: max_tokens is the model's default ceiling.
 	if bifrostReq.Params == nil || bifrostReq.Params.MaxOutputTokens == nil {
-		addAdaptation(ctx, schemas.AdaptationMaxTokens)
+		schemas.AddAdaptation(ctx, schemas.AdaptationMaxTokens)
 	}
 
 	// Convert basic parameters
@@ -4913,7 +4913,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		if bifrostReq.Params.MaxOutputTokens != nil {
 			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxOutputTokens)
 			if anthropicReq.MaxTokens != *bifrostReq.Params.MaxOutputTokens {
-				addAdaptation(ctx, schemas.AdaptationMaxTokens)
+				schemas.AddAdaptation(ctx, schemas.AdaptationMaxTokens)
 			}
 		}
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
@@ -4930,7 +4930,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		}
 		if (adaptiveOnly && (bifrostReq.Params.Temperature != nil || bifrostReq.Params.TopP != nil)) ||
 			(bifrostReq.Params.Temperature != nil && bifrostReq.Params.TopP != nil) {
-			addAdaptation(ctx, schemas.AdaptationSampling)
+			schemas.AddAdaptation(ctx, schemas.AdaptationSampling)
 		}
 		if bifrostReq.Params.User != nil {
 			anthropicReq.Metadata = &AnthropicMetaData{
@@ -4960,7 +4960,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 								Name: responseFormatTool.Name,
 							}
 						} else {
-							addAdaptation(ctx, schemas.AdaptationToolChoice)
+							schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
 						}
 					}
 				}
@@ -5211,7 +5211,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				if !adaptiveOnly {
 					anthropicReq.TopK = topK
 				} else {
-					addAdaptation(ctx, schemas.AdaptationTopK)
+					schemas.AddAdaptation(ctx, schemas.AdaptationTopK)
 				}
 			}
 			if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
@@ -5345,7 +5345,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
 		if forcedToolChoiceRejected {
-			addAdaptation(ctx, schemas.AdaptationToolChoice)
+			schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
 		}
 
 		// Convert tool choice
