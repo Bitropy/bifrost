@@ -957,6 +957,9 @@ func TestClearContextForInternalRequestShedsEveryKeyOnFreshChild(t *testing.T) {
 		schemas.BifrostContextKeyExtraHeaders:          map[string]string{"x-caller": "secret"},
 		schemas.BifrostContextKeyPassthroughHeaders:    map[string]string{"x-caller": "secret"},
 		schemas.BifrostContextKeyURLPath:               "/v1/caller/path",
+		schemas.BifrostContextKeyClientAnthropicBeta:   []string{"caller-beta"},
+		schemas.BifrostContextKeyRemovedFeatures:       uint32(1),
+		schemas.BifrostContextKeyAdaptations:           schemas.AdaptationSampling,
 	}
 
 	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)

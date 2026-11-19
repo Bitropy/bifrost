@@ -191,7 +191,11 @@ func TestBuildChat_RefusalMode_EveryRefusalRow(t *testing.T) {
 					require.Nil(t, bifrostErr, "refusal mode off builds")
 					require.NotEmpty(t, body)
 					if variant == "typed" {
-						assert.Equal(t, row.feature, RemovedFeatures(ctx), "the strips record exactly the removed feature")
+						want := row.feature
+						if want == FeatureAnthropicBeta {
+							want = 0 // client betas are checked in refusal mode only
+						}
+						assert.Equal(t, want, RemovedFeatures(ctx), "the strips record exactly the removed feature")
 					}
 				})
 			}

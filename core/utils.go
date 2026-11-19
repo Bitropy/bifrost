@@ -580,6 +580,10 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+	// The caller's client betas and its request's removed and adapted sets.
+	ctx.ClearValue(schemas.BifrostContextKeyClientAnthropicBeta)
+	ctx.ClearValue(schemas.BifrostContextKeyRemovedFeatures)
+	ctx.ClearValue(schemas.BifrostContextKeyAdaptations)
 }
 
 // PrepareContextForInternalRequest marks ctx as an internal sub-request issued

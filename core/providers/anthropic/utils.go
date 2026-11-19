@@ -386,7 +386,7 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 		} else {
 			req.Thinking = nil
 		}
-		addAdaptation(ctx, schemas.AdaptationReasoning)
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	// output_config.effort — model-gated per
 	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
@@ -397,13 +397,13 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
 			req.OutputConfig = nil
 		}
-		addAdaptation(ctx, schemas.AdaptationReasoning)
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	// A kept effort snaps onto the model's ladder (xhigh/max on Opus 4.5, xhigh on 4.6 400 otherwise).
 	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && schemas.IsAnthropicModel(caps.Model()) {
 		normalized := caps.NormalizeReasoningEffort(*req.OutputConfig.Effort, DefaultEffortControl(caps.Model()))
 		if normalized != *req.OutputConfig.Effort {
-			addAdaptation(ctx, schemas.AdaptationReasoning)
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 		req.OutputConfig.Effort = new(normalized)
 	}
@@ -432,11 +432,11 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 		// the caller sent it rather than switched to adaptive behind their back.
 		if req.Thinking.Type == "enabled" && RejectsEnabledThinking(caps) {
 			req.Thinking.Type = "adaptive"
-			addAdaptation(ctx, schemas.AdaptationReasoning)
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 		if req.Thinking.Type == "adaptive" && req.Thinking.BudgetTokens != nil {
 			req.Thinking.BudgetTokens = nil
-			addAdaptation(ctx, schemas.AdaptationReasoning)
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 	}
 	// thinking.type:"disabled" — rejected on always-on models, and on Opus 5+
@@ -449,7 +449,7 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 	if req.Thinking != nil && req.Thinking.Type == "between_tools" &&
 		!caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(model)) {
 		req.Thinking.Type = "disabled"
-		addAdaptation(ctx, schemas.AdaptationReasoning)
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	if req.Thinking != nil && req.Thinking.Type == "disabled" {
 		var effort *string
@@ -459,7 +459,7 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 		if RejectsDisabledThinking(caps, effort) {
 			req.Thinking.Type = "adaptive"
 			req.Thinking.BudgetTokens = nil
-			addAdaptation(ctx, schemas.AdaptationReasoning)
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 	}
 	// thinking.display:"updates" is a beta value, taken per model. Where it is not taken it 400s like an
@@ -467,7 +467,7 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 	if req.Thinking != nil && req.Thinking.Display != nil && *req.Thinking.Display == AnthropicThinkingDisplayUpdates &&
 		!SupportsThinkingDisplayUpdates(caps) {
 		req.Thinking.Display = new("omitted")
-		addAdaptation(ctx, schemas.AdaptationReasoning)
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	// Runs after every thinking.type rewrite above so a block_binding left on a mode that
 	// cannot carry it (or on a host without the beta) is dropped instead of 400ing.
@@ -481,7 +481,7 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 	}
 	if req.ServiceTier != nil && !features.ServiceTier {
 		req.ServiceTier = nil
-		addAdaptation(ctx, schemas.AdaptationServiceTier)
+		schemas.AddAdaptation(ctx, schemas.AdaptationServiceTier)
 	}
 	// Cache diagnostics is Claude API only; elsewhere it 400s as an unknown field.
 	if req.Diagnostics != nil && !features.Diagnostics {
@@ -619,7 +619,7 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 		}
 		if tool.Strict != nil && !features.StructuredOutputs {
 			tool.Strict = nil
-			addAdaptation(ctx, schemas.AdaptationStrict)
+			schemas.AddAdaptation(ctx, schemas.AdaptationStrict)
 		}
 	}
 }
@@ -736,7 +736,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 		if err != nil {
 			return nil, fmt.Errorf("strip raw service_tier: %w", err)
 		}
-		addAdaptation(ctx, schemas.AdaptationServiceTier)
+		schemas.AddAdaptation(ctx, schemas.AdaptationServiceTier)
 	}
 
 	// fallback_credit_token — bound to the minting platform, so a provider without
@@ -997,13 +997,13 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 			if err != nil {
 				return nil, fmt.Errorf("set raw thinking.budget_tokens: %w", err)
 			}
-			addAdaptation(ctx, schemas.AdaptationReasoning)
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		} else {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw thinking: %w", err)
 			}
-			addAdaptation(ctx, schemas.AdaptationReasoning)
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 	}
 
@@ -1016,7 +1016,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 		if err != nil {
 			return nil, fmt.Errorf("strip raw output_config.effort: %w", err)
 		}
-		addAdaptation(ctx, schemas.AdaptationReasoning)
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		if oc := providerUtils.GetJSONField(jsonBody, "output_config"); oc.IsObject() && len(oc.Map()) == 0 {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
 			if err != nil {
@@ -1031,7 +1031,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 			if err != nil {
 				return nil, fmt.Errorf("normalize raw output_config.effort: %w", err)
 			}
-			addAdaptation(ctx, schemas.AdaptationReasoning)
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 	}
 
@@ -1058,7 +1058,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 			if err != nil {
 				return nil, fmt.Errorf("rewrite raw thinking.type to adaptive: %w", err)
 			}
-			addAdaptation(ctx, schemas.AdaptationReasoning)
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 		// Covers both the request just rewritten above and one that arrived
 		// adaptive already, so the same conversation serializes identically
@@ -1069,7 +1069,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 			if err != nil {
 				return nil, fmt.Errorf("strip raw thinking.budget_tokens: %w", err)
 			}
-			addAdaptation(ctx, schemas.AdaptationReasoning)
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 	}
 
@@ -1083,7 +1083,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 		if err != nil {
 			return nil, fmt.Errorf("rewrite raw thinking.type to disabled: %w", err)
 		}
-		addAdaptation(ctx, schemas.AdaptationReasoning)
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "disabled" {
 		var effort *string
@@ -1095,13 +1095,13 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 			if err != nil {
 				return nil, fmt.Errorf("rewrite raw thinking.type to adaptive: %w", err)
 			}
-			addAdaptation(ctx, schemas.AdaptationReasoning)
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 			if providerUtils.JSONFieldExists(jsonBody, "thinking.budget_tokens") {
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.budget_tokens")
 				if err != nil {
 					return nil, fmt.Errorf("strip raw thinking.budget_tokens: %w", err)
 				}
-				addAdaptation(ctx, schemas.AdaptationReasoning)
+				schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 			}
 		}
 	}
@@ -1112,7 +1112,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 		if err != nil {
 			return nil, fmt.Errorf("rewrite raw thinking.display to omitted: %w", err)
 		}
-		addAdaptation(ctx, schemas.AdaptationReasoning)
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 
 	// thinking.block_binding — mirrors the typed path. Placed here, after the
@@ -1243,7 +1243,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 				if err != nil {
 					return nil, fmt.Errorf("strip raw %s.strict: %w", base, err)
 				}
-				addAdaptation(ctx, schemas.AdaptationStrict)
+				schemas.AddAdaptation(ctx, schemas.AdaptationStrict)
 			}
 			if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, base+".cache_control.scope") {
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".cache_control.scope")

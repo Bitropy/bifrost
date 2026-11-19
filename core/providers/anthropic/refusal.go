@@ -74,13 +74,6 @@ func RemovedFeatures(ctx context.Context) Feature {
 	return f
 }
 
-// addAdaptation is schemas.AddAdaptation, tolerating a nil context.
-func addAdaptation(ctx *schemas.BifrostContext, a schemas.Adaptation) {
-	if ctx != nil {
-		schemas.AddAdaptation(ctx, a)
-	}
-}
-
 // RefuseRemovedFeatures is the one refusal check: in refusal mode it returns the refusal for the
 // first feature a strip removed from the request on ctx, and nil otherwise. Callers run it once the
 // request is built, before any network I/O.
@@ -102,11 +95,11 @@ func refusalError(ctx *schemas.BifrostContext, provider schemas.ModelProvider) e
 	return nil
 }
 
-// reportClientBetas records anthropic_beta when a client-sourced anthropic-beta value
+// reportClientBetas records anthropic_beta, in refusal mode, when a client-sourced anthropic-beta value
 // (schemas.BifrostContextKeyClientAnthropicBeta) is one FilterBetaHeadersForProvider drops for
 // provider. Betas from the provider's configuration are the operator's and are not reported.
 func reportClientBetas(ctx *schemas.BifrostContext, provider schemas.ModelProvider, overrides map[string]bool) {
-	if ctx == nil {
+	if !schemas.FeatureRefusal(ctx) {
 		return
 	}
 	values, _ := ctx.Value(schemas.BifrostContextKeyClientAnthropicBeta).([]string)
@@ -132,7 +125,7 @@ func stripMergedBody(ctx *schemas.BifrostContext, jsonBody []byte, provider sche
 		if jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "top_k"); err != nil {
 			return nil, err
 		}
-		addAdaptation(ctx, schemas.AdaptationTopK)
+		schemas.AddAdaptation(ctx, schemas.AdaptationTopK)
 	}
 	return jsonBody, nil
 }
@@ -147,7 +140,7 @@ func noteIgnoredChatParams(ctx *schemas.BifrostContext, p *schemas.ChatParameter
 		p.PresencePenalty != nil || p.FrequencyPenalty != nil || p.LogitBias != nil || p.Prediction != nil ||
 		p.Audio != nil || slices.ContainsFunc(p.Modalities, func(m string) bool { return !strings.EqualFold(m, "text") }) ||
 		p.WebSearchOptions != nil || p.Verbosity != nil {
-		addAdaptation(ctx, schemas.AdaptationUnmapped)
+		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
 	}
 }
 
@@ -162,6 +155,6 @@ func noteIgnoredResponsesParams(ctx *schemas.BifrostContext, p *schemas.Response
 	}
 	if p.Conversation != nil || p.PreviousResponseID != nil || p.PromptCacheOptions != nil || p.TopLogProbs != nil ||
 		p.IncludeServerSideToolInvocations != nil || (p.Text != nil && p.Text.Verbosity != nil) {
-		addAdaptation(ctx, schemas.AdaptationUnmapped)
+		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
 	}
 }
