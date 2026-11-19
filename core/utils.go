@@ -478,6 +478,10 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	// inherit it. Cleared here, not when the invoke method returns, because the
 	// in-flight stream still reads it asynchronously (#6825).
 	ctx.ClearValue(schemas.BifrostContextKeySSEReaderFactory)
+	// What one attempt's request builder removed and adapted describes that attempt's
+	// request only; the next provider's builder records its own.
+	ctx.ClearValue(schemas.BifrostContextKeyRemovedFeatures)
+	schemas.ResetAdaptations(ctx)
 }
 
 // restoreProviderResponseHeaders puts headers, the primary attempt's provider response headers,
@@ -576,6 +580,10 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyExtraHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyPassthroughHeaders)
 	ctx.ClearValue(schemas.BifrostContextKeyURLPath)
+	// The caller's client betas and its request's removed and adapted sets.
+	ctx.ClearValue(schemas.BifrostContextKeyClientAnthropicBeta)
+	ctx.ClearValue(schemas.BifrostContextKeyRemovedFeatures)
+	ctx.ClearValue(schemas.BifrostContextKeyAdaptations)
 }
 
 // PrepareContextForInternalRequest marks ctx as an internal sub-request issued

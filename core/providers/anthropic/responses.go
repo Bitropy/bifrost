@@ -5046,14 +5046,24 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, capModel, AnthropicDefaultMaxTokens),
 	}
 
+	// No output cap from the caller: max_tokens is the model's default ceiling.
+	if bifrostReq.Params == nil || bifrostReq.Params.MaxOutputTokens == nil {
+		schemas.AddAdaptation(ctx, schemas.AdaptationMaxTokens)
+	}
+
 	// Convert basic parameters
 	if bifrostReq.Params != nil {
+		noteIgnored(ctx, bifrostReq.Params, IgnoredResponsesParams)
 		if bifrostReq.Params.MaxOutputTokens != nil {
 			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxOutputTokens)
+			if anthropicReq.MaxTokens != *bifrostReq.Params.MaxOutputTokens {
+				schemas.AddAdaptation(ctx, schemas.AdaptationMaxTokens)
+			}
 		}
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
 		// top_k with a 400 error.
-		if !caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
+		adaptiveOnly := caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model()))
+		if !adaptiveOnly {
 			// Anthropic doesn't allow both temperature and top_p to be specified.
 			// If both are present, prefer temperature (more commonly used).
 			if bifrostReq.Params.Temperature != nil {
@@ -5061,6 +5071,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			} else if bifrostReq.Params.TopP != nil {
 				anthropicReq.TopP = bifrostReq.Params.TopP
 			}
+		}
+		if (adaptiveOnly && (bifrostReq.Params.Temperature != nil || bifrostReq.Params.TopP != nil)) ||
+			(bifrostReq.Params.Temperature != nil && bifrostReq.Params.TopP != nil) {
+			schemas.AddAdaptation(ctx, schemas.AdaptationSampling)
 		}
 		if bifrostReq.Params.User != nil {
 			anthropicReq.Metadata = &AnthropicMetaData{
@@ -5089,6 +5103,8 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 								Type: "tool",
 								Name: responseFormatTool.Name,
 							}
+						} else {
+							schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
 						}
 					}
 				}
@@ -5157,6 +5173,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					// The output clamp can leave the caller's budget at or above max_tokens; refit it below.
 					if requested := bifrostReq.Params.MaxOutputTokens; requested != nil && *requested > anthropicReq.MaxTokens {
 						if fitted, ok := fitThinkingBudget(&budgetTokens, bifrostReq.Params.Reasoning.Effort, anthropicReq.MaxTokens); ok {
+							if fitted != budgetTokens {
+								schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
+							}
 							budgetTokens = fitted
 						}
 					}
@@ -5336,14 +5355,18 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
 				delete(anthropicReq.ExtraParams, "top_k")
-				if !caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
+				if !adaptiveOnly {
 					anthropicReq.TopK = topK
+				} else {
+					schemas.AddAdaptation(ctx, schemas.AdaptationTopK)
 				}
 			}
 			if speed, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["speed"]); ok {
 				delete(anthropicReq.ExtraParams, "speed")
 				if caps.SupportsFastMode(DefaultSupportsFastMode(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)) {
 					anthropicReq.Speed = speed
+				} else {
+					addRemoved(ctx, FeatureSpeed)
 				}
 			}
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
@@ -5409,6 +5432,13 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			// top-level and drives beta-header injection.
 			if tokenVal, exists := bifrostReq.Params.ExtraParams["fallback_credit_token"]; exists {
 				delete(anthropicReq.ExtraParams, "fallback_credit_token")
+				// A raw value is a top-level key the embedder captured undecoded.
+				if raw, isRaw := tokenVal.(json.RawMessage); isRaw {
+					var token string
+					if json.Unmarshal(raw, &token) == nil {
+						tokenVal = token
+					}
+				}
 				if token, ok := tokenVal.(string); ok && token != "" {
 					anthropicReq.FallbackCreditToken = &token
 				}
@@ -5418,7 +5448,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		extraContextManagement := bifrostReq.Params.ExtraParams["context_management"]
 		delete(anthropicReq.ExtraParams, "context_management")
 
-		if features, ok := ProviderFeatures[bifrostReq.Provider]; !ok || features.ContextManagementField {
+		if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagementField &&
+			(meaningful(bifrostReq.Params.ContextManagement) || meaningful(extraContextManagement)) {
+			addRemoved(ctx, FeatureContextManagement)
+		} else if !ok || features.ContextManagementField {
 			if len(bifrostReq.Params.ContextManagement) > 0 {
 				var cm ContextManagement
 				if err := sonic.Unmarshal(bifrostReq.Params.ContextManagement, &cm); err == nil {
@@ -5458,6 +5491,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		}
 
 		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
+		if forcedToolChoiceRejected {
+			schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
+		}
 
 		// Convert tool choice. allowed_tools narrows the declarations even when the model rejects a
 		// forced choice; only a forced choice itself is then dropped.

@@ -6264,6 +6264,19 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 	return true
 }
 
+// stampAdaptations copies the attempt's adaptation set from ctx onto resp's ExtraFields: the
+// unary response, or one stream chunk. The set is complete before the request is sent.
+func stampAdaptations(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) {
+	if resp == nil {
+		return
+	}
+	if a := schemas.AdaptationsFromContext(ctx); a != 0 {
+		if ef := resp.GetExtraFields(); ef != nil {
+			ef.Adaptations = a
+		}
+	}
+}
+
 // populateLatencyExtraFields stamps upstream and overhead onto resp's ExtraFields,
 // deriving overhead from the request-start time on ctx. No-ops when unmeasured, so
 // absent stays distinct from zero. Call before RunPostLLMHooks so logging sees it.
@@ -6896,6 +6909,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		// Accumulator is complete once the provider returns; stamp before post-hooks
 		// so logging reads it off ExtraFields.
 		populateLatencyExtraFields(msg.Context, result)
+		stampAdaptations(msg.Context, result)
 		resp, bifrostErr := pipeline.RunPostLLMHooks(msg.Context, result, nil, pluginCount)
 		if bifrostErr != nil {
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
@@ -8826,6 +8840,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					if result != nil {
 						result.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						result.PopulateRoutingInfo(perAttemptRoutingInfo)
+						stampAdaptations(ctx, result)
 					}
 					if err != nil {
 						err.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)

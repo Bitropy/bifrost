@@ -21,7 +21,13 @@ func toolResultMediaSized(ctx context.Context) bool {
 	if bc, isBifrost := ctx.(*BifrostContext); ctx == nil || (isBifrost && bc == nil) {
 		return true
 	}
-	return ctx.Value(BifrostContextKeyRequestBodyRewriter) == nil
+	switch rw := ctx.Value(BifrostContextKeyRequestBodyRewriter).(type) {
+	case nil:
+		return true
+	case *RequestBodyRewriteHook:
+		return rw == nil || rw.Rewrite == nil
+	}
+	return false
 }
 
 // mediaPlaceholder is MediaPlaceholder, without the size unless sized.

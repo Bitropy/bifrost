@@ -389,7 +389,7 @@ func TestStripUnsupportedAnthropicFields_FallbackBlockReplay(t *testing.T) {
 
 	t.Run("anthropic keeps the fallback block in place", func(t *testing.T) {
 		req := fallbackHistoryRequest()
-		stripUnsupportedAnthropicFields(req, schemas.Anthropic, "claude-opus-4-8")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Anthropic, "claude-opus-4-8")
 		if got := countFallbackBlocks(req); got != 1 {
 			t.Fatalf("expected fallback block preserved for Anthropic, got %d", got)
 		}
@@ -402,7 +402,7 @@ func TestStripUnsupportedAnthropicFields_FallbackBlockReplay(t *testing.T) {
 	for _, p := range []schemas.ModelProvider{schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure} {
 		t.Run(string(p)+" strips the fallback block", func(t *testing.T) {
 			req := fallbackHistoryRequest()
-			stripUnsupportedAnthropicFields(req, p, "claude-opus-4-8")
+			stripUnsupportedAnthropicFields(nil, req, p, "claude-opus-4-8")
 			if got := countFallbackBlocks(req); got != 0 {
 				t.Fatalf("expected fallback block stripped for %s, got %d", p, got)
 			}
@@ -941,7 +941,7 @@ func TestStripFallbackCreditToken_UnsupportedProvider(t *testing.T) {
 
 	t.Run("typed kept on a supported provider", func(t *testing.T) {
 		req := newReq()
-		stripUnsupportedAnthropicFields(req, schemas.Bedrock, "claude-opus-4-8")
+		stripUnsupportedAnthropicFields(nil, req, schemas.Bedrock, "claude-opus-4-8")
 		if req.FallbackCreditToken == nil {
 			t.Error("expected fallback_credit_token kept on Bedrock")
 		}
@@ -949,7 +949,7 @@ func TestStripFallbackCreditToken_UnsupportedProvider(t *testing.T) {
 
 	t.Run("typed stripped on an unsupported provider", func(t *testing.T) {
 		req := newReq()
-		stripUnsupportedAnthropicFields(req, schemas.DeepSeek, "claude-opus-4-8")
+		stripUnsupportedAnthropicFields(nil, req, schemas.DeepSeek, "claude-opus-4-8")
 		if req.FallbackCreditToken != nil {
 			t.Error("expected fallback_credit_token stripped on DeepSeek")
 		}

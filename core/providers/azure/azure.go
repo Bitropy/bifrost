@@ -482,6 +482,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 			Provider:                  schemas.Azure,
 			Model:                     request.Model,
 			IsStreaming:               true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		})
@@ -637,6 +638,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 			Model:                     request.Model,
 			IsStreaming:               true,
 			ValidateTools:             true,
+			BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
 			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		})

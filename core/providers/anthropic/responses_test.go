@@ -2604,7 +2604,7 @@ func TestServerToolCacheControlStripLeavesSourceUnchanged(t *testing.T) {
 	strippedForVertex := func(t *testing.T, tools []AnthropicTool) {
 		t.Helper()
 		req := &AnthropicMessageRequest{Model: model, Tools: tools}
-		stripUnsupportedAnthropicFields(req, schemas.Vertex, model)
+		stripUnsupportedAnthropicFields(nil, req, schemas.Vertex, model)
 		if cc := req.Tools[0].CacheControl; cc != nil && cc.Scope != nil {
 			t.Fatalf("precondition: Vertex strip kept the scope %q", *cc.Scope)
 		}

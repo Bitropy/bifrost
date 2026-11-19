@@ -316,8 +316,10 @@ func isEffortOnlyRawSystemMessage(msg gjson.Result) bool {
 // separately by ValidateToolsForProvider; this helper handles request-level
 // fields (strip silently, since they're additive enhancements).
 //
-// Mutates req in place. Safe to call multiple times.
-func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider schemas.ModelProvider, model string) {
+// Mutates req in place. Safe to call multiple times. Every explicit Anthropic
+// parameter it removes is recorded on ctx (BifrostContextKeyRemovedFeatures), and
+// every generic parameter it changes as an adaptation (BifrostContextKeyAdaptations).
+func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, provider schemas.ModelProvider, model string) {
 	if req == nil {
 		return
 	}
@@ -345,21 +347,26 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		case hasSkills && !caps.SupportsSkills(features.Skills):
 			// Caller wanted non-empty skills but provider doesn't support them.
 			req.Container = nil
+			addRemoved(ctx, FeatureContainerSkills)
 		case !hasSkills && !features.ContainerBasic:
 			req.Container = nil
+			addRemoved(ctx, FeatureContainer)
 		}
 	}
 	if len(req.MCPServers) > 0 && !caps.SupportsMCP(features.MCP) {
 		req.MCPServers = nil
+		addRemoved(ctx, FeatureMCPServers)
 	}
 	// Speed is both provider-gated (FastMode flag) and model-gated
 	// (per-provider model list in DefaultSupportsFastMode). Strip if either
 	// gate fails — the upstream rejects speed:"fast" elsewhere with a 400.
 	if req.Speed != nil && (!features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model()))) {
 		req.Speed = nil
+		addRemoved(ctx, FeatureSpeed)
 	}
 	if req.OutputConfig != nil && req.OutputConfig.TaskBudget != nil && !caps.SupportsTaskBudgets(features.TaskBudgets) {
 		req.OutputConfig.TaskBudget = nil
+		addRemoved(ctx, FeatureTaskBudget)
 		// Clean up an empty OutputConfig so it doesn't serialize as {}
 		if req.OutputConfig.Format == nil && req.OutputConfig.Effort == nil {
 			req.OutputConfig = nil
@@ -379,6 +386,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		} else {
 			req.Thinking = nil
 		}
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	// output_config.effort — model-gated per
 	// https://platform.claude.com/docs/en/build-with-claude/effort. Models
@@ -389,10 +397,15 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		if req.OutputConfig.Format == nil && req.OutputConfig.TaskBudget == nil {
 			req.OutputConfig = nil
 		}
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	// A kept effort snaps onto the model's ladder (xhigh/max on Opus 4.5, xhigh on 4.6 400 otherwise).
 	if req.OutputConfig != nil && req.OutputConfig.Effort != nil && schemas.IsAnthropicModel(caps.Model()) {
-		req.OutputConfig.Effort = new(caps.NormalizeReasoningEffort(*req.OutputConfig.Effort, DefaultEffortControl(caps.Model())))
+		normalized := caps.NormalizeReasoningEffort(*req.OutputConfig.Effort, DefaultEffortControl(caps.Model()))
+		if normalized != *req.OutputConfig.Effort {
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
+		}
+		req.OutputConfig.Effort = new(normalized)
 	}
 	// thinking.type — model-gated. Adaptive-only models (Opus 4.7+, Sonnet 5+,
 	// Fable/Mythos) removed extended thinking and reject the legacy shape with:
@@ -419,9 +432,11 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		// the caller sent it rather than switched to adaptive behind their back.
 		if req.Thinking.Type == "enabled" && RejectsEnabledThinking(caps) {
 			req.Thinking.Type = "adaptive"
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
-		if req.Thinking.Type == "adaptive" {
+		if req.Thinking.Type == "adaptive" && req.Thinking.BudgetTokens != nil {
 			req.Thinking.BudgetTokens = nil
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 	}
 	// thinking.type:"disabled" — rejected on always-on models, and on Opus 5+
@@ -434,6 +449,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	if req.Thinking != nil && req.Thinking.Type == "between_tools" &&
 		!caps.SupportsBetweenToolsThinking(DefaultSupportsBetweenToolsThinking(model)) {
 		req.Thinking.Type = "disabled"
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	if req.Thinking != nil && req.Thinking.Type == "disabled" {
 		var effort *string
@@ -443,6 +459,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		if RejectsDisabledThinking(caps, effort) {
 			req.Thinking.Type = "adaptive"
 			req.Thinking.BudgetTokens = nil
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 	}
 	// thinking.display:"updates" is a beta value, taken per model. Where it is not taken it 400s like an
@@ -450,22 +467,27 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	if req.Thinking != nil && req.Thinking.Display != nil && *req.Thinking.Display == AnthropicThinkingDisplayUpdates &&
 		!SupportsThinkingDisplayUpdates(caps) {
 		req.Thinking.Display = new("omitted")
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	// Runs after every thinking.type rewrite above so a block_binding left on a mode that
 	// cannot carry it (or on a host without the beta) is dropped instead of 400ing.
 	if req.Thinking != nil && req.Thinking.BlockBinding != nil &&
 		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(req.Thinking.Type)) {
 		req.Thinking.BlockBinding = nil
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	if req.InferenceGeo != nil && !caps.SupportsInferenceGeo(features.InferenceGeo) {
 		req.InferenceGeo = nil
+		addRemoved(ctx, FeatureInferenceGeo)
 	}
 	if req.ServiceTier != nil && !features.ServiceTier {
 		req.ServiceTier = nil
+		schemas.AddAdaptation(ctx, schemas.AdaptationServiceTier)
 	}
 	// Cache diagnostics is Claude API only; elsewhere it 400s as an unknown field.
 	if req.Diagnostics != nil && !features.Diagnostics {
 		req.Diagnostics = nil
+		addRemoved(ctx, FeatureDiagnostics)
 	}
 	// Safeguards (Claude Code auto-mode classifier) is gated on the
 	// (provider, model) pair: the provider must carry the feature at all, and
@@ -476,6 +498,7 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 	if len(req.Safeguards) > 0 &&
 		(!features.Safeguards || !caps.SupportsSafeguards(DefaultSupportsSafeguards(provider, caps.Model()))) {
 		req.Safeguards = nil
+		addRemoved(ctx, FeatureSafeguards)
 	}
 	// cache_control.scope — strip on providers without PromptCachingScope
 	// support at every slot scope can live: top-level request, tools, system
@@ -488,26 +511,35 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		// conversion copies the pointer), so the scope is cleared on a copy:
 		// a later failover attempt on a scope-capable provider converts the
 		// same request and must still see it (BIT-2595).
-		req.CacheControl = withoutCacheControlScope(req.CacheControl)
+		scoped := false
+		strip := func(cc *schemas.CacheControl) *schemas.CacheControl {
+			scoped = scoped || (cc != nil && cc.Scope != nil && *cc.Scope != "")
+			return withoutCacheControlScope(cc)
+		}
+		req.CacheControl = strip(req.CacheControl)
 		for i := range req.Tools {
-			req.Tools[i].CacheControl = withoutCacheControlScope(req.Tools[i].CacheControl)
+			req.Tools[i].CacheControl = strip(req.Tools[i].CacheControl)
 		}
 		if req.System != nil {
 			for i := range req.System.ContentBlocks {
-				req.System.ContentBlocks[i].CacheControl = withoutCacheControlScope(req.System.ContentBlocks[i].CacheControl)
+				req.System.ContentBlocks[i].CacheControl = strip(req.System.ContentBlocks[i].CacheControl)
 			}
 		}
 		for mi := range req.Messages {
 			for ci := range req.Messages[mi].Content.ContentBlocks {
 				block := &req.Messages[mi].Content.ContentBlocks[ci]
-				block.CacheControl = withoutCacheControlScope(block.CacheControl)
+				block.CacheControl = strip(block.CacheControl)
 			}
+		}
+		if scoped {
+			addRemoved(ctx, FeatureCacheControlScope)
 		}
 	}
 	// A credit token is bound to the platform that minted it, so it is meaningless
 	// (and rejected as an unknown field) on a provider without the feature.
-	if !features.FallbackCredit {
+	if !features.FallbackCredit && req.FallbackCreditToken != nil {
 		req.FallbackCreditToken = nil
+		addRemoved(ctx, FeatureFallbackCreditToken)
 	}
 	// Server-side fallback boundary markers are Anthropic-only. Replaying history that
 	// contains them onto a provider without the feature (e.g. a gateway fallback from
@@ -549,6 +581,9 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 				kept = append(kept, edit)
 			}
 		}
+		if len(kept) < len(req.ContextManagement.Edits) {
+			addRemoved(ctx, FeatureContextManagement)
+		}
 		if len(kept) == 0 {
 			req.ContextManagement = nil
 		} else {
@@ -564,9 +599,11 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		// on ToolSearch, not AdvancedToolUse (see AnthropicToolSearchBetaHeader).
 		if tool.DeferLoading != nil && !caps.SupportsToolSearch(features.ToolSearch) {
 			tool.DeferLoading = nil
+			addRemoved(ctx, FeatureDeferLoading)
 		}
 		if len(tool.AllowedCallers) > 0 && !caps.SupportsAdvancedToolUse(features.AdvancedToolUse) {
 			tool.AllowedCallers = nil
+			addRemoved(ctx, FeatureAllowedCallers)
 		}
 		// InputExamples has its own feature flag (InputExamples) because
 		// Bedrock supports the tool-examples-2025-10-29 header standalone —
@@ -575,12 +612,15 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		// gate would work there.
 		if len(tool.InputExamples) > 0 && !caps.SupportsInputExamples(features.InputExamples) {
 			tool.InputExamples = nil
+			addRemoved(ctx, FeatureInputExamples)
 		}
 		if tool.EagerInputStreaming != nil && !caps.SupportsEagerInputStreaming(features.EagerInputStreaming) {
 			tool.EagerInputStreaming = nil
+			addRemoved(ctx, FeatureEagerInputStreaming)
 		}
 		if tool.Strict != nil && !features.StructuredOutputs {
 			tool.Strict = nil
+			schemas.AddAdaptation(ctx, schemas.AdaptationStrict)
 		}
 	}
 }
@@ -621,6 +661,14 @@ func withoutCacheControlScope(cc *schemas.CacheControl) *schemas.CacheControl {
 // Unknown edit types in context_management: left in place for the provider
 // to reject (parity with the typed helper).
 func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
+	return StripUnsupportedFieldsFromRawBodyReport(nil, jsonBody, provider, model)
+}
+
+// StripUnsupportedFieldsFromRawBodyReport is StripUnsupportedFieldsFromRawBody that
+// also records on ctx, when ctx is non-nil, every explicit Anthropic parameter it
+// removes (BifrostContextKeyRemovedFeatures) and every generic parameter it changes
+// (BifrostContextKeyAdaptations). The body it returns is the same either way.
+func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
 	if len(jsonBody) == 0 {
 		return jsonBody, nil
 	}
@@ -642,6 +690,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	// diagnostics — undocumented Claude Code field; gated through the feature
 	// map like every other field. Only Anthropic direct keeps it (fail-closed).
 	if !features.Diagnostics && providerUtils.JSONFieldExists(jsonBody, "diagnostics") {
+		reportRawRemoved(ctx, jsonBody, "diagnostics", FeatureDiagnostics)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "diagnostics")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw diagnostics: %w", err)
@@ -655,6 +704,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	if (!features.Safeguards ||
 		!caps.SupportsSafeguards(DefaultSupportsSafeguards(provider, caps.Model()))) &&
 		providerUtils.JSONFieldExists(jsonBody, "safeguards") {
+		reportRawRemoved(ctx, jsonBody, "safeguards", FeatureSafeguards)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "safeguards")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw safeguards: %w", err)
@@ -664,6 +714,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	// speed — provider AND model gate
 	if providerUtils.JSONFieldExists(jsonBody, "speed") {
 		if !features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model())) {
+			reportRawRemoved(ctx, jsonBody, "speed", FeatureSpeed)
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "speed")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw speed: %w", err)
@@ -673,6 +724,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// inference_geo
 	if !caps.SupportsInferenceGeo(features.InferenceGeo) && providerUtils.JSONFieldExists(jsonBody, "inference_geo") {
+		reportRawRemoved(ctx, jsonBody, "inference_geo", FeatureInferenceGeo)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "inference_geo")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw inference_geo: %w", err)
@@ -685,11 +737,13 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		if err != nil {
 			return nil, fmt.Errorf("strip raw service_tier: %w", err)
 		}
+		schemas.AddAdaptation(ctx, schemas.AdaptationServiceTier)
 	}
 
 	// fallback_credit_token — bound to the minting platform, so a provider without
 	// the feature rejects it as an unknown field.
 	if !features.FallbackCredit {
+		reportRawRemoved(ctx, jsonBody, "fallback_credit_token", FeatureFallbackCreditToken)
 		var err error
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallback_credit_token")
 		if err != nil {
@@ -850,6 +904,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// mcp_servers
 	if !caps.SupportsMCP(features.MCP) && providerUtils.JSONFieldExists(jsonBody, "mcp_servers") {
+		reportRawRemoved(ctx, jsonBody, "mcp_servers", FeatureMCPServers)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "mcp_servers")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw mcp_servers: %w", err)
@@ -888,6 +943,11 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			drop = !features.ContainerBasic
 		}
 		if drop {
+			if hasNonEmptySkills {
+				addRemoved(ctx, FeatureContainerSkills)
+			} else if rawMeaningful(containerResult) {
+				addRemoved(ctx, FeatureContainer)
+			}
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "container")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw container: %w", err)
@@ -897,6 +957,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// output_config.task_budget
 	if !caps.SupportsTaskBudgets(features.TaskBudgets) && providerUtils.JSONFieldExists(jsonBody, "output_config.task_budget") {
+		reportRawRemoved(ctx, jsonBody, "output_config.task_budget", FeatureTaskBudget)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.task_budget")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw output_config.task_budget: %w", err)
@@ -935,11 +996,13 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			if err != nil {
 				return nil, fmt.Errorf("set raw thinking.budget_tokens: %w", err)
 			}
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		} else {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw thinking: %w", err)
 			}
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 	}
 
@@ -952,6 +1015,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		if err != nil {
 			return nil, fmt.Errorf("strip raw output_config.effort: %w", err)
 		}
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		if oc := providerUtils.GetJSONField(jsonBody, "output_config"); oc.IsObject() && len(oc.Map()) == 0 {
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config")
 			if err != nil {
@@ -966,6 +1030,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			if err != nil {
 				return nil, fmt.Errorf("normalize raw output_config.effort: %w", err)
 			}
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 	}
 
@@ -992,6 +1057,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			if err != nil {
 				return nil, fmt.Errorf("rewrite raw thinking.type to adaptive: %w", err)
 			}
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 		// Covers both the request just rewritten above and one that arrived
 		// adaptive already, so the same conversation serializes identically
@@ -1002,6 +1068,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			if err != nil {
 				return nil, fmt.Errorf("strip raw thinking.budget_tokens: %w", err)
 			}
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 	}
 
@@ -1015,6 +1082,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		if err != nil {
 			return nil, fmt.Errorf("rewrite raw thinking.type to disabled: %w", err)
 		}
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	if providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "disabled" {
 		var effort *string
@@ -1026,11 +1094,13 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			if err != nil {
 				return nil, fmt.Errorf("rewrite raw thinking.type to adaptive: %w", err)
 			}
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 			if providerUtils.JSONFieldExists(jsonBody, "thinking.budget_tokens") {
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.budget_tokens")
 				if err != nil {
 					return nil, fmt.Errorf("strip raw thinking.budget_tokens: %w", err)
 				}
+				schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 			}
 		}
 	}
@@ -1041,12 +1111,16 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		if err != nil {
 			return nil, fmt.Errorf("rewrite raw thinking.display to omitted: %w", err)
 		}
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 
 	// thinking.block_binding — mirrors the typed path. Placed here, after the
 	// thinking.type rewrites above, so it sees the type that is actually sent.
 	if providerUtils.JSONFieldExists(jsonBody, "thinking.block_binding") &&
 		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(providerUtils.GetJSONField(jsonBody, "thinking.type").String())) {
+		if rawMeaningful(providerUtils.GetJSONField(jsonBody, "thinking.block_binding")) {
+			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
+		}
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.block_binding")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw thinking.block_binding: %w", err)
@@ -1055,6 +1129,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// top-level cache_control.scope
 	if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, "cache_control.scope") {
+		reportRawRemoved(ctx, jsonBody, "cache_control.scope", FeatureCacheControlScope)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "cache_control.scope")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw cache_control.scope: %w", err)
@@ -1073,6 +1148,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	// drop it entirely. Otherwise gate per edit.type.
 	if providerUtils.JSONFieldExists(jsonBody, "context_management") {
 		if !features.ContextManagementField {
+			reportRawRemoved(ctx, jsonBody, "context_management", FeatureContextManagement)
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "context_management")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw context_management: %w", err)
@@ -1093,6 +1169,9 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 				if !keep {
 					dropIndices = append(dropIndices, i)
 				}
+			}
+			if len(dropIndices) > 0 {
+				addRemoved(ctx, FeatureContextManagement)
 			}
 			if len(dropIndices) == len(edits) {
 				// No edits to keep (either empty input or all unsupported) — drop the whole context_management.
@@ -1131,6 +1210,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			// current docs — gate on ToolSearch, not AdvancedToolUse.
 			if !caps.SupportsToolSearch(features.ToolSearch) {
 				if providerUtils.JSONFieldExists(jsonBody, base+".defer_loading") {
+					reportRawRemoved(ctx, jsonBody, base+".defer_loading", FeatureDeferLoading)
 					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".defer_loading")
 					if err != nil {
 						return nil, fmt.Errorf("strip raw %s.defer_loading: %w", base, err)
@@ -1139,6 +1219,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			}
 			if !caps.SupportsAdvancedToolUse(features.AdvancedToolUse) {
 				if providerUtils.JSONFieldExists(jsonBody, base+".allowed_callers") {
+					reportRawRemoved(ctx, jsonBody, base+".allowed_callers", FeatureAllowedCallers)
 					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".allowed_callers")
 					if err != nil {
 						return nil, fmt.Errorf("strip raw %s.allowed_callers: %w", base, err)
@@ -1146,12 +1227,14 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 				}
 			}
 			if !caps.SupportsInputExamples(features.InputExamples) && providerUtils.JSONFieldExists(jsonBody, base+".input_examples") {
+				reportRawRemoved(ctx, jsonBody, base+".input_examples", FeatureInputExamples)
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".input_examples")
 				if err != nil {
 					return nil, fmt.Errorf("strip raw %s.input_examples: %w", base, err)
 				}
 			}
 			if !caps.SupportsEagerInputStreaming(features.EagerInputStreaming) && providerUtils.JSONFieldExists(jsonBody, base+".eager_input_streaming") {
+				reportRawRemoved(ctx, jsonBody, base+".eager_input_streaming", FeatureEagerInputStreaming)
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".eager_input_streaming")
 				if err != nil {
 					return nil, fmt.Errorf("strip raw %s.eager_input_streaming: %w", base, err)
@@ -1162,8 +1245,10 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 				if err != nil {
 					return nil, fmt.Errorf("strip raw %s.strict: %w", base, err)
 				}
+				schemas.AddAdaptation(ctx, schemas.AdaptationStrict)
 			}
 			if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, base+".cache_control.scope") {
+				reportRawRemoved(ctx, jsonBody, base+".cache_control.scope", FeatureCacheControlScope)
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".cache_control.scope")
 				if err != nil {
 					return nil, fmt.Errorf("strip raw %s.cache_control.scope: %w", base, err)
@@ -1192,7 +1277,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		if systemResult := providerUtils.GetJSONField(jsonBody, "system"); systemResult.Exists() && systemResult.IsArray() {
 			blocks := systemResult.Array()
 			rebuilt := make([][]byte, len(blocks))
-			changed := false
+			changed, scoped := false, false
 			for i, block := range blocks {
 				stripped, didStrip, stripErr := stripCacheControlScope([]byte(block.Raw))
 				if stripErr != nil {
@@ -1200,11 +1285,15 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 				}
 				rebuilt[i] = stripped
 				changed = changed || didStrip
+				scoped = scoped || (didStrip && rawMeaningful(block.Get("cache_control.scope")))
 			}
 			if changed {
 				jsonBody, err = providerUtils.SetRawJSONField(jsonBody, "system", rawJSONArrayOf(rebuilt))
 				if err != nil {
 					return nil, fmt.Errorf("strip raw system cache_control.scope: %w", err)
+				}
+				if scoped {
+					addRemoved(ctx, FeatureCacheControlScope)
 				}
 			}
 		}
@@ -1213,7 +1302,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 			messagesCarryCacheControlScope(messagesResult) {
 			messages := messagesResult.Array()
 			rebuiltMessages := make([][]byte, len(messages))
-			anyMessageChanged := false
+			anyMessageChanged, scoped := false, false
 			for mi, msg := range messages {
 				rebuiltMessages[mi] = []byte(msg.Raw)
 				contentResult := msg.Get("content")
@@ -1230,6 +1319,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 					}
 					rebuiltBlocks[ci] = stripped
 					messageChanged = messageChanged || didStrip
+					scoped = scoped || (didStrip && rawMeaningful(block.Get("cache_control.scope")))
 				}
 				if messageChanged {
 					rebuiltMessages[mi], err = providerUtils.SetRawJSONField(rebuiltMessages[mi], "content", rawJSONArrayOf(rebuiltBlocks))
@@ -1243,6 +1333,9 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 				jsonBody, err = providerUtils.SetRawJSONField(jsonBody, "messages", rawJSONArrayOf(rebuiltMessages))
 				if err != nil {
 					return nil, fmt.Errorf("strip raw messages cache_control.scope: %w", err)
+				}
+				if scoped {
+					addRemoved(ctx, FeatureCacheControlScope)
 				}
 			}
 		}
@@ -3292,6 +3385,13 @@ func StripAutoInjectableTools(jsonBody []byte) ([]byte, error) {
 // rewritten to text_editor_20250728 + str_replace_based_edit_tool before
 // hitting Anthropic's strict Pydantic validator.
 func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
+	return RemapRawToolVersionsForProviderReport(nil, jsonBody, provider, model)
+}
+
+// RemapRawToolVersionsForProviderReport is RemapRawToolVersionsForProvider that also
+// records tool_version on ctx, when ctx is non-nil, if a provider version remap
+// rewrote a tool the caller declared. The body it returns is the same either way.
+func RemapRawToolVersionsForProviderReport(ctx *schemas.BifrostContext, jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
 	toolsResult := providerUtils.GetJSONField(jsonBody, "tools")
 	if !toolsResult.Exists() || !toolsResult.IsArray() {
 		return jsonBody, nil
@@ -3444,6 +3544,7 @@ func RemapRawToolVersionsForProvider(jsonBody []byte, provider schemas.ModelProv
 		if err != nil {
 			return nil, fmt.Errorf("failed to remap tool versions: %w", err)
 		}
+		addRemoved(ctx, FeatureToolVersion)
 	}
 
 	return jsonBody, nil
@@ -3485,8 +3586,21 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
 // per-request context headers, deduplicating them.
+// Client-sourced values (schemas.BifrostContextKeyClientAnthropicBeta) come last.
 func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]schemas.SecretVar) []string {
-	return mergeBetaValues(providerExtraHeaders, contextBetaValues(ctx, schemas.BifrostContextKeyExtraHeaders, schemas.BifrostContextKeyPassthroughHeaders))
+	return mergeBetaValues(providerExtraHeaders, contextBetaValues(ctx, schemas.BifrostContextKeyExtraHeaders, schemas.BifrostContextKeyPassthroughHeaders), clientBetaValues(ctx))
+}
+
+// clientBetaValues yields the client's own anthropic-beta values carried on ctx.
+func clientBetaValues(ctx context.Context) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		values, _ := ctx.Value(schemas.BifrostContextKeyClientAnthropicBeta).([]string)
+		for _, v := range values {
+			if !yield(v) {
+				return
+			}
+		}
+	}
 }
 
 // contextBetaValues yields the anthropic-beta values of the context's header maps under keys.
