@@ -5053,7 +5053,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 	// Convert basic parameters
 	if bifrostReq.Params != nil {
-		noteIgnoredResponsesParams(ctx, bifrostReq.Params)
+		noteIgnored(ctx, bifrostReq.Params, IgnoredResponsesParams)
 		if bifrostReq.Params.MaxOutputTokens != nil {
 			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxOutputTokens)
 			if anthropicReq.MaxTokens != *bifrostReq.Params.MaxOutputTokens {

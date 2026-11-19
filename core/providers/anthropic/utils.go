@@ -512,7 +512,7 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 		// same request and must still see it (BIT-2595).
 		scoped := false
 		strip := func(cc *schemas.CacheControl) *schemas.CacheControl {
-			scoped = scoped || (cc != nil && cc.Scope != nil)
+			scoped = scoped || (cc != nil && cc.Scope != nil && *cc.Scope != "")
 			return withoutCacheControlScope(cc)
 		}
 		req.CacheControl = strip(req.CacheControl)
@@ -1273,7 +1273,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 		if systemResult := providerUtils.GetJSONField(jsonBody, "system"); systemResult.Exists() && systemResult.IsArray() {
 			blocks := systemResult.Array()
 			rebuilt := make([][]byte, len(blocks))
-			changed := false
+			changed, scoped := false, false
 			for i, block := range blocks {
 				stripped, didStrip, stripErr := stripCacheControlScope([]byte(block.Raw))
 				if stripErr != nil {
@@ -1281,13 +1281,16 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 				}
 				rebuilt[i] = stripped
 				changed = changed || didStrip
+				scoped = scoped || (didStrip && rawMeaningful(block.Get("cache_control.scope")))
 			}
 			if changed {
 				jsonBody, err = providerUtils.SetRawJSONField(jsonBody, "system", rawJSONArrayOf(rebuilt))
 				if err != nil {
 					return nil, fmt.Errorf("strip raw system cache_control.scope: %w", err)
 				}
-				addRemoved(ctx, FeatureCacheControlScope)
+				if scoped {
+					addRemoved(ctx, FeatureCacheControlScope)
+				}
 			}
 		}
 
@@ -1295,7 +1298,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 			messagesCarryCacheControlScope(messagesResult) {
 			messages := messagesResult.Array()
 			rebuiltMessages := make([][]byte, len(messages))
-			anyMessageChanged := false
+			anyMessageChanged, scoped := false, false
 			for mi, msg := range messages {
 				rebuiltMessages[mi] = []byte(msg.Raw)
 				contentResult := msg.Get("content")
@@ -1312,6 +1315,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 					}
 					rebuiltBlocks[ci] = stripped
 					messageChanged = messageChanged || didStrip
+					scoped = scoped || (didStrip && rawMeaningful(block.Get("cache_control.scope")))
 				}
 				if messageChanged {
 					rebuiltMessages[mi], err = providerUtils.SetRawJSONField(rebuiltMessages[mi], "content", rawJSONArrayOf(rebuiltBlocks))
@@ -1326,7 +1330,9 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 				if err != nil {
 					return nil, fmt.Errorf("strip raw messages cache_control.scope: %w", err)
 				}
-				addRemoved(ctx, FeatureCacheControlScope)
+				if scoped {
+					addRemoved(ctx, FeatureCacheControlScope)
+				}
 			}
 		}
 	}

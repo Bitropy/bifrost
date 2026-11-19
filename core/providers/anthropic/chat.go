@@ -403,7 +403,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	// Convert parameters
 	if bifrostReq.Params != nil {
-		noteIgnoredChatParams(ctx, bifrostReq.Params)
+		noteIgnored(ctx, bifrostReq.Params, IgnoredChatParams)
 		anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
 		if safeguards, exists := anthropicReq.ExtraParams["safeguards"]; exists {
 			// Copy before consuming the key: the input may be reused for a fallback.
