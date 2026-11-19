@@ -242,6 +242,14 @@ func TestBuildResponses_RefusalMode(t *testing.T) {
 			_, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: provider, Model: refusalTestModel})
 			requireRefusal(t, bifrostErr, "context_management")
 		})
+		t.Run(string(provider)+"/conversion/context_management_null", func(t *testing.T) {
+			withFeatures(t, provider, func(f *ProviderFeatureSupport) { f.ContextManagementField = false })
+			ctx := refusalCtx(&on)
+			req := responsesReq(provider, map[string]any{"context_management": json.RawMessage(`null`)}, nil)
+			req.Params.ContextManagement = json.RawMessage(`null`)
+			_, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: provider, Model: refusalTestModel})
+			require.Nil(t, bifrostErr, "a null context_management carries nothing to refuse")
+		})
 		t.Run(string(provider)+"/validator/server_tool", func(t *testing.T) {
 			withFeatures(t, provider, func(f *ProviderFeatureSupport) { f.WebFetch = false })
 			ctx := refusalCtx(&on)

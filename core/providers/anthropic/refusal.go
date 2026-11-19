@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 
@@ -89,6 +90,18 @@ func rawMeaningful(v gjson.Result) bool {
 			return false
 		})
 		return !empty
+	}
+	return true
+}
+
+// meaningful is rawMeaningful for a converter input: a json.RawMessage the embedder captured, or a
+// value it decoded, which carries something unless nil.
+func meaningful(v any) bool {
+	switch v := v.(type) {
+	case nil:
+		return false
+	case json.RawMessage:
+		return rawMeaningful(gjson.ParseBytes(v))
 	}
 	return true
 }

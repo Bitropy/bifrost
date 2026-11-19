@@ -5305,7 +5305,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		delete(anthropicReq.ExtraParams, "context_management")
 
 		if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagementField &&
-			(len(bifrostReq.Params.ContextManagement) > 0 || extraContextManagement != nil) {
+			(meaningful(bifrostReq.Params.ContextManagement) || meaningful(extraContextManagement)) {
 			addRemoved(ctx, FeatureContextManagement)
 		} else if !ok || features.ContextManagementField {
 			if len(bifrostReq.Params.ContextManagement) > 0 {
