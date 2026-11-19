@@ -598,6 +598,9 @@ func TestBuildChat_RefusalMode_MergedModelGate(t *testing.T) {
 // AC-9 (fork side): with no unknown key and no feature, refusal mode adds no allocation to a build;
 // the post-merge pass runs only on a body a merge changed.
 func TestBuildChat_RefusalMode_NoAddedAllocs(t *testing.T) {
+	if raceEnabled {
+		t.Skip("allocation counts of pooled buffers are not stable under the race detector")
+	}
 	on, off := true, false
 	for _, provider := range refusalTestProviders {
 		req := refusalChatRequest(t, provider, refusalToolParams(`"description":"d"`), nil)
