@@ -148,7 +148,10 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 				responseFormat := ctx.Value(BifrostContextKeyResponseFormat).(string)
 				// Gemini returns PCM audio (s16le, 24000 Hz, mono)
 				// Convert to WAV for standard playable output format
-				if responseFormat == "wav" {
+				// Vertex gemini-3.8-*-tts already returns a finished WAV; wrapping it again
+				// would embed a second RIFF header inside the data chunk.
+				isWAV := len(audioData) >= 12 && string(audioData[:4]) == "RIFF" && string(audioData[8:12]) == "WAVE"
+				if responseFormat == "wav" && !isWAV {
 					wavData, err := utils.ConvertPCMToWAV(audioData, utils.DefaultGeminiPCMConfig())
 					if err != nil {
 						return nil, fmt.Errorf("failed to convert PCM to WAV: %v", err)
