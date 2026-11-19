@@ -158,31 +158,55 @@ func stripMergedBody(ctx *schemas.BifrostContext, jsonBody []byte, provider sche
 	return jsonBody, nil
 }
 
-// noteIgnoredChatParams records unmapped when the request sets a chat parameter
-// ToAnthropicChatRequest has no mapping for, so it is ignored.
-func noteIgnoredChatParams(ctx *schemas.BifrostContext, p *schemas.ChatParameters) {
-	if p == nil {
-		return
-	}
-	if (p.N != nil && *p.N > 1) || (p.LogProbs != nil && *p.LogProbs) || p.TopLogProbs != nil || p.Seed != nil ||
-		p.PresencePenalty != nil || p.FrequencyPenalty != nil || p.LogitBias != nil || p.Prediction != nil ||
-		p.Audio != nil || slices.ContainsFunc(p.Modalities, func(m string) bool { return !strings.EqualFold(m, "text") }) ||
-		p.WebSearchOptions != nil || p.Verbosity != nil {
-		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
-	}
+// IgnoredParam is a generic parameter a converter has no mapping for: Name is its wire name, Set
+// reports whether the request carries it.
+type IgnoredParam[P any] struct {
+	Name string
+	Set  func(p *P) bool
 }
 
-// noteIgnoredResponsesParams records unmapped when the request sets a Responses parameter
-// ToAnthropicResponsesRequest does not read and that changes the answer. Members the embedder
-// refuses (background, truncation "auto", max_tool_calls) and members that change no answer
-// (include, metadata, store, stream_options, prompt_cache_key, prompt_cache_retention,
-// safety_identifier) are not listed.
-func noteIgnoredResponsesParams(ctx *schemas.BifrostContext, p *schemas.ResponsesParameters) {
+// IgnoredChatParams are the chat parameters ToAnthropicChatRequest ignores.
+var IgnoredChatParams = []IgnoredParam[schemas.ChatParameters]{
+	{"n", func(p *schemas.ChatParameters) bool { return p.N != nil && *p.N > 1 }},
+	{"logprobs", func(p *schemas.ChatParameters) bool { return p.LogProbs != nil && *p.LogProbs }},
+	{"top_logprobs", func(p *schemas.ChatParameters) bool { return p.TopLogProbs != nil }},
+	{"seed", func(p *schemas.ChatParameters) bool { return p.Seed != nil }},
+	{"presence_penalty", func(p *schemas.ChatParameters) bool { return p.PresencePenalty != nil }},
+	{"frequency_penalty", func(p *schemas.ChatParameters) bool { return p.FrequencyPenalty != nil }},
+	{"logit_bias", func(p *schemas.ChatParameters) bool { return p.LogitBias != nil }},
+	{"prediction", func(p *schemas.ChatParameters) bool { return p.Prediction != nil }},
+	{"modalities", func(p *schemas.ChatParameters) bool {
+		return slices.ContainsFunc(p.Modalities, func(m string) bool { return !strings.EqualFold(m, "text") })
+	}},
+	{"audio", func(p *schemas.ChatParameters) bool { return p.Audio != nil }},
+	{"web_search_options", func(p *schemas.ChatParameters) bool { return p.WebSearchOptions != nil }},
+	{"verbosity", func(p *schemas.ChatParameters) bool { return p.Verbosity != nil }},
+}
+
+// IgnoredResponsesParams are the Responses parameters ToAnthropicResponsesRequest does not read and
+// that change the answer. Members the embedder refuses (background, truncation "auto",
+// max_tool_calls) and members that change no answer (include, metadata, store, stream_options,
+// prompt_cache_key, prompt_cache_retention, safety_identifier) are not listed.
+var IgnoredResponsesParams = []IgnoredParam[schemas.ResponsesParameters]{
+	{"conversation", func(p *schemas.ResponsesParameters) bool { return p.Conversation != nil }},
+	{"previous_response_id", func(p *schemas.ResponsesParameters) bool { return p.PreviousResponseID != nil }},
+	{"prompt_cache_options", func(p *schemas.ResponsesParameters) bool { return p.PromptCacheOptions != nil }},
+	{"top_logprobs", func(p *schemas.ResponsesParameters) bool { return p.TopLogProbs != nil }},
+	{"include_server_side_tool_invocations", func(p *schemas.ResponsesParameters) bool {
+		return p.IncludeServerSideToolInvocations != nil
+	}},
+	{"text.verbosity", func(p *schemas.ResponsesParameters) bool { return p.Text != nil && p.Text.Verbosity != nil }},
+}
+
+// noteIgnored records unmapped when the request sets a parameter of ignored.
+func noteIgnored[P any](ctx *schemas.BifrostContext, p *P, ignored []IgnoredParam[P]) {
 	if p == nil {
 		return
 	}
-	if p.Conversation != nil || p.PreviousResponseID != nil || p.PromptCacheOptions != nil || p.TopLogProbs != nil ||
-		p.IncludeServerSideToolInvocations != nil || (p.Text != nil && p.Text.Verbosity != nil) {
-		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
+	for _, param := range ignored {
+		if param.Set(p) {
+			schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
+			return
+		}
 	}
 }

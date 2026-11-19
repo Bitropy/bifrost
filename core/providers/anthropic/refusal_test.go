@@ -622,11 +622,24 @@ func TestBuildChat_RefusalMode_NoAddedAllocs(t *testing.T) {
 // feature, matching the typed strip, which never sees an empty value.
 func TestStripUnsupportedFieldsFromRawBodyReport_EmptyValuesNotRecorded(t *testing.T) {
 	ctx := refusalCtx(nil)
-	body := `{"mcp_servers":[],"speed":null,"inference_geo":"","diagnostics":{},"container":null,"fallback_credit_token":null,"messages":[{"role":"user","content":"hi"}]}`
+	body := `{"mcp_servers":[],"speed":null,"inference_geo":"","diagnostics":{},"container":null,"fallback_credit_token":null,` +
+		`"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral","scope":""}}],` +
+		`"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":null}}]}]}`
 	got, err := StripUnsupportedFieldsFromRawBodyReport(ctx, []byte(body), schemas.Vertex, refusalTestModel)
 	require.NoError(t, err)
 	plain, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Vertex, refusalTestModel)
 	require.NoError(t, err)
 	assert.Equal(t, string(plain), string(got))
 	assert.Zero(t, RemovedFeatures(ctx))
+
+	// A nested scope with a value is still recorded, on system and on message blocks.
+	for _, nested := range []string{
+		`{"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral","scope":"user"}}],"messages":[]}`,
+		`{"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"user"}}]}]}`,
+	} {
+		ctx := refusalCtx(nil)
+		_, err := StripUnsupportedFieldsFromRawBodyReport(ctx, []byte(nested), schemas.Vertex, refusalTestModel)
+		require.NoError(t, err)
+		assert.Equal(t, FeatureCacheControlScope, RemovedFeatures(ctx), nested)
+	}
 }
