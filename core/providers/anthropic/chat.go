@@ -846,6 +846,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					// The output clamp can leave the caller's budget at or above max_tokens; refit it below.
 					if requested := bifrostReq.Params.MaxCompletionTokens; requested != nil && *requested > anthropicReq.MaxTokens {
 						if fitted, ok := fitThinkingBudget(&budgetTokens, reasoningParams.Effort, anthropicReq.MaxTokens); ok {
+							if fitted != budgetTokens {
+								schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
+							}
 							budgetTokens = fitted
 						}
 					}
