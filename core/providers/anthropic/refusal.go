@@ -7,6 +7,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // Feature is a set of explicit Anthropic parameters a strip removed because the target provider
@@ -63,6 +64,33 @@ func addRemoved(ctx *schemas.BifrostContext, f Feature) {
 	if prev|f != prev {
 		ctx.SetValue(schemas.BifrostContextKeyRemovedFeatures, prev|f)
 	}
+}
+
+// reportRawRemoved records f before the raw strip deletes path from jsonBody, unless the value
+// there carries nothing (null, "", [] or {}): deleting an empty value removes nothing the client
+// asked for, as the typed strip, which only sees non-empty values, agrees.
+func reportRawRemoved(ctx *schemas.BifrostContext, jsonBody []byte, path string, f Feature) {
+	if ctx != nil && rawMeaningful(providerUtils.GetJSONField(jsonBody, path)) {
+		addRemoved(ctx, f)
+	}
+}
+
+// rawMeaningful reports whether v exists and is not null, "", [] or {}.
+func rawMeaningful(v gjson.Result) bool {
+	switch {
+	case !v.Exists() || v.Type == gjson.Null:
+		return false
+	case v.Type == gjson.String:
+		return v.Str != ""
+	case v.IsArray() || v.IsObject():
+		empty := true
+		v.ForEach(func(_, _ gjson.Result) bool {
+			empty = false
+			return false
+		})
+		return !empty
+	}
+	return true
 }
 
 // RemovedFeatures returns the request's removed-feature set.
