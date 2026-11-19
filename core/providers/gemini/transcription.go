@@ -158,6 +158,7 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 	geminiReq.Contents = []Content{
 		{
+			Role:  RoleUser,
 			Parts: parts,
 		},
 	}
