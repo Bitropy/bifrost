@@ -103,6 +103,7 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 	if bifrostReq.Input != nil && bifrostReq.Input.Input != "" {
 		geminiReq.Contents = []Content{
 			{
+				Role: RoleUser,
 				Parts: []*Part{
 					{
 						Text: bifrostReq.Input.Input,

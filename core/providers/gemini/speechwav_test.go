@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,5 +38,18 @@ func TestToBifrostSpeechResponseWrapsOnlyRawPCM(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got.Audio)
 		})
+	}
+}
+
+// Vertex rejects a content without a role ("Please use a valid role: user, model");
+// AI Studio defaults it, so only the real Vertex API exposes the gap.
+func TestAudioRequestsCarryUserRole(t *testing.T) {
+	speech, err := ToGeminiSpeechRequest(&schemas.BifrostSpeechRequest{Model: "gemini-3.8-flash-tts", Input: &schemas.SpeechInput{Input: "hi"}})
+	require.NoError(t, err)
+	transcription := ToGeminiTranscriptionRequest(&schemas.BifrostTranscriptionRequest{Model: "gemini-3.5-transcribe", Input: &schemas.TranscriptionInput{File: []byte("RIFF____WAVE")}})
+
+	for name, contents := range map[string][]Content{"speech": speech.Contents, "transcription": transcription.Contents} {
+		require.Len(t, contents, 1, name)
+		assert.Equal(t, RoleUser, contents[0].Role, name)
 	}
 }
