@@ -345,14 +345,14 @@ func TestStripUnsupportedFieldsFromRawBodyReport_RecordsExactly(t *testing.T) {
 		{`{"speed":"fast",` + msgs + `}`, func(f *ProviderFeatureSupport) { f.FastMode = false }, FeatureSpeed},
 		{`{"output_config":{"task_budget":{"type":"tokens","total":1}},` + msgs + `}`, func(f *ProviderFeatureSupport) { f.TaskBudgets = false }, FeatureTaskBudget},
 		{`{"inference_geo":"us",` + msgs + `}`, func(f *ProviderFeatureSupport) { f.InferenceGeo = false }, FeatureInferenceGeo},
-		{`{"diagnostics":{},` + msgs + `}`, func(f *ProviderFeatureSupport) { f.Diagnostics = false }, FeatureDiagnostics},
-		{`{"safeguards":{},` + msgs + `}`, func(f *ProviderFeatureSupport) { f.Safeguards = false }, FeatureSafeguards},
+		{`{"diagnostics":{"cache_diagnosis":true},` + msgs + `}`, func(f *ProviderFeatureSupport) { f.Diagnostics = false }, FeatureDiagnostics},
+		{`{"safeguards":{"mode":"auto"},` + msgs + `}`, func(f *ProviderFeatureSupport) { f.Safeguards = false }, FeatureSafeguards},
 		{`{"cache_control":{"type":"ephemeral","scope":"global"},` + msgs + `}`, func(f *ProviderFeatureSupport) { f.PromptCachingScope = false }, FeatureCacheControlScope},
 		{`{"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"global"}}]}]}`, func(f *ProviderFeatureSupport) { f.PromptCachingScope = false }, FeatureCacheControlScope},
 		{`{"fallback_credit_token":"t",` + msgs + `}`, func(f *ProviderFeatureSupport) { f.FallbackCredit = false }, FeatureFallbackCreditToken},
 		{`{"context_management":{"edits":[{"type":"clear_tool_uses_20250919"}]},` + msgs + `}`, func(f *ProviderFeatureSupport) { f.ContextEditing = false }, FeatureContextManagement},
 		{`{"context_management":{"edits":[]},` + msgs + `}`, func(f *ProviderFeatureSupport) {}, 0},
-		{`{"context_management":{},` + msgs + `}`, func(f *ProviderFeatureSupport) { f.ContextManagementField = false }, FeatureContextManagement},
+		{`{"context_management":{"edits":[{"type":"compact_20260112"}]},` + msgs + `}`, func(f *ProviderFeatureSupport) { f.ContextManagementField = false }, FeatureContextManagement},
 		{`{"tools":[{"name":"f","input_schema":{},"defer_loading":true}],` + msgs + `}`, func(f *ProviderFeatureSupport) { f.ToolSearch = false }, FeatureDeferLoading},
 		{`{"tools":[{"name":"f","input_schema":{},"allowed_callers":["direct"]}],` + msgs + `}`, func(f *ProviderFeatureSupport) { f.AdvancedToolUse = false }, FeatureAllowedCallers},
 		{`{"tools":[{"name":"f","input_schema":{},"input_examples":[{"input":{}}]}],` + msgs + `}`, func(f *ProviderFeatureSupport) { f.InputExamples = false }, FeatureInputExamples},
@@ -613,4 +613,17 @@ func TestBuildChat_RefusalMode_NoAddedAllocs(t *testing.T) {
 		}
 		assert.Equal(t, measure(&off), measure(&on), string(provider))
 	}
+}
+
+// A raw key carrying nothing (null, "", [] or {}) is deleted as before but is not a removed
+// feature, matching the typed strip, which never sees an empty value.
+func TestStripUnsupportedFieldsFromRawBodyReport_EmptyValuesNotRecorded(t *testing.T) {
+	ctx := refusalCtx(nil)
+	body := `{"mcp_servers":[],"speed":null,"inference_geo":"","diagnostics":{},"container":null,"fallback_credit_token":null,"messages":[{"role":"user","content":"hi"}]}`
+	got, err := StripUnsupportedFieldsFromRawBodyReport(ctx, []byte(body), schemas.Vertex, refusalTestModel)
+	require.NoError(t, err)
+	plain, err := StripUnsupportedFieldsFromRawBody([]byte(body), schemas.Vertex, refusalTestModel)
+	require.NoError(t, err)
+	assert.Equal(t, string(plain), string(got))
+	assert.Zero(t, RemovedFeatures(ctx))
 }

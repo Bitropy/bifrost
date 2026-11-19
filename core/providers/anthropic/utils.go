@@ -689,11 +689,11 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 	// diagnostics — undocumented Claude Code field; gated through the feature
 	// map like every other field. Only Anthropic direct keeps it (fail-closed).
 	if !features.Diagnostics && providerUtils.JSONFieldExists(jsonBody, "diagnostics") {
+		reportRawRemoved(ctx, jsonBody, "diagnostics", FeatureDiagnostics)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "diagnostics")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw diagnostics: %w", err)
 		}
-		addRemoved(ctx, FeatureDiagnostics)
 	}
 
 	// safeguards — undocumented Claude Code auto-mode classifier field, gated on
@@ -703,31 +703,31 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 	if (!features.Safeguards ||
 		!caps.SupportsSafeguards(DefaultSupportsSafeguards(provider, caps.Model()))) &&
 		providerUtils.JSONFieldExists(jsonBody, "safeguards") {
+		reportRawRemoved(ctx, jsonBody, "safeguards", FeatureSafeguards)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "safeguards")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw safeguards: %w", err)
 		}
-		addRemoved(ctx, FeatureSafeguards)
 	}
 
 	// speed — provider AND model gate
 	if providerUtils.JSONFieldExists(jsonBody, "speed") {
 		if !features.FastMode || !caps.SupportsFastMode(DefaultSupportsFastMode(provider, caps.Model())) {
+			reportRawRemoved(ctx, jsonBody, "speed", FeatureSpeed)
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "speed")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw speed: %w", err)
 			}
-			addRemoved(ctx, FeatureSpeed)
 		}
 	}
 
 	// inference_geo
 	if !caps.SupportsInferenceGeo(features.InferenceGeo) && providerUtils.JSONFieldExists(jsonBody, "inference_geo") {
+		reportRawRemoved(ctx, jsonBody, "inference_geo", FeatureInferenceGeo)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "inference_geo")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw inference_geo: %w", err)
 		}
-		addRemoved(ctx, FeatureInferenceGeo)
 	}
 
 	// service_tier — Vertex uses HTTP headers instead of a request body field
@@ -742,9 +742,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 	// fallback_credit_token — bound to the minting platform, so a provider without
 	// the feature rejects it as an unknown field.
 	if !features.FallbackCredit {
-		if ctx != nil && providerUtils.JSONFieldExists(jsonBody, "fallback_credit_token") {
-			addRemoved(ctx, FeatureFallbackCreditToken)
-		}
+		reportRawRemoved(ctx, jsonBody, "fallback_credit_token", FeatureFallbackCreditToken)
 		var err error
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "fallback_credit_token")
 		if err != nil {
@@ -905,11 +903,11 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 
 	// mcp_servers
 	if !caps.SupportsMCP(features.MCP) && providerUtils.JSONFieldExists(jsonBody, "mcp_servers") {
+		reportRawRemoved(ctx, jsonBody, "mcp_servers", FeatureMCPServers)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "mcp_servers")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw mcp_servers: %w", err)
 		}
-		addRemoved(ctx, FeatureMCPServers)
 	}
 
 	// container — two variants: bare string id (ContainerBasic), or object
@@ -944,25 +942,25 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 			drop = !features.ContainerBasic
 		}
 		if drop {
+			if hasNonEmptySkills {
+				addRemoved(ctx, FeatureContainerSkills)
+			} else if rawMeaningful(containerResult) {
+				addRemoved(ctx, FeatureContainer)
+			}
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "container")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw container: %w", err)
-			}
-			if hasNonEmptySkills {
-				addRemoved(ctx, FeatureContainerSkills)
-			} else {
-				addRemoved(ctx, FeatureContainer)
 			}
 		}
 	}
 
 	// output_config.task_budget
 	if !caps.SupportsTaskBudgets(features.TaskBudgets) && providerUtils.JSONFieldExists(jsonBody, "output_config.task_budget") {
+		reportRawRemoved(ctx, jsonBody, "output_config.task_budget", FeatureTaskBudget)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "output_config.task_budget")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw output_config.task_budget: %w", err)
 		}
-		addRemoved(ctx, FeatureTaskBudget)
 		// Drop an empty parent so we don't serialize output_config:{} (matches
 		// typed-path behavior at lines 129-134).
 		if oc := providerUtils.GetJSONField(jsonBody, "output_config"); oc.IsObject() && len(oc.Map()) == 0 {
@@ -1127,11 +1125,11 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 
 	// top-level cache_control.scope
 	if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, "cache_control.scope") {
+		reportRawRemoved(ctx, jsonBody, "cache_control.scope", FeatureCacheControlScope)
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "cache_control.scope")
 		if err != nil {
 			return nil, fmt.Errorf("strip raw cache_control.scope: %w", err)
 		}
-		addRemoved(ctx, FeatureCacheControlScope)
 		// Drop an empty parent so we don't serialize cache_control:{} (matches
 		// typed-path behavior at lines 147-153).
 		if cc := providerUtils.GetJSONField(jsonBody, "cache_control"); cc.IsObject() && len(cc.Map()) == 0 {
@@ -1146,11 +1144,11 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 	// drop it entirely. Otherwise gate per edit.type.
 	if providerUtils.JSONFieldExists(jsonBody, "context_management") {
 		if !features.ContextManagementField {
+			reportRawRemoved(ctx, jsonBody, "context_management", FeatureContextManagement)
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "context_management")
 			if err != nil {
 				return nil, fmt.Errorf("strip raw context_management: %w", err)
 			}
-			addRemoved(ctx, FeatureContextManagement)
 		} else if editsResult := providerUtils.GetJSONField(jsonBody, "context_management.edits"); editsResult.Exists() && editsResult.IsArray() {
 			edits := editsResult.Array()
 			// Collect indices to drop (iterate forwards, delete in reverse).
@@ -1208,35 +1206,35 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 			// current docs — gate on ToolSearch, not AdvancedToolUse.
 			if !caps.SupportsToolSearch(features.ToolSearch) {
 				if providerUtils.JSONFieldExists(jsonBody, base+".defer_loading") {
+					reportRawRemoved(ctx, jsonBody, base+".defer_loading", FeatureDeferLoading)
 					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".defer_loading")
 					if err != nil {
 						return nil, fmt.Errorf("strip raw %s.defer_loading: %w", base, err)
 					}
-					addRemoved(ctx, FeatureDeferLoading)
 				}
 			}
 			if !caps.SupportsAdvancedToolUse(features.AdvancedToolUse) {
 				if providerUtils.JSONFieldExists(jsonBody, base+".allowed_callers") {
+					reportRawRemoved(ctx, jsonBody, base+".allowed_callers", FeatureAllowedCallers)
 					jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".allowed_callers")
 					if err != nil {
 						return nil, fmt.Errorf("strip raw %s.allowed_callers: %w", base, err)
 					}
-					addRemoved(ctx, FeatureAllowedCallers)
 				}
 			}
 			if !caps.SupportsInputExamples(features.InputExamples) && providerUtils.JSONFieldExists(jsonBody, base+".input_examples") {
+				reportRawRemoved(ctx, jsonBody, base+".input_examples", FeatureInputExamples)
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".input_examples")
 				if err != nil {
 					return nil, fmt.Errorf("strip raw %s.input_examples: %w", base, err)
 				}
-				addRemoved(ctx, FeatureInputExamples)
 			}
 			if !caps.SupportsEagerInputStreaming(features.EagerInputStreaming) && providerUtils.JSONFieldExists(jsonBody, base+".eager_input_streaming") {
+				reportRawRemoved(ctx, jsonBody, base+".eager_input_streaming", FeatureEagerInputStreaming)
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".eager_input_streaming")
 				if err != nil {
 					return nil, fmt.Errorf("strip raw %s.eager_input_streaming: %w", base, err)
 				}
-				addRemoved(ctx, FeatureEagerInputStreaming)
 			}
 			if !features.StructuredOutputs && providerUtils.JSONFieldExists(jsonBody, base+".strict") {
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".strict")
@@ -1246,11 +1244,11 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 				schemas.AddAdaptation(ctx, schemas.AdaptationStrict)
 			}
 			if !features.PromptCachingScope && providerUtils.JSONFieldExists(jsonBody, base+".cache_control.scope") {
+				reportRawRemoved(ctx, jsonBody, base+".cache_control.scope", FeatureCacheControlScope)
 				jsonBody, err = providerUtils.DeleteJSONField(jsonBody, base+".cache_control.scope")
 				if err != nil {
 					return nil, fmt.Errorf("strip raw %s.cache_control.scope: %w", base, err)
 				}
-				addRemoved(ctx, FeatureCacheControlScope)
 				// Drop the parent if cache_control is now an empty object, so
 				// we don't forward a malformed `cache_control: {}` marker.
 				if ccResult := providerUtils.GetJSONField(jsonBody, base+".cache_control"); ccResult.Exists() && ccResult.IsObject() && len(ccResult.Map()) == 0 {

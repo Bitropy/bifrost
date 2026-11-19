@@ -549,6 +549,12 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
+	// Refused before the URL sources are fetched: no network I/O for a refused request.
+	reportClientBetas(ctx, cfg.Provider, cfg.BetaHeaderOverrides)
+	if err := refusalError(ctx, cfg.Provider); err != nil {
+		return nil, newErr(err.Error(), err, jsonBody)
+	}
+
 	jsonBody, err = normalizeBase64TextSources(jsonBody)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
@@ -568,11 +574,6 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
-	}
-
-	reportClientBetas(ctx, cfg.Provider, cfg.BetaHeaderOverrides)
-	if err := refusalError(ctx, cfg.Provider); err != nil {
-		return nil, newErr(err.Error(), err, jsonBody)
 	}
 
 	// Last, so no later edit appends a key after messages.
@@ -871,6 +872,12 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 	}
 
+	// Refused before the URL sources are fetched: no network I/O for a refused request.
+	reportClientBetas(ctx, cfg.Provider, cfg.BetaHeaderOverrides)
+	if err := refusalError(ctx, cfg.Provider); err != nil {
+		return nil, newErr(err.Error(), err, jsonBody)
+	}
+
 	jsonBody, err = normalizeBase64TextSources(jsonBody)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
@@ -890,11 +897,6 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
-	}
-
-	reportClientBetas(ctx, cfg.Provider, cfg.BetaHeaderOverrides)
-	if err := refusalError(ctx, cfg.Provider); err != nil {
-		return nil, newErr(err.Error(), err, jsonBody)
 	}
 
 	// Last, so no later edit appends a key after messages.
