@@ -40,12 +40,14 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	}
 
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
+	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	caps := schemas.ResolveModelCaps(baseProvider, capModel)
+	familyProvider := schemas.FamilyProvider(baseProvider, bifrostReq.Provider)
 
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
 		Messages: ConvertBifrostMessagesToOpenAIMessages(ctx, bifrostReq.Input),
-		Provider: bifrostReq.Provider,
+		Provider: familyProvider,
 	}
 
 	if !caps.SupportsDeveloperRole(true) {
@@ -81,7 +83,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// natively keep it.
 		if tc := openaiReq.ChatParameters.ToolChoice; tc != nil && tc.ChatToolChoiceStr != nil &&
 			*tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeAny) &&
-			!caps.ToolChoiceAnySupported(toolChoiceAnySupported(bifrostReq.Provider, capModel)) {
+			!caps.ToolChoiceAnySupported(toolChoiceAnySupported(familyProvider, capModel)) {
 			openaiReq.ChatParameters.ToolChoice = &schemas.ChatToolChoice{
 				ChatToolChoiceStr: schemas.Ptr(string(schemas.ChatToolChoiceTypeRequired)),
 			}
@@ -145,7 +147,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.ChatParameters.PromptCacheOptions = nil
 	}
 
-	switch bifrostReq.Provider {
+	switch familyProvider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(caps)
 		openaiReq.stripUnsupportedSamplingParams(caps)

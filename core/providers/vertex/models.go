@@ -70,7 +70,7 @@ type vertexRerankOptions struct {
 // - If allowedModels is empty, all models are allowed
 // - If allowedModels is non-empty, only models/deployments with keys in allowedModels are included
 // - Deployments map is used to match model IDs to aliases and filter accordingly
-func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *VertexListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -84,7 +84,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 		BlacklistedModels: blacklistedModels,
 		Aliases:           aliases,
 		Unfiltered:        unfiltered,
-		ProviderKey:       schemas.Vertex,
+		ProviderKey:       providerKey,
 		MatchFns:          providerUtils.DefaultMatchFns(),
 	}
 	if pipeline.ShouldEarlyExit() {
@@ -116,7 +116,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 					continue
 				}
 				modelEntry := schemas.Model{
-					ID:          string(schemas.Vertex) + "/" + result.ResolvedID,
+					ID:          string(providerKey) + "/" + result.ResolvedID,
 					Name:        schemas.Ptr(model.DisplayName),
 					Description: schemas.Ptr(model.Description),
 					Created:     schemas.Ptr(model.VersionCreateTime.Unix()),
@@ -140,7 +140,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 
 // ToBifrostListModelsResponse converts a Vertex AI publisher models response to Bifrost's format.
 // This is for foundation models from the Model Garden (publishers.models.list endpoint).
-func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList, aliases schemas.KeyAliases, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -154,7 +154,7 @@ func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(a
 		BlacklistedModels: blacklistedModels,
 		Aliases:           aliases,
 		Unfiltered:        unfiltered,
-		ProviderKey:       schemas.Vertex,
+		ProviderKey:       providerKey,
 		MatchFns:          providerUtils.DefaultMatchFns(),
 	}
 	if pipeline.ShouldEarlyExit() {
@@ -177,7 +177,7 @@ func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(a
 				displayName = model.SupportedActions.Deploy.ModelDisplayName
 			}
 			modelEntry := schemas.Model{
-				ID:   string(schemas.Vertex) + "/" + result.ResolvedID,
+				ID:   string(providerKey) + "/" + result.ResolvedID,
 				Name: schemas.Ptr(displayName),
 			}
 			if result.AliasValue != "" {

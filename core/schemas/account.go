@@ -645,6 +645,24 @@ func ResolveBaseProvider(ctx *BifrostContext, provider ModelProvider) ModelProvi
 	return provider
 }
 
+// FamilyProvider is the provider whose family rules (feature tables, beta filters, capability
+// rows, provider-only rewrites) the shared converters apply to an attempt on provider with base
+// type base. A custom provider on a base listed here is a faithful clone of the native provider,
+// so it answers as that base. Every other custom provider keeps answering by its own key, as it
+// always has; ResolveBaseProvider would move it onto its base's rules too.
+func FamilyProvider(base, provider ModelProvider) ModelProvider {
+	switch base {
+	case Vertex:
+		return base
+	}
+	return provider
+}
+
+// ResolveFamilyProvider is FamilyProvider with the base this attempt recorded on ctx.
+func ResolveFamilyProvider(ctx *BifrostContext, provider ModelProvider) ModelProvider {
+	return FamilyProvider(ResolveBaseProvider(ctx, provider), provider)
+}
+
 // ChatReasoningModeRequiresResponses reports whether a chat request that sets
 // reasoning.mode is served on base by converting it to the Responses API. OpenAI
 // documents mode as Responses-only (developers.openai.com/api/docs/guides/reasoning#reasoning-mode),

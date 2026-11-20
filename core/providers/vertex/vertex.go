@@ -168,14 +168,15 @@ func (provider *VertexProvider) removeVertexClient(key schemas.Key) {
 
 // VertexProvider implements the Provider interface for Google's Vertex AI API.
 type VertexProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	videoDownloadClient *fasthttp.Client      // Streams video artifact downloads (StreamResponseBody, raised MaxResponseBodySize): artifacts are far past the buffered client's cap and must not be materialized
-	authHTTPClient      *http.Client          // net/http client for OAuth token exchange and refresh, routed through proxy_config like the fasthttp clients
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger               schemas.Logger                // Logger for provider operations
+	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	videoDownloadClient  *fasthttp.Client              // Streams video artifact downloads (StreamResponseBody, raised MaxResponseBodySize): artifacts are far past the buffered client's cap and must not be materialized
+	authHTTPClient       *http.Client                  // net/http client for OAuth token exchange and refresh, routed through proxy_config like the fasthttp clients
+	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
+	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
+	customProviderConfig *schemas.CustomProviderConfig // Set when this instance is a custom provider on the vertex base
 
 	// tokenSources caches oauth2.TokenSource instances keyed by a hash of the auth
 	// credentials. The Google TokenSource handles token refresh and expiry, so caching
@@ -208,14 +209,15 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	videoDownloadClient := providerUtils.BuildLargeResponseClient(client, providerUtils.MaxVideoDownloadStreamBytes)
 	return &VertexProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		videoDownloadClient: videoDownloadClient,
-		authHTTPClient:      providerUtils.NewProviderHTTPClient(config.ProxyConfig, config.NetworkConfig, logger),
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:               logger,
+		client:               client,
+		streamingClient:      streamingClient,
+		videoDownloadClient:  videoDownloadClient,
+		authHTTPClient:       providerUtils.NewProviderHTTPClient(config.ProxyConfig, config.NetworkConfig, logger),
+		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
@@ -341,9 +343,10 @@ func (s *sanitizedTokenSource) Token() (*oauth2.Token, error) {
 	return nil, errors.New(msg)
 }
 
-// GetProviderKey returns the provider identifier for Vertex.
+// GetProviderKey returns the provider identifier for Vertex, or the custom provider's own key.
+// It names the instance; a provider-family decision passes schemas.Vertex instead.
 func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Vertex
+	return providerUtils.GetProviderName(schemas.Vertex, provider.customProviderConfig)
 }
 
 // listModelsByKey performs a list models request for a single key.
@@ -371,7 +374,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	// An API-key-only key cannot list Model Garden, so it returns its deployments and allowlist directly.
 	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
 	if !request.Unfiltered && vertexKeyUsesAPIKeyOnly(key) && (len(deployments) > 0 || allowedModels.IsRestricted()) {
-		return buildResponseFromConfig(deployments, allowedModels, key.BlacklistedModels), nil
+		return buildResponseFromConfig(provider.GetProviderKey(), deployments, allowedModels, key.BlacklistedModels), nil
 	}
 
 	// No deployments configured - fetch from Model Garden API
@@ -492,7 +495,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		PublisherModels: allPublisherModels,
 	}
 
-	response := aggregatedResponse.ToBifrostListModelsResponse(key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
+	response := aggregatedResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequests
@@ -794,7 +797,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
 		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, schemas.Vertex, request.Model)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 		if gt != nil {
@@ -1464,7 +1467,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, schemas.Vertex, request.Model)
 		}
 		jsonBody = stripVertexGeminiUnsupportedFieldsRaw(jsonBody)
 		if gt != nil {
@@ -1718,7 +1721,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, bifrostErr
 		}
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonData = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonData, provider.GetProviderKey(), request.Model)
+			jsonData = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonData, schemas.Vertex, request.Model)
 		}
 		jsonData = stripVertexGeminiUnsupportedFieldsRaw(jsonData)
 
@@ -3291,7 +3294,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 				}
 			}
 			uploadResp, uploadErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
-				Provider:    schemas.Vertex,
+				Provider:    provider.GetProviderKey(),
 				File:        jsonlData,
 				Filename:    jobName + "-input.jsonl",
 				Purpose:     schemas.FilePurposeBatch,
@@ -4673,7 +4676,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		}
 
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
-			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, provider.GetProviderKey(), request.Model)
+			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, schemas.Vertex, request.Model)
 		}
 
 		// Skip field-stripping when large payload mode is active — jsonBody is nil

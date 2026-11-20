@@ -3795,7 +3795,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 						// Inline definitions are rebuilt by the regular tool converter, which picks
 						// dated server-tool versions from the model, so resolve the attempt's caps
 						// instead of passing empty ones (which would downgrade web_search_20260209).
-						caps := schemas.ResolveModelCaps(attemptProvider(bifrostResp.ExtraFields), attemptModel(bifrostResp.ExtraFields))
+						caps := schemas.ResolveModelCaps(schemas.ResolveFamilyProvider(ctx, attemptProvider(bifrostResp.ExtraFields)), attemptModel(bifrostResp.ExtraFields))
 						contentBlock.ToolChanges = convertBifrostContentBlocksToAnthropic(caps, cmp.ToolChanges)
 					}
 				} else if isFallbackItem(bifrostResp.Item) {
@@ -5006,12 +5006,14 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	// A custom provider resolves to the built-in provider it wraps, so its datasheet row
 	// applies here as it already does in the request builder's re-strip.
-	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
+	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	caps := schemas.ResolveModelCaps(baseProvider, capModel)
+	familyProvider := schemas.FamilyProvider(baseProvider, bifrostReq.Provider)
 	var requestTools []schemas.ResponsesTool
 	if bifrostReq.Params != nil {
 		requestTools = bifrostReq.Params.Tools
 	}
-	input, err := prepareInlineToolDefinitions(bifrostReq.Input, requestTools, caps, bifrostReq.Provider)
+	input, err := prepareInlineToolDefinitions(bifrostReq.Input, requestTools, caps, familyProvider)
 	if err != nil {
 		return nil, err
 	}
@@ -5043,7 +5045,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
-		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, capModel, AnthropicDefaultMaxTokens),
+		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(familyProvider, capModel, AnthropicDefaultMaxTokens),
 	}
 
 	// No output cap from the caller: max_tokens is the model's default ceiling.
@@ -5084,7 +5086,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		if bifrostReq.Params.Text != nil {
 			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
 			// (output_config.format), so convert to a tool instead.
-			if ProviderRequiresSyntheticStructuredOutput(bifrostReq.Provider) {
+			if ProviderRequiresSyntheticStructuredOutput(familyProvider) {
 				if bifrostReq.Params.Text.Format != nil {
 					responseFormatTool, err := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
 					if err != nil {
@@ -5448,7 +5450,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		extraContextManagement := bifrostReq.Params.ExtraParams["context_management"]
 		delete(anthropicReq.ExtraParams, "context_management")
 
-		if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagementField &&
+		if features, ok := ProviderFeatures[familyProvider]; ok && !features.ContextManagementField &&
 			(meaningful(bifrostReq.Params.ContextManagement) || meaningful(extraContextManagement)) {
 			addRemoved(ctx, FeatureContextManagement)
 		} else if !ok || features.ContextManagementField {
@@ -5474,7 +5476,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			anthropicTools, mcpServers, err := convertBifrostToolsToAnthropic(caps, tools, bifrostReq.Provider)
+			anthropicTools, mcpServers, err := convertBifrostToolsToAnthropic(caps, tools, familyProvider)
 			if err != nil {
 				return nil, err
 			}
@@ -5566,7 +5568,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		// It goes through the regular conversion so its own flags (cache_control,
 		// defer_loading, allowed_callers) carry over as they do from tools.
 		if inlineSearch != nil && !messagesAddTool(anthropicMessages, searchName) {
-			searchTools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{clientToolSearchAsFunction(inlineSearch, searchName)}, bifrostReq.Provider)
+			searchTools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{clientToolSearchAsFunction(inlineSearch, searchName)}, familyProvider)
 			if err != nil {
 				return nil, err
 			}
@@ -5924,7 +5926,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	var contentBlocks []AnthropicContentBlock
 	if bifrostResp.Output != nil {
 		anthropicMessages, _ := convertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false,
-			schemas.ResolveModelCaps(attemptProvider(bifrostResp.ExtraFields), bifrostResp.Model),
+			schemas.ResolveModelCaps(schemas.ResolveFamilyProvider(ctx, attemptProvider(bifrostResp.ExtraFields)), bifrostResp.Model),
 			bifrostResp.ExtraFields.ConvertedRequestType == schemas.ChatCompletionRequest)
 		// Extract content blocks from the converted messages
 		for _, msg := range anthropicMessages {
