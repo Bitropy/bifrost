@@ -104,7 +104,7 @@ func fastClient() *fasthttp.Client {
 	return ConfigureDialer(&fasthttp.Client{
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
-	}, true)
+	}, schemas.NetworkConfig{AllowPrivateNetwork: true})
 }
 
 func newPost(url, body string) *fasthttp.Request {

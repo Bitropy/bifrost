@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -23,7 +26,7 @@ func TestConfigureDialer_SetsRetryIfErr(t *testing.T) {
 		t.Fatal("precondition: RetryIfErr should be nil on a new client")
 	}
 
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	if client.RetryIfErr == nil {
 		t.Fatal("ConfigureDialer should set RetryIfErr")
@@ -48,7 +51,7 @@ func TestConfigureDialer_SetsDial(t *testing.T) {
 		t.Fatal("precondition: Dial should be nil on a new client")
 	}
 
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	if client.Dial == nil {
 		t.Fatal("ConfigureDialer should set a Dial function")
@@ -68,7 +71,7 @@ func TestConfigureDialer_ComposesWithExistingDial(t *testing.T) {
 		return net.Dial("tcp", addr)
 	}
 
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	// Start a test server to connect to
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +111,7 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 	// Test without existing dial (direct connection path)
 	t.Run("without_existing_dial", func(t *testing.T) {
 		client := &fasthttp.Client{}
-		ConfigureDialer(client, false)
+		ConfigureDialer(client, schemas.NetworkConfig{})
 
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -135,7 +138,7 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 			connFromProxy = conn
 			return conn, err
 		}
-		ConfigureDialer(client, false)
+		ConfigureDialer(client, schemas.NetworkConfig{})
 
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -164,7 +167,7 @@ func TestConfigureDialer_TCPKeepAliveEnabled(t *testing.T) {
 // same client pointer it received (for chaining).
 func TestConfigureDialer_ReturnValue(t *testing.T) {
 	client := &fasthttp.Client{}
-	result := ConfigureDialer(client, false)
+	result := ConfigureDialer(client, schemas.NetworkConfig{})
 	if result != client {
 		t.Error("ConfigureDialer should return the same client pointer")
 	}
@@ -212,7 +215,7 @@ func TestConfigureDialer_KeepsFactoryClientOnItsProxy(t *testing.T) {
 		URL:                proxy.URL,
 		EnableForInference: true,
 	}, testLogger{})
-	client := ConfigureDialer(factory.GetFasthttpClient(network.ClientPurposeInference), true)
+	client := ConfigureDialer(factory.GetFasthttpClient(network.ClientPurposeInference), schemas.NetworkConfig{AllowPrivateNetwork: true})
 
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
@@ -242,8 +245,8 @@ func TestConfigureDialer_Idempotent(t *testing.T) {
 	defer server.Close()
 
 	client := &fasthttp.Client{}
-	ConfigureDialer(client, false)
-	ConfigureDialer(client, false) // called again
+	ConfigureDialer(client, schemas.NetworkConfig{})
+	ConfigureDialer(client, schemas.NetworkConfig{}) // called again
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -293,7 +296,7 @@ func TestConfigureDialer_WithRetryOnStaleConnection(t *testing.T) {
 		MaxConnsPerHost:     10,
 	}
 	// Use ConfigureDialer (the function under test) instead of manually setting RetryIfErr
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	// First request: establish connection in pool
 	req := fasthttp.AcquireRequest()
@@ -387,7 +390,7 @@ func TestConfigureDialer_SSRFProtection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := &fasthttp.Client{ReadTimeout: time.Second}
-			ConfigureDialer(client, false)
+			ConfigureDialer(client, schemas.NetworkConfig{})
 			_, err := client.Dial(tt.addr)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
@@ -408,7 +411,7 @@ func TestConfigureDialer_SSRFProxyBypass(t *testing.T) {
 		proxyCalled = true
 		return nil, fmt.Errorf("proxy handled: %s", addr)
 	}
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	_, err := client.Dial("10.0.0.1:80")
 	if !proxyCalled {
@@ -434,7 +437,7 @@ func TestConfigureDialer_ProxyBypassSkipsDialTimeoutCallback(t *testing.T) {
 				timeoutCalls.Add(1)
 				return nil, fmt.Errorf("unchecked dial to %s", addr)
 			}
-			ConfigureDialer(client, false)
+			ConfigureDialer(client, schemas.NetworkConfig{})
 
 			_, err := client.Dial(addr)
 			if err == nil || !strings.Contains(err.Error(), "is not allowed") {
@@ -448,10 +451,11 @@ func TestConfigureDialer_ProxyBypassSkipsDialTimeoutCallback(t *testing.T) {
 }
 
 // TestConfigureDialer_SSRFZeroTimeout verifies that SSRF protection is active
-// even when ReadTimeout is 0 (context.Background() is used instead of WithTimeout).
+// even when both the connect timeout and ReadTimeout are 0
+// (context.Background() is used instead of WithTimeout).
 func TestConfigureDialer_SSRFZeroTimeout(t *testing.T) {
 	client := &fasthttp.Client{ReadTimeout: 0}
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	_, err := client.Dial("169.254.169.254:80")
 	if err == nil {
@@ -469,7 +473,7 @@ func TestConfigureDialer_SSRFMultiIPAllFail(t *testing.T) {
 	// A connection attempt to it will fail (refused or timeout) without any
 	// private-IP rejection, letting us exercise the lastErr return path.
 	client := &fasthttp.Client{ReadTimeout: 200 * time.Millisecond}
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	_, err := client.Dial("192.0.2.1:9")
 	if err == nil {
@@ -491,7 +495,7 @@ func TestConfigureDialer_DialError(t *testing.T) {
 		return nil, expectedErr
 	}
 
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -545,4 +549,145 @@ func TestStaleConnectionRetryIfErr_WrappedErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConnectBudget(t *testing.T) {
+	cases := []struct {
+		name           string
+		connectSeconds int
+		requestTimeout time.Duration
+		want           time.Duration
+	}{
+		{"connect below request", 10, 180 * time.Second, 10 * time.Second},
+		{"request below connect", 30, 5 * time.Second, 5 * time.Second},
+		{"connect unset", 0, 180 * time.Second, 180 * time.Second},
+		{"request unset", 10, 0, 10 * time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := connectBudget(schemas.NetworkConfig{ConnectTimeoutInSeconds: tc.connectSeconds}, tc.requestTimeout)
+			if got != tc.want {
+				t.Fatalf("connectBudget = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+type fakeTimeoutErr struct{}
+
+func (fakeTimeoutErr) Error() string   { return "i/o timeout" }
+func (fakeTimeoutErr) Timeout() bool   { return true }
+func (fakeTimeoutErr) Temporary() bool { return true }
+
+// TestConfigureDialer_DialTimeoutGetsBudgetAndTag: deterministic, no network.
+// A preset DialTimeout receives the connect budget (capped by the request
+// timeout, the request timeout when unset) and its timeout comes back tagged
+// with ErrConnectTimeout, the address and the cause.
+func TestConfigureDialer_DialTimeoutGetsBudgetAndTag(t *testing.T) {
+	cases := []struct {
+		name           string
+		connectSeconds int
+		readTimeout    time.Duration
+		want           time.Duration
+	}{
+		{"connect budget, not request timeout", 10, 180 * time.Second, 10 * time.Second},
+		{"capped by a shorter request timeout", 30, time.Second, time.Second},
+		{"unset falls back to request timeout", 0, time.Second, time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got time.Duration
+			client := &fasthttp.Client{
+				ReadTimeout: tc.readTimeout,
+				DialTimeout: func(_ string, timeout time.Duration) (net.Conn, error) {
+					got = timeout
+					return nil, fakeTimeoutErr{}
+				},
+			}
+			ConfigureDialer(client, schemas.NetworkConfig{ConnectTimeoutInSeconds: tc.connectSeconds})
+
+			_, err := client.Dial("api.example.com:443")
+
+			if got != tc.want {
+				t.Fatalf("DialTimeout got %v, want %v", got, tc.want)
+			}
+			assertConnectTimeoutErr(t, err, "api.example.com:443")
+		})
+	}
+}
+
+// TestConnectTimeoutDialContext_TagsTimeout: deterministic, no network. A dial whose
+// deadline has passed comes back tagged with ErrConnectTimeout and the address.
+func TestConnectTimeoutDialContext_TagsTimeout(t *testing.T) {
+	dial := ConnectTimeoutDialContext(schemas.NetworkConfig{ConnectTimeoutInSeconds: 10}, 180*time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	t.Cleanup(cancel)
+
+	_, err := dial(ctx, "tcp", "bedrock-runtime.example.com:443")
+
+	assertConnectTimeoutErr(t, err, "bedrock-runtime.example.com:443")
+}
+
+func assertConnectTimeoutErr(t *testing.T, err error, addr string) {
+	t.Helper()
+	if !errors.Is(err, ErrConnectTimeout) {
+		t.Fatalf("timeout not tagged with ErrConnectTimeout: %v", err)
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("cause lost: %v", err)
+		}
+	}
+	if !strings.Contains(err.Error(), addr) {
+		t.Fatalf("error does not name the address: %v", err)
+	}
+	if msg := NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err).Error.Message; msg != schemas.ErrProviderConnectTimedOut {
+		t.Fatalf("NewBifrostTimeoutError message = %q, want ErrProviderConnectTimedOut", msg)
+	}
+}
+
+// TestDialResolved_BlackholedFirstAddressFallsBack: deterministic. The first
+// address never answers; it gets only its share of the budget and the second
+// address still connects within the overall deadline.
+func TestDialResolved_BlackholedFirstAddressFallsBack(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	t.Cleanup(cancel)
+	var firstGot time.Duration
+	client, server := net.Pipe()
+	t.Cleanup(func() { client.Close(); server.Close() })
+
+	conn, err := dialResolved(ctx, []net.IP{net.ParseIP("2001:db8::1"), net.ParseIP("192.0.2.10")}, "443",
+		func(net.IP) error { return nil },
+		func(ctx context.Context, _, addr string) (net.Conn, error) {
+			if addr == "[2001:db8::1]:443" {
+				start := time.Now()
+				<-ctx.Done()
+				firstGot = time.Since(start)
+				return nil, ctx.Err()
+			}
+			return client, nil
+		})
+
+	if err != nil || conn != client {
+		t.Fatalf("second address not tried: conn=%v err=%v", conn, err)
+	}
+	if firstGot > 300*time.Millisecond {
+		t.Fatalf("first address used %v of a 400ms budget; want about half", firstGot)
+	}
+}
+
+// TestConfigureDialer_ProxyDialTimeoutIsTagged pins that a preset Dial (a
+// proxy dialer) keeps its own bound but its timeout is still reported as a
+// connect timeout.
+func TestConfigureDialer_ProxyDialTimeoutIsTagged(t *testing.T) {
+	client := &fasthttp.Client{
+		ReadTimeout: 180 * time.Second,
+		Dial:        func(string) (net.Conn, error) { return nil, fakeTimeoutErr{} },
+	}
+	ConfigureDialer(client, schemas.NetworkConfig{ConnectTimeoutInSeconds: 10})
+
+	_, err := client.Dial("proxy.example.com:3128")
+
+	assertConnectTimeoutErr(t, err, "proxy.example.com:3128")
 }

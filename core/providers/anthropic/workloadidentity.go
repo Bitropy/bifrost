@@ -118,7 +118,7 @@ func newWorkloadIdentityHTTPClient(config *schemas.ProviderConfig, logger schema
 		NoDefaultUserAgentHeader: true,
 	}
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	hc := providerUtils.NewHTTPClientOn(client, timeout)
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

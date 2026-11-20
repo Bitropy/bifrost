@@ -449,7 +449,7 @@ func TestMakeRequestWithContext_CancelClosesSocket(t *testing.T) {
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
-	ConfigureDialer(client, true)
+	ConfigureDialer(client, schemas.NetworkConfig{AllowPrivateNetwork: true})
 
 	req, resp := newSilentStreamingRequest(upstream.URL())
 
@@ -533,7 +533,7 @@ func (s *scriptedServer) client(readTimeout time.Duration) *fasthttp.Client {
 		ReadTimeout:  readTimeout,
 		WriteTimeout: readTimeout,
 	}
-	ConfigureDialer(c, true)
+	ConfigureDialer(c, schemas.NetworkConfig{AllowPrivateNetwork: true})
 	return c
 }
 

@@ -2020,6 +2020,10 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 //
 // Per-chunk idle detection is enforced at the application layer via
 // NewIdleTimeoutReader (see GetStreamIdleTimeout / StreamIdleTimeoutInSeconds).
+// The initial DNS/TCP dial still honors the connect timeout because the Dial
+// closure installed by ConfigureDialer captured it at ConfigureDialer call
+// time — cloning copies that closure verbatim, so zeroing the clone's
+// ReadTimeout does not affect dial.
 func BuildStreamingClient(base *fasthttp.Client) *fasthttp.Client {
 	c := CloneFastHTTPClientConfig(base)
 	c.StreamResponseBody = true
@@ -3221,7 +3225,14 @@ func NewBifrostOperationError(message string, err error) *schemas.BifrostError {
 // NewBifrostTimeoutError creates a standardized error for provider request timeout errors.
 // Sets StatusCode to 504 (Gateway Timeout) and Error.Type to RequestTimedOut,
 // consistent with HandleStreamTimeout for streaming requests.
+//
+// When err wraps ErrConnectTimeout the caller's message is replaced with
+// schemas.ErrProviderConnectTimedOut: the endpoint never accepted a connection,
+// so advice to raise the request timeout would be wrong.
 func NewBifrostTimeoutError(message string, err error) *schemas.BifrostError {
+	if errors.Is(err, ErrConnectTimeout) {
+		message = schemas.ErrProviderConnectTimedOut
+	}
 	statusCode := 504
 	errorType := schemas.RequestTimedOut
 	return &schemas.BifrostError{

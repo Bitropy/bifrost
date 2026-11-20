@@ -106,7 +106,7 @@ func newTestStreamingClient(maxConnsPerHost int) (*fasthttp.Client, *connCounter
 		MaxConnDuration:     300 * time.Second,
 		ConnPoolStrategy:    fasthttp.FIFO,
 	}
-	base = ConfigureDialer(base, false)
+	base = ConfigureDialer(base, schemas.NetworkConfig{})
 
 	counter := &connCounter{}
 	inner := base.Dial

@@ -614,6 +614,9 @@ false
 {{- if hasKey $providerConfig.network_config "default_request_timeout_in_seconds" }}
 {{- $_ := set $networkConfig "default_request_timeout_in_seconds" $providerConfig.network_config.default_request_timeout_in_seconds }}
 {{- end }}
+{{- if hasKey $providerConfig.network_config "connect_timeout_in_seconds" }}
+{{- $_ := set $networkConfig "connect_timeout_in_seconds" $providerConfig.network_config.connect_timeout_in_seconds }}
+{{- end }}
 {{- if hasKey $providerConfig.network_config "max_retries" }}
 {{- $_ := set $networkConfig "max_retries" $providerConfig.network_config.max_retries }}
 {{- end }}
