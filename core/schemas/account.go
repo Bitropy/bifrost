@@ -645,16 +645,22 @@ func ResolveBaseProvider(ctx *BifrostContext, provider ModelProvider) ModelProvi
 	return provider
 }
 
-// ResolveVertexFamily returns Vertex for an attempt on a custom provider built on vertex, and
-// provider otherwise. The shared converters key Vertex family decisions (feature tables, beta
-// filters, capability rows, Vertex-only rewrites) on the request's provider. A vertex-based custom
-// provider must get Vertex's answer there. Every other custom base keeps reading its own key, so
-// this changes nothing for them, where ResolveBaseProvider would.
-func ResolveVertexFamily(ctx *BifrostContext, provider ModelProvider) ModelProvider {
-	if provider != Vertex && ResolveBaseProvider(ctx, provider) == Vertex {
-		return Vertex
+// FamilyProvider is the provider whose family rules (feature tables, beta filters, capability
+// rows, provider-only rewrites) the shared converters apply to an attempt on provider with base
+// type base. A custom provider on a base listed here is a faithful clone of the native provider,
+// so it answers as that base. Every other custom provider keeps answering by its own key, as it
+// always has; ResolveBaseProvider would move it onto its base's rules too.
+func FamilyProvider(base, provider ModelProvider) ModelProvider {
+	switch base {
+	case Vertex:
+		return base
 	}
 	return provider
+}
+
+// ResolveFamilyProvider is FamilyProvider with the base this attempt recorded on ctx.
+func ResolveFamilyProvider(ctx *BifrostContext, provider ModelProvider) ModelProvider {
+	return FamilyProvider(ResolveBaseProvider(ctx, provider), provider)
 }
 
 // ChatReasoningModeRequiresResponses reports whether a chat request that sets

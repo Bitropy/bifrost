@@ -30,7 +30,7 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
-	familyProvider := schemas.ResolveVertexFamily(ctx, bifrostReq.Provider)
+	familyProvider := schemas.ResolveFamilyProvider(ctx, bifrostReq.Provider)
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {

@@ -521,7 +521,7 @@ func HandleGeminiChatCompletionStream(
 
 	// Large payload mode: stream original request bytes directly from ingress.
 	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
-		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody, schemas.ResolveVertexFamily(ctx, providerName), model)
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody, schemas.ResolveFamilyProvider(ctx, providerName), model)
 		req.SetBody(jsonBody)
 	}
 
@@ -1073,7 +1073,7 @@ func HandleGeminiResponsesStream(
 
 	// Large payload mode: stream original request body to upstream.
 	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
-		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody, schemas.ResolveVertexFamily(ctx, providerName), model)
+		jsonBody = normalizeRawGenerateContentBody(ctx, jsonBody, schemas.ResolveFamilyProvider(ctx, providerName), model)
 		req.SetBody(jsonBody)
 	}
 

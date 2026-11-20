@@ -1168,9 +1168,10 @@ func BenchmarkKeyAliasesResolveConfig(b *testing.B) {
 	}
 }
 
-// TestResolveVertexFamily: only a custom provider whose attempt runs on the vertex base answers
-// Vertex; every other provider, custom bases included, keeps its own key.
-func TestResolveVertexFamily(t *testing.T) {
+// TestResolveFamilyProvider: only a custom provider whose attempt runs on the vertex base answers
+// Vertex; every other provider, custom bases included, keeps its own key. The lookup allocates
+// nothing, since the converters run it on every request.
+func TestResolveFamilyProvider(t *testing.T) {
 	onBase := func(base ModelProvider) *BifrostContext {
 		ctx := NewBifrostContext(context.Background(), NoDeadline)
 		if base != "" {
@@ -1192,9 +1193,23 @@ func TestResolveVertexFamily(t *testing.T) {
 		{"nil context", nil, "vertex-eu", "vertex-eu"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ResolveVertexFamily(tt.ctx, tt.provider); got != tt.want {
-				t.Fatalf("ResolveVertexFamily = %q, want %q", got, tt.want)
+			if got := ResolveFamilyProvider(tt.ctx, tt.provider); got != tt.want {
+				t.Fatalf("ResolveFamilyProvider = %q, want %q", got, tt.want)
+			}
+			if allocs := testing.AllocsPerRun(100, func() { _ = ResolveFamilyProvider(tt.ctx, tt.provider) }); allocs != 0 {
+				t.Fatalf("allocs/op = %v, want 0", allocs)
 			}
 		})
+	}
+}
+
+// BenchmarkResolveFamilyProvider is the per-request cost the shared converters added: one
+// context lookup.
+func BenchmarkResolveFamilyProvider(b *testing.B) {
+	ctx := NewBifrostContext(context.Background(), NoDeadline)
+	ctx.SetValue(BifrostContextKeyBaseProviderType, Vertex)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = ResolveFamilyProvider(ctx, "vertex-eu")
 	}
 }

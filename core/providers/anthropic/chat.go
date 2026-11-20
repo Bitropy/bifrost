@@ -381,7 +381,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		messages = messages[:trimmed]
 	}
 
-	familyProvider := schemas.ResolveVertexFamily(ctx, bifrostReq.Provider)
+	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	familyProvider := schemas.FamilyProvider(baseProvider, bifrostReq.Provider)
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
 		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(familyProvider, bifrostReq.Model, AnthropicDefaultMaxTokens),
@@ -391,7 +392,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	// A custom provider resolves to the built-in provider it wraps, so its datasheet row
 	// applies here as it already does in the request builder's re-strip.
-	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
+	caps := schemas.ResolveModelCaps(baseProvider, capModel)
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
 	// choice below — the caller's and the synthetic structured-output pin — is
 	// dropped and the model answers under the default "auto".

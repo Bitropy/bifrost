@@ -3795,7 +3795,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 						// Inline definitions are rebuilt by the regular tool converter, which picks
 						// dated server-tool versions from the model, so resolve the attempt's caps
 						// instead of passing empty ones (which would downgrade web_search_20260209).
-						caps := schemas.ResolveModelCaps(schemas.ResolveVertexFamily(ctx, attemptProvider(bifrostResp.ExtraFields)), attemptModel(bifrostResp.ExtraFields))
+						caps := schemas.ResolveModelCaps(schemas.ResolveFamilyProvider(ctx, attemptProvider(bifrostResp.ExtraFields)), attemptModel(bifrostResp.ExtraFields))
 						contentBlock.ToolChanges = convertBifrostContentBlocksToAnthropic(caps, cmp.ToolChanges)
 					}
 				} else if isFallbackItem(bifrostResp.Item) {
@@ -5006,8 +5006,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	// A custom provider resolves to the built-in provider it wraps, so its datasheet row
 	// applies here as it already does in the request builder's re-strip.
-	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
-	familyProvider := schemas.ResolveVertexFamily(ctx, bifrostReq.Provider)
+	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	caps := schemas.ResolveModelCaps(baseProvider, capModel)
+	familyProvider := schemas.FamilyProvider(baseProvider, bifrostReq.Provider)
 	var requestTools []schemas.ResponsesTool
 	if bifrostReq.Params != nil {
 		requestTools = bifrostReq.Params.Tools
@@ -5925,7 +5926,7 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 	var contentBlocks []AnthropicContentBlock
 	if bifrostResp.Output != nil {
 		anthropicMessages, _ := convertBifrostMessagesToAnthropicMessages(ctx, bifrostResp.Output, false,
-			schemas.ResolveModelCaps(schemas.ResolveVertexFamily(ctx, attemptProvider(bifrostResp.ExtraFields)), bifrostResp.Model),
+			schemas.ResolveModelCaps(schemas.ResolveFamilyProvider(ctx, attemptProvider(bifrostResp.ExtraFields)), bifrostResp.Model),
 			bifrostResp.ExtraFields.ConvertedRequestType == schemas.ChatCompletionRequest)
 		// Extract content blocks from the converted messages
 		for _, msg := range anthropicMessages {

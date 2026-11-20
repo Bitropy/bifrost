@@ -40,8 +40,9 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	}
 
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
-	familyProvider := schemas.ResolveVertexFamily(ctx, bifrostReq.Provider)
+	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+	caps := schemas.ResolveModelCaps(baseProvider, capModel)
+	familyProvider := schemas.FamilyProvider(baseProvider, bifrostReq.Provider)
 
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
