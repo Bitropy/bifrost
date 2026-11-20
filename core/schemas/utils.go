@@ -814,6 +814,16 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 						EndIndex:   annotation.URLCitation.EndIndex,
 						Title:      annotation.URLCitation.Title,
 					},
+					Provider: annotation.Provider,
+				}
+				if annotation.StartIndex != nil {
+					copyAnnotation.StartIndex = Ptr(*annotation.StartIndex)
+				}
+				if annotation.EndIndex != nil {
+					copyAnnotation.EndIndex = Ptr(*annotation.EndIndex)
+				}
+				if annotation.Citation != nil {
+					copyAnnotation.Citation = append(json.RawMessage(nil), annotation.Citation...)
 				}
 				if annotation.URLCitation.URL != nil {
 					copyURL := *annotation.URLCitation.URL

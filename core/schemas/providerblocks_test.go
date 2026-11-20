@@ -73,3 +73,21 @@ func TestToolUsage_WebFetchCopiedAndAdded(t *testing.T) {
 		t.Errorf("encoded = %s", out)
 	}
 }
+
+func TestDeepCopyChatMessage_ProviderCitationShareNothing(t *testing.T) {
+	start, end := 1, 2
+	orig := ChatMessage{Role: ChatMessageRoleAssistant, ChatAssistantMessage: &ChatAssistantMessage{
+		Annotations: []ChatAssistantMessageAnnotation{{
+			Type: ChatAnnotationTypeProviderCitation, Provider: "anthropic", StartIndex: &start, EndIndex: &end, Citation: json.RawMessage(`{"a":1}`),
+		}},
+	}}
+	cp := DeepCopyChatMessage(orig).ChatAssistantMessage.Annotations[0]
+	if cp.Provider != "anthropic" || cp.StartIndex == nil || *cp.StartIndex != 1 || cp.EndIndex == nil || *cp.EndIndex != 2 || string(cp.Citation) != `{"a":1}` {
+		t.Fatalf("copy lost provider citation members: %+v", cp)
+	}
+	*cp.StartIndex = 9
+	cp.Citation[1] = 'X'
+	if start != 1 || string(orig.ChatAssistantMessage.Annotations[0].Citation) != `{"a":1}` {
+		t.Error("copy shares memory with the original")
+	}
+}

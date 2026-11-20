@@ -563,7 +563,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			if msg.OpenAIChatAssistantMessage != nil {
 				needsAnnotationStrip := false
 				for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
-					if annotation.URLCitation.Text != nil {
+					if annotationNeedsStrip(annotation) {
 						needsAnnotationStrip = true
 						break
 					}
@@ -580,11 +580,13 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 				if needsAnnotationStrip || needsToolCallStrip {
 					assistantCopy := *msg.OpenAIChatAssistantMessage
 					if needsAnnotationStrip {
-						assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
-						for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
-							annotationCopy := annotation
-							annotationCopy.URLCitation.Text = nil
-							assistantCopy.Annotations[j] = annotationCopy
+						assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, 0, len(msg.OpenAIChatAssistantMessage.Annotations))
+						for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+							if annotation.Type == schemas.ChatAnnotationTypeProviderCitation {
+								continue
+							}
+							annotation.URLCitation.Text = nil
+							assistantCopy.Annotations = append(assistantCopy.Annotations, annotation)
 						}
 					}
 					if needsToolCallStrip {
@@ -1291,7 +1293,7 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 	}
 	if msg.OpenAIChatAssistantMessage != nil {
 		for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
-			if annotation.URLCitation.Text != nil {
+			if annotationNeedsStrip(annotation) {
 				return true
 			}
 		}
@@ -1304,6 +1306,12 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 		}
 	}
 	return false
+}
+
+// annotationNeedsStrip reports whether an annotation carries Bifrost-only data: the cited
+// text of a url_citation, or a whole provider_citation.
+func annotationNeedsStrip(annotation schemas.ChatAssistantMessageAnnotation) bool {
+	return annotation.URLCitation.Text != nil || annotation.Type == schemas.ChatAnnotationTypeProviderCitation
 }
 
 // Helper function to check if a responses message has any CacheControl fields or FileType in file blocks

@@ -1335,6 +1335,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 	var annotations []schemas.ChatAssistantMessageAnnotation
 	seenAnnotations := make(map[anthropicAnnotationKey]struct{})
 	textOffset := 0
+	// rawCitations is set once a provider citation waits for its bytes from the raw body.
+	var rawCitations bool
 	// shared indexes reasoning details and provider blocks together, in content order.
 	shared := 0
 	var providerBlocks []schemas.ChatProviderBlock
@@ -1358,6 +1360,11 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 					textOffset += len(*c.Text)
 					if c.Citations != nil {
 						annotations = appendAnthropicWebSearchAnnotations(annotations, c.Citations.TextCitations, start, textOffset, seenAnnotations)
+						if response.rawBody != nil {
+							var added bool
+							annotations, added = appendProviderCitationAnnotations(annotations, c.Citations.TextCitations, nil, start, textOffset)
+							rawCitations = rawCitations || added
+						}
 					}
 				}
 			case AnthropicContentBlockTypeToolUse:
@@ -1436,8 +1443,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			}
 		}
 	}
-	if len(providerBlocks) > 0 {
-		providerBlocks = fillProviderBlockBytes(response.rawBody, response.Content, providerBlocks)
+	if len(providerBlocks) > 0 || rawCitations {
+		providerBlocks, annotations = fillRawResponseBytes(response.rawBody, response.Content, providerBlocks, annotations)
 	}
 
 	// choices[].message.content is a string on the chat completions surface, so
@@ -1755,7 +1762,8 @@ type anthropicAnnotationKey struct {
 // the block: [start, end) are byte offsets of that block in the chat content
 // string, the same unit the Gemini provider passes through for its grounding
 // segments. Other citation types (document char/page/block locations, search
-// results) have no url_citation equivalent and are skipped. Identical
+// results) have no url_citation equivalent; appendProviderCitationAnnotations
+// carries them. Identical
 // (url, span) pairs already in seen are dropped.
 func appendAnthropicWebSearchAnnotations(out []schemas.ChatAssistantMessageAnnotation, citations []AnthropicTextCitation, start, end int, seen map[anthropicAnnotationKey]struct{}) []schemas.ChatAssistantMessageAnnotation {
 	for _, citation := range citations {
@@ -1816,6 +1824,9 @@ type AnthropicStreamState struct {
 	// content_block_start and citations_delta events) until content_block_stop,
 	// when the block's end offset is known.
 	pendingCitations map[int][]AnthropicTextCitation
+	// pendingCitationRaw keeps, per open text block, the raw object of each provider
+	// citation in citation order. Created on the stream's first provider citation.
+	pendingCitationRaw map[int][]json.RawMessage
 	// openBlock is the unmapped block being buffered. Anthropic streams one content
 	// block at a time, so one record is enough; its index comes from
 	// nextReasoningDetailIdx, the counter reasoning details share with provider blocks.
@@ -1952,6 +1963,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				state.textBlockStart[*chunk.Index] = state.contentLen
 				if chunk.ContentBlock.Citations != nil && len(chunk.ContentBlock.Citations.TextCitations) > 0 {
 					state.pendingCitations[*chunk.Index] = append(state.pendingCitations[*chunk.Index], chunk.ContentBlock.Citations.TextCitations...)
+					state.keepProviderCitations(*chunk.Index, chunk.ContentBlock.Citations.TextCitations, "content_block.citations")
 				}
 				return nil, nil, false
 
@@ -2083,6 +2095,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 						state.textBlockStart[*chunk.Index] = state.contentLen
 					}
 					state.pendingCitations[*chunk.Index] = append(state.pendingCitations[*chunk.Index], *chunk.Delta.Citation)
+					if chunk.Delta.Citation.Type != AnthropicCitationTypeWebSearchResultLocation {
+						state.keepProviderCitation(*chunk.Index, "delta.citation")
+					}
 				}
 				return nil, nil, false
 
@@ -2158,9 +2173,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 			// spanning the block's bytes in the content string.
 			if blockStart, isTextBlock := state.textBlockStart[*chunk.Index]; isTextBlock {
 				citations := state.pendingCitations[*chunk.Index]
+				rawCitations := state.pendingCitationRaw[*chunk.Index]
 				delete(state.textBlockStart, *chunk.Index)
 				delete(state.pendingCitations, *chunk.Index)
+				delete(state.pendingCitationRaw, *chunk.Index)
 				annotations := appendAnthropicWebSearchAnnotations(nil, citations, blockStart, state.contentLen, make(map[anthropicAnnotationKey]struct{}))
+				annotations, _ = appendProviderCitationAnnotations(annotations, nil, rawCitations, blockStart, state.contentLen)
 				if len(annotations) == 0 {
 					return nil, nil, false
 				}

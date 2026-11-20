@@ -1922,10 +1922,22 @@ type ChatAssistantMessageImage struct {
 	ImageURL ChatInputImage `json:"image_url"`
 }
 
+// ChatAnnotationTypeProviderCitation is a provider citation with no url_citation
+// equivalent (document and search-result locations), carried as the provider sent it.
+const ChatAnnotationTypeProviderCitation = "provider_citation"
+
 // ChatAssistantMessageAnnotation represents an annotation in a response.
+//
+// Provider, StartIndex, EndIndex and Citation are set only on a provider_citation and are
+// Bifrost extensions, stripped on the OpenAI wire. omitzero keeps a provider_citation free
+// of an empty url_citation and leaves every url_citation's bytes as they were.
 type ChatAssistantMessageAnnotation struct {
 	Type        string                                 `json:"type"`
-	URLCitation ChatAssistantMessageAnnotationCitation `json:"url_citation"`
+	URLCitation ChatAssistantMessageAnnotationCitation `json:"url_citation,omitzero"`
+	Provider    string                                 `json:"provider,omitempty"`
+	StartIndex  *int                                   `json:"start_index,omitempty"`
+	EndIndex    *int                                   `json:"end_index,omitempty"`
+	Citation    json.RawMessage                        `json:"citation,omitempty"`
 }
 
 // ChatAssistantMessageAnnotationCitation represents a citation in a response.

@@ -30,21 +30,133 @@ func countUnmappedBlocks(blocks []AnthropicContentBlock) int {
 	return n
 }
 
-// fillProviderBlockBytes copies the raw bytes of each unmapped content[j] of body into
-// the matching entry of out, in content order. The typed block is never re-marshalled:
+// fillRawResponseBytes copies, in one walk of body, the raw bytes of each unmapped
+// content[j] into the matching provider block and of each provider citation into its
+// waiting annotation, both in content order. The typed values are never re-marshalled:
 // members core does not declare would be lost. Entries the body has no bytes for are
-// dropped rather than sent with an empty block.
-func fillProviderBlockBytes(body []byte, blocks []AnthropicContentBlock, out []schemas.ChatProviderBlock) []schemas.ChatProviderBlock {
-	j, k := 0, 0
+// dropped rather than sent empty.
+func fillRawResponseBytes(body []byte, blocks []AnthropicContentBlock, pbs []schemas.ChatProviderBlock, anns []schemas.ChatAssistantMessageAnnotation) ([]schemas.ChatProviderBlock, []schemas.ChatAssistantMessageAnnotation) {
+	j, k, a := 0, 0, 0
 	gjson.Get(bytesAsString(body), "content").ForEach(func(_, v gjson.Result) bool {
-		if j < len(blocks) && !ChatMapsBlock(blocks[j].Type) && k < len(out) && v.IsObject() {
-			out[k].Block = json.RawMessage(v.Raw)
-			k++
+		if j >= len(blocks) {
+			return false
 		}
+		b := &blocks[j]
 		j++
+		if !ChatMapsBlock(b.Type) {
+			if k < len(pbs) && v.IsObject() {
+				pbs[k].Block = json.RawMessage(v.Raw)
+				k++
+			}
+			return true
+		}
+		if b.Type != AnthropicContentBlockTypeText || b.Text == nil || b.Citations == nil || !hasProviderCitation(b.Citations.TextCitations) {
+			return true
+		}
+		m := 0
+		v.Get("citations").ForEach(func(_, c gjson.Result) bool {
+			if m < len(b.Citations.TextCitations) && isProviderCitation(b.Citations.TextCitations[m]) && c.IsObject() {
+				for a < len(anns) && (anns[a].Type != schemas.ChatAnnotationTypeProviderCitation || anns[a].Citation != nil) {
+					a++
+				}
+				if a < len(anns) {
+					anns[a].Citation = json.RawMessage(c.Raw)
+				}
+			}
+			m++
+			return true
+		})
 		return true
 	})
-	return out[:k]
+	kept := anns[:0]
+	for _, ann := range anns {
+		if ann.Type != schemas.ChatAnnotationTypeProviderCitation || ann.Citation != nil {
+			kept = append(kept, ann)
+		}
+	}
+	return pbs[:k], kept
+}
+
+// isProviderCitation reports whether a citation has no url_citation mapping and reaches
+// the client as a provider_citation annotation.
+func isProviderCitation(c AnthropicTextCitation) bool {
+	return c.Type != AnthropicCitationTypeWebSearchResultLocation
+}
+
+func hasProviderCitation(cs []AnthropicTextCitation) bool {
+	for i := range cs {
+		if isProviderCitation(cs[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// appendProviderCitationAnnotations appends one provider_citation annotation per provider
+// citation of a text block spanning [start, end): from typed citations (unary, Citation
+// filled later from the raw body) or from raw ones (stream). Unlike url_citation, each
+// upstream citation is its own annotation; nothing is de-duplicated.
+func appendProviderCitationAnnotations(out []schemas.ChatAssistantMessageAnnotation, typed []AnthropicTextCitation, raw []json.RawMessage, start, end int) ([]schemas.ChatAssistantMessageAnnotation, bool) {
+	n := len(raw)
+	for i := range typed {
+		if isProviderCitation(typed[i]) {
+			n++
+		}
+	}
+	if n == 0 {
+		return out, false
+	}
+	// One span pair per block, shared by its annotations.
+	span := [2]int{start, end}
+	add := func(citation json.RawMessage) {
+		out = append(out, schemas.ChatAssistantMessageAnnotation{
+			Type:       schemas.ChatAnnotationTypeProviderCitation,
+			Provider:   schemas.ProviderBlockAnthropic,
+			StartIndex: &span[0],
+			EndIndex:   &span[1],
+			Citation:   citation,
+		})
+	}
+	for i := range typed {
+		if isProviderCitation(typed[i]) {
+			add(nil)
+		}
+	}
+	for _, c := range raw {
+		add(c)
+	}
+	return out, true
+}
+
+// keepProviderCitations buffers the raw objects of a text block's provider citations from
+// the current event's citation array at path.
+func (state *AnthropicStreamState) keepProviderCitations(blockIndex int, cs []AnthropicTextCitation, path string) {
+	if !hasProviderCitation(cs) {
+		return
+	}
+	m := 0
+	gjson.Get(bytesAsString(state.eventData), path).ForEach(func(_, c gjson.Result) bool {
+		if m < len(cs) && isProviderCitation(cs[m]) {
+			state.keepRawCitation(blockIndex, c)
+		}
+		m++
+		return true
+	})
+}
+
+// keepProviderCitation buffers the raw object of one provider citation at path.
+func (state *AnthropicStreamState) keepProviderCitation(blockIndex int, path string) {
+	state.keepRawCitation(blockIndex, gjson.Get(bytesAsString(state.eventData), path))
+}
+
+func (state *AnthropicStreamState) keepRawCitation(blockIndex int, c gjson.Result) {
+	if !c.IsObject() {
+		return
+	}
+	if state.pendingCitationRaw == nil {
+		state.pendingCitationRaw = make(map[int][]json.RawMessage)
+	}
+	state.pendingCitationRaw[blockIndex] = append(state.pendingCitationRaw[blockIndex], json.RawMessage(c.Raw))
 }
 
 // Stream folding: an unmapped block is buffered from its content_block_start and emitted
