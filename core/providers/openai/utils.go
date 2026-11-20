@@ -317,6 +317,7 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 				Refusal:          message.OpenAIChatAssistantMessage.Refusal,
 				Reasoning:        reasoning,
 				ReasoningDetails: message.OpenAIChatAssistantMessage.ReasoningDetails,
+				ProviderBlocks:   message.OpenAIChatAssistantMessage.ProviderBlocks,
 				Annotations:      message.OpenAIChatAssistantMessage.Annotations,
 				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}

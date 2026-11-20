@@ -1323,7 +1323,7 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 	}
 	// Only set if any field is populated
 	if assistantMsg.Refusal != nil || assistantMsg.Reasoning != nil ||
-		len(assistantMsg.ReasoningDetails) > 0 || len(assistantMsg.Annotations) > 0 ||
+		len(assistantMsg.ReasoningDetails) > 0 || len(assistantMsg.ProviderBlocks) > 0 || len(assistantMsg.Annotations) > 0 ||
 		len(assistantMsg.ToolCalls) > 0 || assistantMsg.Audio != nil || len(assistantMsg.Images) > 0 ||
 		len(assistantMsg.Context) > 0 {
 		cm.ChatAssistantMessage = &assistantMsg
@@ -1759,9 +1759,23 @@ type ChatAssistantMessage struct {
 	Images           []ChatAssistantMessageImage      `json:"images,omitempty"`
 	Reasoning        *string                          `json:"reasoning,omitempty"`
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
+	ProviderBlocks   []ChatProviderBlock              `json:"provider_blocks,omitempty"`
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
 	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
 	Context          json.RawMessage                  `json:"context,omitempty"` // Azure On Your Data citations and intent, passed through untouched
+}
+
+// ProviderBlockAnthropic is the Anthropic content-block dialect. It names the
+// block's dialect, not the Bifrost provider, so Vertex and Azure Claude write it too.
+const ProviderBlockAnthropic = "anthropic"
+
+// ChatProviderBlock carries one provider content block the chat shape has no
+// member for, as the provider sent it. Index shares the counter of
+// reasoning_details, so a client replaying both keeps their relative order.
+type ChatProviderBlock struct {
+	Index    int             `json:"index"`
+	Provider string          `json:"provider"`
+	Block    json.RawMessage `json:"block"`
 }
 
 // MarshalJSON emits reasoning under both spellings the ecosystem uses.
@@ -1834,6 +1848,9 @@ func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
 	// The raw context may alias the decoder's input buffer, which a provider can reuse.
 	if len(cm.Context) > 0 {
 		cm.Context = bytes.Clone(cm.Context)
+	}
+	for i := range cm.ProviderBlocks {
+		cm.ProviderBlocks[i].Block = bytes.Clone(cm.ProviderBlocks[i].Block)
 	}
 
 	// Map xAI's reasoning_content to Bifrost's Reasoning field
@@ -2078,10 +2095,11 @@ type ChatStreamResponseChoiceDelta struct {
 	Images           []ChatAssistantMessageImage      `json:"images,omitempty"`    // Generated images, whole per chunk
 	Reasoning        *string                          `json:"reasoning,omitempty"` // May be empty string or null
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
-	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`   // URL citations from web search
-	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`    // If tool calls used (supports incremental updates)
-	ExtraContent     json.RawMessage                  `json:"extra_content,omitempty"` // Provider-specific metadata (e.g. Gemini thought markers, thought_signature)
-	Context          json.RawMessage                  `json:"context,omitempty"`       // Azure On Your Data citations and intent, passed through untouched
+	ProviderBlocks   []ChatProviderBlock              `json:"provider_blocks,omitempty"` // at most one entry, on the block's last event
+	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`     // URL citations from web search
+	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`      // If tool calls used (supports incremental updates)
+	ExtraContent     json.RawMessage                  `json:"extra_content,omitempty"`   // Provider-specific metadata (e.g. Gemini thought markers, thought_signature)
+	Context          json.RawMessage                  `json:"context,omitempty"`         // Azure On Your Data citations and intent, passed through untouched
 }
 
 // MarshalJSON emits reasoning under both spellings, matching
@@ -2568,6 +2586,7 @@ func mergeTokenUsageEstimation(base, add *TokenUsageEstimation) *TokenUsageEstim
 
 type ToolUsage struct {
 	WebSearch *WebSearchToolUsage `json:"web_search,omitempty"`
+	WebFetch  *WebFetchToolUsage  `json:"web_fetch,omitempty"`
 	ImageGen  *ImageGenToolUsage  `json:"image_gen,omitempty"`
 	// ImageGenModel is the image model the request's tool asked for. Bifrost derives it; no provider reports it.
 	ImageGenModel string `json:"image_gen_model,omitempty"`
@@ -2607,7 +2626,7 @@ func (t *ToolUsage) withoutZeroImageGen() *ToolUsage {
 		return t
 	}
 	t.ImageGen = nil
-	if t.WebSearch == nil && len(t.ContainerSessions) == 0 {
+	if t.WebSearch == nil && t.WebFetch == nil && len(t.ContainerSessions) == 0 {
 		return nil
 	}
 	return t
@@ -2640,7 +2659,7 @@ func (t *ToolUsage) withoutDerivedFields() *ToolUsage {
 	if t == nil || (t.ContainerSessions == nil && t.ImageGenModel == "") {
 		return t
 	}
-	if t.WebSearch == nil && t.ImageGen == nil {
+	if t.WebSearch == nil && t.WebFetch == nil && t.ImageGen == nil {
 		return nil
 	}
 	c := *t
@@ -2745,6 +2764,11 @@ type WebSearchToolUsage struct {
 	NumRequests int `json:"num_requests"`
 }
 
+// WebFetchToolUsage counts web fetch calls.
+type WebFetchToolUsage struct {
+	NumRequests int `json:"num_requests"`
+}
+
 // Add returns the per-tool sum of t and o; nil when both are nil.
 func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
 	if t == nil && o == nil {
@@ -2759,6 +2783,15 @@ func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
 			sum.WebSearch = &WebSearchToolUsage{}
 		}
 		sum.WebSearch.NumRequests += o.WebSearch.NumRequests
+	}
+	if t != nil && t.WebFetch != nil {
+		sum.WebFetch = &WebFetchToolUsage{NumRequests: t.WebFetch.NumRequests}
+	}
+	if o != nil && o.WebFetch != nil {
+		if sum.WebFetch == nil {
+			sum.WebFetch = &WebFetchToolUsage{}
+		}
+		sum.WebFetch.NumRequests += o.WebFetch.NumRequests
 	}
 	for _, u := range []*ToolUsage{t, o} {
 		if u == nil {
@@ -2787,6 +2820,10 @@ func (t *ToolUsage) DeepCopy() *ToolUsage {
 	if t.WebSearch != nil {
 		ws := *t.WebSearch
 		c.WebSearch = &ws
+	}
+	if t.WebFetch != nil {
+		wf := *t.WebFetch
+		c.WebFetch = &wf
 	}
 	c.ImageGen = t.ImageGen.deepCopy()
 	c.ContainerSessions = maps.Clone(t.ContainerSessions)

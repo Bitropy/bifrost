@@ -510,6 +510,8 @@ type OpenAIChatAssistantMessage struct {
 	// ConvertOpenAIMessagesToBifrostMessages, which folds them into the Bifrost schema.
 	ReasoningAlias   *string                        `json:"reasoning,omitempty"`
 	ReasoningDetails []schemas.ChatReasoningDetails `json:"reasoning_details,omitempty"`
+	// ProviderBlocks is inbound-only for the same reason: no OpenAI-wire upstream reads it.
+	ProviderBlocks []schemas.ChatProviderBlock `json:"provider_blocks,omitempty"`
 
 	Annotations []schemas.ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
 	ToolCalls   []schemas.ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`

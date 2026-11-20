@@ -835,6 +835,14 @@ func DeepCopyChatMessage(original ChatMessage) ChatMessage {
 			}
 		}
 
+		if original.ChatAssistantMessage.ProviderBlocks != nil {
+			copy.ChatAssistantMessage.ProviderBlocks = make([]ChatProviderBlock, len(original.ChatAssistantMessage.ProviderBlocks))
+			for i, pb := range original.ChatAssistantMessage.ProviderBlocks {
+				pb.Block = append(json.RawMessage(nil), pb.Block...)
+				copy.ChatAssistantMessage.ProviderBlocks[i] = pb
+			}
+		}
+
 		// Deep copy ToolCalls
 		if original.ChatAssistantMessage.ToolCalls != nil {
 			copy.ChatAssistantMessage.ToolCalls = make([]ChatAssistantMessageToolCall, len(original.ChatAssistantMessage.ToolCalls))

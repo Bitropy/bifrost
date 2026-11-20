@@ -1157,25 +1157,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 			var content []AnthropicContentBlock
 
-			// First add reasoning details
-			if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ReasoningDetails != nil {
-				for _, reasoningDetail := range msg.ChatAssistantMessage.ReasoningDetails {
-					// reasoning.encrypted details carrying data hold an anthropic
-					// redacted_thinking payload; replay the block as-is so the API
-					// can decrypt it. Encrypted details without data (e.g. gemini
-					// thought signatures) keep the thinking-block mapping below.
-					if reasoningDetail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && reasoningDetail.Data != nil && *reasoningDetail.Data != "" {
-						content = append(content, AnthropicContentBlock{
-							Type: AnthropicContentBlockTypeRedactedThinking,
-							Data: reasoningDetail.Data,
-						})
-						continue
-					}
-					content = append(content, AnthropicContentBlock{
-						Type:      AnthropicContentBlockTypeThinking,
-						Signature: reasoningDetail.Signature,
-						Thinking:  reasoningDetail.Text,
-					})
+			// First the reasoning details and replayed provider blocks
+			if msg.ChatAssistantMessage != nil && (msg.ChatAssistantMessage.ReasoningDetails != nil || msg.ChatAssistantMessage.ProviderBlocks != nil) {
+				var err error
+				if content, err = appendAnthropicLeadingRun(content, i, msg.ChatAssistantMessage); err != nil {
+					return nil, err
 				}
 			}
 
@@ -1349,6 +1335,14 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 	var annotations []schemas.ChatAssistantMessageAnnotation
 	seenAnnotations := make(map[anthropicAnnotationKey]struct{})
 	textOffset := 0
+	// shared indexes reasoning details and provider blocks together, in content order.
+	shared := 0
+	var providerBlocks []schemas.ChatProviderBlock
+	if response.rawBody != nil {
+		if n := countUnmappedBlocks(response.Content); n > 0 {
+			providerBlocks = make([]schemas.ChatProviderBlock, 0, n)
+		}
+	}
 
 	// Process content and tool calls
 	if response.Content != nil {
@@ -1411,11 +1405,12 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 				}
 			case AnthropicContentBlockTypeThinking:
 				reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
-					Index:     len(reasoningDetails),
+					Index:     shared,
 					Type:      schemas.BifrostReasoningDetailsTypeText,
 					Text:      c.Thinking,
 					Signature: c.Signature,
 				})
+				shared++
 				if c.Thinking != nil {
 					reasoningText += *c.Thinking + "\n"
 				}
@@ -1427,13 +1422,22 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 				// dropped from the latest assistant message.
 				if c.Data != nil && *c.Data != "" {
 					reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
-						Index: len(reasoningDetails),
+						Index: shared,
 						Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
 						Data:  c.Data,
 					})
+					shared++
+				}
+			default:
+				if providerBlocks != nil {
+					providerBlocks = append(providerBlocks, schemas.ChatProviderBlock{Index: shared, Provider: schemas.ProviderBlockAnthropic})
+					shared++
 				}
 			}
 		}
+	}
+	if len(providerBlocks) > 0 {
+		providerBlocks = fillProviderBlockBytes(response.rawBody, response.Content, providerBlocks)
 	}
 
 	// choices[].message.content is a string on the chat completions surface, so
@@ -1500,6 +1504,13 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 		assistantMessage.Annotations = annotations
 	}
 
+	if len(providerBlocks) > 0 {
+		if assistantMessage == nil {
+			assistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		assistantMessage.ProviderBlocks = providerBlocks
+	}
+
 	// Create message
 	message := schemas.ChatMessage{
 		Role:                 schemas.ChatMessageRoleAssistant,
@@ -1557,6 +1568,12 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 				NumSearchQueries: &n,
 			}
 			bifrostResponse.Usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
+		}
+		if billable.ServerToolUse != nil && billable.ServerToolUse.WebFetchRequests > 0 {
+			if bifrostResponse.Usage.ToolUsage == nil {
+				bifrostResponse.Usage.ToolUsage = &schemas.ToolUsage{}
+			}
+			bifrostResponse.Usage.ToolUsage.WebFetch = &schemas.WebFetchToolUsage{NumRequests: billable.ServerToolUse.WebFetchRequests}
 		}
 		// Extended-thinking token count. Already a subset of OutputTokens (see
 		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that
@@ -1799,6 +1816,17 @@ type AnthropicStreamState struct {
 	// content_block_start and citations_delta events) until content_block_stop,
 	// when the block's end offset is known.
 	pendingCitations map[int][]AnthropicTextCitation
+	// openBlock is the unmapped block being buffered. Anthropic streams one content
+	// block at a time, so one record is enough; its index comes from
+	// nextReasoningDetailIdx, the counter reasoning details share with provider blocks.
+	openBlock openProviderBlock
+	// scratch holds the open block's start object and its folded deltas. Allocated on the
+	// stream's first unmapped block and reused for every later one.
+	scratch            []byte
+	providerBlockDrops schemas.ProviderBlockDrops
+	// eventData is the current event's undecoded data, set by the stream loop before each
+	// conversion; unmapped blocks are copied from it verbatim.
+	eventData []byte
 }
 
 // NewAnthropicStreamState returns an initialised stream state for one streaming response.
@@ -1872,6 +1900,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 	case AnthropicStreamEventTypeContentBlockStart:
 		if chunk.Index != nil && chunk.ContentBlock != nil {
+			// The event yields one chunk and it belongs to the new block, so a block still
+			// open here, which Anthropic does not produce, is lost; it is counted.
+			if state.openBlock.kind != providerBlockClosed {
+				state.openBlock = openProviderBlock{}
+				state.providerBlockDrops.Interleaved++
+			}
 			switch chunk.ContentBlock.Type {
 			case AnthropicContentBlockTypeToolUse:
 				// Check if this is the structured output tool - if so, skip emitting tool call metadata
@@ -1950,6 +1984,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				}, nil, false
 
 			default:
+				if !ChatMapsBlock(chunk.ContentBlock.Type) {
+					state.startProviderBlock(*chunk.Index)
+				}
 				return nil, nil, false
 			}
 		}
@@ -1958,6 +1995,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 	case AnthropicStreamEventTypeContentBlockDelta:
 		if chunk.Index != nil && chunk.Delta != nil {
+			if state.openBlock.kind != providerBlockClosed && state.openBlock.index == *chunk.Index {
+				state.foldProviderBlockDelta(chunk.Delta)
+				return nil, nil, false
+			}
 			// Handle different delta types
 			switch chunk.Delta.Type {
 			case AnthropicStreamDeltaTypeText:
@@ -2110,6 +2151,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 		// with arguments:"" — concatenation yields "" and json.Unmarshal fails
 		// with "unexpected end of JSON input" on strict clients (genkit-go).
 		if chunk.Index != nil {
+			if state.openBlock.kind != providerBlockClosed && state.openBlock.index == *chunk.Index {
+				return state.closeProviderBlock(), nil, false
+			}
 			// A text block closes: emit its url_citation annotations, if any,
 			// spanning the block's bytes in the content string.
 			if blockStart, isTextBlock := state.textBlockStart[*chunk.Index]; isTextBlock {

@@ -63,6 +63,7 @@ func AcquireAnthropicMessageResponse() *AnthropicMessageResponse {
 // ReleaseAnthropicMessageResponse returns an Anthropic chat response to the pool.
 func ReleaseAnthropicMessageResponse(resp *AnthropicMessageResponse) {
 	if resp != nil {
+		resp.rawBody = nil
 		anthropicMessageResponsePool.Put(resp)
 	}
 }
@@ -690,6 +691,7 @@ func HandleAnthropicChatCompletionRequest(
 	}
 	// Create final response
 	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
+	response.SetRawBody(responseBody)
 	bifrostResponse := response.ToBifrostChatResponse(ctx)
 	if convTracer != nil {
 		convTracer.EndSpan(convHandle, schemas.SpanStatusOk, "")
@@ -1323,6 +1325,14 @@ func HandleAnthropicChatCompletionStreaming(
 						usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
 					}
 				}
+				if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebFetchRequests > 0 {
+					if usage.ToolUsage == nil {
+						usage.ToolUsage = &schemas.ToolUsage{}
+					}
+					if n := usageToProcess.ServerToolUse.WebFetchRequests; usage.ToolUsage.WebFetch == nil || n > usage.ToolUsage.WebFetch.NumRequests {
+						usage.ToolUsage.WebFetch = &schemas.WebFetchToolUsage{NumRequests: n}
+					}
+				}
 				// Extended-thinking tokens. Max-merged like the other counters because usage
 				// arrives split across message_start and message_delta; the value is a
 				// per-request total, not a per-event increment, so summing would inflate it.
@@ -1439,6 +1449,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 			// Per-event mapping -> "convertor" (Convertor) stream phase.
 			convStart := time.Now()
+			streamState.eventData = eventDataBytes
 			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream(ctx, structuredOutputToolName, streamState)
 			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
@@ -1521,6 +1532,7 @@ func HandleAnthropicChatCompletionStreaming(
 		if servedFallbackModel != nil {
 			response.ExtraFields.RoutingInfo.ServerSideFallbackModel = servedFallbackModel
 		}
+		response.ExtraFields.ProviderBlockDrops = streamState.providerBlockDrops
 		// Set raw request if enabled
 		if sendBackRawRequest {
 			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
