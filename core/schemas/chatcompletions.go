@@ -2776,9 +2776,30 @@ type WebSearchToolUsage struct {
 	NumRequests int `json:"num_requests"`
 }
 
-// WebFetchToolUsage counts web fetch calls.
-type WebFetchToolUsage struct {
-	NumRequests int `json:"num_requests"`
+// WebFetchToolUsage counts web fetch calls, in the shape web search uses.
+type WebFetchToolUsage = WebSearchToolUsage
+
+// addRequests returns the sum of two request counts as a new value; nil when both are nil.
+func addRequests(a, b *WebSearchToolUsage) *WebSearchToolUsage {
+	if a == nil && b == nil {
+		return nil
+	}
+	sum := &WebSearchToolUsage{}
+	for _, u := range [2]*WebSearchToolUsage{a, b} {
+		if u != nil {
+			sum.NumRequests += u.NumRequests
+		}
+	}
+	return sum
+}
+
+// cloneRequests returns an owned copy of a request count.
+func cloneRequests(u *WebSearchToolUsage) *WebSearchToolUsage {
+	if u == nil {
+		return nil
+	}
+	c := *u
+	return &c
 }
 
 // Add returns the per-tool sum of t and o; nil when both are nil.
@@ -2786,24 +2807,16 @@ func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
 	if t == nil && o == nil {
 		return nil
 	}
-	sum := &ToolUsage{}
-	if t != nil && t.WebSearch != nil {
-		sum.WebSearch = &WebSearchToolUsage{NumRequests: t.WebSearch.NumRequests}
+	var tu, ou ToolUsage
+	if t != nil {
+		tu = *t
 	}
-	if o != nil && o.WebSearch != nil {
-		if sum.WebSearch == nil {
-			sum.WebSearch = &WebSearchToolUsage{}
-		}
-		sum.WebSearch.NumRequests += o.WebSearch.NumRequests
+	if o != nil {
+		ou = *o
 	}
-	if t != nil && t.WebFetch != nil {
-		sum.WebFetch = &WebFetchToolUsage{NumRequests: t.WebFetch.NumRequests}
-	}
-	if o != nil && o.WebFetch != nil {
-		if sum.WebFetch == nil {
-			sum.WebFetch = &WebFetchToolUsage{}
-		}
-		sum.WebFetch.NumRequests += o.WebFetch.NumRequests
+	sum := &ToolUsage{
+		WebSearch: addRequests(tu.WebSearch, ou.WebSearch),
+		WebFetch:  addRequests(tu.WebFetch, ou.WebFetch),
 	}
 	for _, u := range []*ToolUsage{t, o} {
 		if u == nil {
@@ -2829,14 +2842,8 @@ func (t *ToolUsage) DeepCopy() *ToolUsage {
 		return nil
 	}
 	c := *t
-	if t.WebSearch != nil {
-		ws := *t.WebSearch
-		c.WebSearch = &ws
-	}
-	if t.WebFetch != nil {
-		wf := *t.WebFetch
-		c.WebFetch = &wf
-	}
+	c.WebSearch = cloneRequests(t.WebSearch)
+	c.WebFetch = cloneRequests(t.WebFetch)
 	c.ImageGen = t.ImageGen.deepCopy()
 	c.ContainerSessions = maps.Clone(t.ContainerSessions)
 	return &c

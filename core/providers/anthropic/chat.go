@@ -1568,14 +1568,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
 				NumSearchQueries: &n,
 			}
-			bifrostResponse.Usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 		}
-		if billable.ServerToolUse != nil && billable.ServerToolUse.WebFetchRequests > 0 {
-			if bifrostResponse.Usage.ToolUsage == nil {
-				bifrostResponse.Usage.ToolUsage = &schemas.ToolUsage{}
-			}
-			bifrostResponse.Usage.ToolUsage.WebFetch = &schemas.WebFetchToolUsage{NumRequests: billable.ServerToolUse.WebFetchRequests}
-		}
+		foldServerToolUsage(&bifrostResponse.Usage.ToolUsage, billable.ServerToolUse)
 		// Extended-thinking token count. Already a subset of OutputTokens (see
 		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that
 		// ReasoningTokens <= CompletionTokens — so no folding is required here. An
@@ -1755,10 +1749,9 @@ type anthropicAnnotationKey struct {
 // them to out. Anthropic cites a whole text block, so every annotation spans
 // the block: [start, end) are byte offsets of that block in the chat content
 // string, the same unit the Gemini provider passes through for its grounding
-// segments. Other citation types (document char/page/block locations, search
-// results) have no url_citation equivalent and become provider_citation
-// annotations instead (providerCitationAnnotation). Identical
-// (url, span) pairs already in seen are dropped.
+// segments. Identical (url, span) pairs already in seen are dropped. Other
+// citation types (document char/page/block locations, search results) have no
+// url_citation equivalent; providerCitationAnnotation carries them.
 func appendAnthropicWebSearchAnnotations(out []schemas.ChatAssistantMessageAnnotation, citations []AnthropicTextCitation, start, end int, seen map[anthropicAnnotationKey]struct{}) []schemas.ChatAssistantMessageAnnotation {
 	for _, citation := range citations {
 		if citation.Type != AnthropicCitationTypeWebSearchResultLocation || citation.URL == nil || *citation.URL == "" {

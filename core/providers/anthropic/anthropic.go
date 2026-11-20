@@ -1318,21 +1318,8 @@ func HandleAnthropicChatCompletionStreaming(
 					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.CompletionTokensDetails.NumSearchQueries == nil || n > *usage.CompletionTokensDetails.NumSearchQueries {
 						usage.CompletionTokensDetails.NumSearchQueries = &n
 					}
-					if usage.ToolUsage == nil {
-						usage.ToolUsage = &schemas.ToolUsage{}
-					}
-					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.ToolUsage.WebSearch == nil || n > usage.ToolUsage.WebSearch.NumRequests {
-						usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
-					}
 				}
-				if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebFetchRequests > 0 {
-					if usage.ToolUsage == nil {
-						usage.ToolUsage = &schemas.ToolUsage{}
-					}
-					if n := usageToProcess.ServerToolUse.WebFetchRequests; usage.ToolUsage.WebFetch == nil || n > usage.ToolUsage.WebFetch.NumRequests {
-						usage.ToolUsage.WebFetch = &schemas.WebFetchToolUsage{NumRequests: n}
-					}
-				}
+				foldServerToolUsage(&usage.ToolUsage, usageToProcess.ServerToolUse)
 				// Extended-thinking tokens. Max-merged like the other counters because usage
 				// arrives split across message_start and message_delta; the value is a
 				// per-request total, not a per-event increment, so summing would inflate it.

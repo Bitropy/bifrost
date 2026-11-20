@@ -2325,12 +2325,8 @@ func addAnthropicUsageTokenFields(dst, src *AnthropicUsage) {
 		if dst.ServerToolUse == nil {
 			dst.ServerToolUse = &AnthropicServerToolUseUsage{}
 		}
-		if src.ServerToolUse.WebSearchRequests > dst.ServerToolUse.WebSearchRequests {
-			dst.ServerToolUse.WebSearchRequests = src.ServerToolUse.WebSearchRequests
-		}
-		if src.ServerToolUse.WebFetchRequests > dst.ServerToolUse.WebFetchRequests {
-			dst.ServerToolUse.WebFetchRequests = src.ServerToolUse.WebFetchRequests
-		}
+		maxServerToolCount(&dst.ServerToolUse.WebSearchRequests, src.ServerToolUse.WebSearchRequests)
+		maxServerToolCount(&dst.ServerToolUse.WebFetchRequests, src.ServerToolUse.WebFetchRequests)
 	}
 }
 
@@ -2357,6 +2353,39 @@ func (u *AnthropicUsage) ServerSideFallbackModel() *string {
 		}
 	}
 	return served
+}
+
+// maxServerToolCount keeps the larger server-tool count: each usage object reports a
+// per-request total, so counts split across events are max-merged, never summed.
+func maxServerToolCount(dst *int, n int) {
+	if n > *dst {
+		*dst = n
+	}
+}
+
+// foldServerToolUsage max-merges the server-tool counts of src into *dst, allocating
+// *dst and each per-tool count only when a count is reported.
+func foldServerToolUsage(dst **schemas.ToolUsage, src *AnthropicServerToolUseUsage) {
+	if src == nil {
+		return
+	}
+	for _, tool := range [2]struct {
+		n    int
+		slot func(*schemas.ToolUsage) **schemas.WebSearchToolUsage
+	}{
+		{src.WebSearchRequests, func(u *schemas.ToolUsage) **schemas.WebSearchToolUsage { return &u.WebSearch }},
+		{src.WebFetchRequests, func(u *schemas.ToolUsage) **schemas.WebSearchToolUsage { return &u.WebFetch }},
+	} {
+		if tool.n <= 0 {
+			continue
+		}
+		if *dst == nil {
+			*dst = &schemas.ToolUsage{}
+		}
+		if slot := tool.slot(*dst); *slot == nil || tool.n > (*slot).NumRequests {
+			*slot = &schemas.WebSearchToolUsage{NumRequests: tool.n}
+		}
+	}
 }
 
 // AnthropicServerToolUseUsage represents server tool use statistics in usage
