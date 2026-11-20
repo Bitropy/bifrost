@@ -18,63 +18,48 @@ func bytesAsString(b []byte) string {
 	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
-// countUnmappedBlocks counts the blocks that become provider blocks, so the converter
-// sizes ProviderBlocks once and walks the raw body only when there is one.
-func countUnmappedBlocks(blocks []AnthropicContentBlock) int {
-	n := 0
-	for i := range blocks {
-		if !ChatMapsBlock(blocks[i].Type) {
-			n++
+// rawResponseContent resolves the raw content array of the body handed over by SetRawBody,
+// and counts the unmapped blocks. It walks the body only when a decoded block is unmapped or
+// carries a provider citation, so an ordinary answer costs nothing.
+func rawResponseContent(response *AnthropicMessageResponse) ([]gjson.Result, int) {
+	if response.rawBody == nil {
+		return nil, 0
+	}
+	unmapped, cited := 0, false
+	for i := range response.Content {
+		b := &response.Content[i]
+		if !ChatMapsBlock(b.Type) {
+			unmapped++
+		} else if b.Citations != nil && hasProviderCitation(b.Citations.TextCitations) {
+			cited = true
 		}
 	}
-	return n
+	if unmapped == 0 && !cited {
+		return nil, 0
+	}
+	raw := gjson.Get(bytesAsString(response.rawBody), "content").Array()
+	if len(raw) != len(response.Content) {
+		return nil, 0
+	}
+	return raw, unmapped
 }
 
-// fillRawResponseBytes copies, in one walk of body, the raw bytes of each unmapped
-// content[j] into the matching provider block and of each provider citation into its
-// waiting annotation, both in content order. The typed values are never re-marshalled:
-// members core does not declare would be lost. Entries the body has no bytes for are
-// dropped rather than sent empty.
-func fillRawResponseBytes(body []byte, blocks []AnthropicContentBlock, pbs []schemas.ChatProviderBlock, anns []schemas.ChatAssistantMessageAnnotation) ([]schemas.ChatProviderBlock, []schemas.ChatAssistantMessageAnnotation) {
-	j, k, a := 0, 0, 0
-	gjson.Get(bytesAsString(body), "content").ForEach(func(_, v gjson.Result) bool {
-		if j >= len(blocks) {
-			return false
+// appendRawProviderCitations appends a provider_citation annotation for each provider
+// citation of one text block, with the citation object copied from the block's raw bytes.
+func appendRawProviderCitations(out []schemas.ChatAssistantMessageAnnotation, cs []AnthropicTextCitation, raw gjson.Result, start, end int) []schemas.ChatAssistantMessageAnnotation {
+	if !hasProviderCitation(cs) {
+		return out
+	}
+	span := &[2]int{start, end}
+	m := 0
+	raw.Get("citations").ForEach(func(_, c gjson.Result) bool {
+		if m < len(cs) && isProviderCitation(cs[m]) && c.IsObject() {
+			out = append(out, providerCitationAnnotation(span, json.RawMessage(c.Raw)))
 		}
-		b := &blocks[j]
-		j++
-		if !ChatMapsBlock(b.Type) {
-			if k < len(pbs) && v.IsObject() {
-				pbs[k].Block = json.RawMessage(v.Raw)
-				k++
-			}
-			return true
-		}
-		if b.Type != AnthropicContentBlockTypeText || b.Text == nil || b.Citations == nil || !hasProviderCitation(b.Citations.TextCitations) {
-			return true
-		}
-		m := 0
-		v.Get("citations").ForEach(func(_, c gjson.Result) bool {
-			if m < len(b.Citations.TextCitations) && isProviderCitation(b.Citations.TextCitations[m]) && c.IsObject() {
-				for a < len(anns) && (anns[a].Type != schemas.ChatAnnotationTypeProviderCitation || anns[a].Citation != nil) {
-					a++
-				}
-				if a < len(anns) {
-					anns[a].Citation = json.RawMessage(c.Raw)
-				}
-			}
-			m++
-			return true
-		})
+		m++
 		return true
 	})
-	kept := anns[:0]
-	for _, ann := range anns {
-		if ann.Type != schemas.ChatAnnotationTypeProviderCitation || ann.Citation != nil {
-			kept = append(kept, ann)
-		}
-	}
-	return pbs[:k], kept
+	return out
 }
 
 // isProviderCitation reports whether a citation has no url_citation mapping and reaches
@@ -92,71 +77,54 @@ func hasProviderCitation(cs []AnthropicTextCitation) bool {
 	return false
 }
 
-// appendProviderCitationAnnotations appends one provider_citation annotation per provider
-// citation of a text block spanning [start, end): from typed citations (unary, Citation
-// filled later from the raw body) or from raw ones (stream). Unlike url_citation, each
-// upstream citation is its own annotation; nothing is de-duplicated.
-func appendProviderCitationAnnotations(out []schemas.ChatAssistantMessageAnnotation, typed []AnthropicTextCitation, raw []json.RawMessage, start, end int) ([]schemas.ChatAssistantMessageAnnotation, bool) {
-	n := len(raw)
-	for i := range typed {
-		if isProviderCitation(typed[i]) {
-			n++
-		}
+// providerCitationAnnotation is one provider citation spanning a text block. A block's
+// annotations share one span; unlike url_citation, nothing is de-duplicated.
+func providerCitationAnnotation(span *[2]int, citation json.RawMessage) schemas.ChatAssistantMessageAnnotation {
+	return schemas.ChatAssistantMessageAnnotation{
+		Type:       schemas.ChatAnnotationTypeProviderCitation,
+		Provider:   schemas.ProviderBlockAnthropic,
+		StartIndex: &span[0],
+		EndIndex:   &span[1],
+		Citation:   citation,
 	}
-	if n == 0 {
-		return out, false
-	}
-	// One span pair per block, shared by its annotations.
-	span := [2]int{start, end}
-	add := func(citation json.RawMessage) {
-		out = append(out, schemas.ChatAssistantMessageAnnotation{
-			Type:       schemas.ChatAnnotationTypeProviderCitation,
-			Provider:   schemas.ProviderBlockAnthropic,
-			StartIndex: &span[0],
-			EndIndex:   &span[1],
-			Citation:   citation,
-		})
-	}
-	for i := range typed {
-		if isProviderCitation(typed[i]) {
-			add(nil)
-		}
-	}
-	for _, c := range raw {
-		add(c)
-	}
-	return out, true
 }
 
 // keepProviderCitations buffers the raw objects of a text block's provider citations from
-// the current event's citation array at path.
-func (state *AnthropicStreamState) keepProviderCitations(blockIndex int, cs []AnthropicTextCitation, path string) {
+// the content_block_start event's citation array.
+func (state *AnthropicStreamState) keepProviderCitations(blockIndex int, cs []AnthropicTextCitation) {
 	if !hasProviderCitation(cs) {
 		return
 	}
+	data := state.eventData
+	bs, be := jsonMember(data, 0, len(data), "content_block")
+	as, ae := jsonMember(data, bs, be, "citations")
 	m := 0
-	gjson.Get(bytesAsString(state.eventData), path).ForEach(func(_, c gjson.Result) bool {
+	jsonEachElem(data, as, ae, func(s, e int) {
 		if m < len(cs) && isProviderCitation(cs[m]) {
-			state.keepRawCitation(blockIndex, c)
+			state.keepRawCitation(blockIndex, s, e)
 		}
 		m++
-		return true
 	})
 }
 
-// keepProviderCitation buffers the raw object of one provider citation at path.
-func (state *AnthropicStreamState) keepProviderCitation(blockIndex int, path string) {
-	state.keepRawCitation(blockIndex, gjson.Get(bytesAsString(state.eventData), path))
+// keepDeltaProviderCitation buffers the raw object of a citations_delta's citation.
+func (state *AnthropicStreamState) keepDeltaProviderCitation(blockIndex int) {
+	data := state.eventData
+	ds, de := jsonMember(data, 0, len(data), "delta")
+	s, e := jsonMember(data, ds, de, "citation")
+	state.keepRawCitation(blockIndex, s, e)
 }
 
-func (state *AnthropicStreamState) keepRawCitation(blockIndex int, c gjson.Result) {
-	if !c.IsObject() {
+// keepRawCitation copies the citation object at eventData[s:e].
+func (state *AnthropicStreamState) keepRawCitation(blockIndex, s, e int) {
+	if !isJSONObjectAt(state.eventData, s, e) {
 		return
 	}
 	if state.pendingCitationRaw == nil {
 		state.pendingCitationRaw = make(map[int][]json.RawMessage)
 	}
-	state.pendingCitationRaw[blockIndex] = append(state.pendingCitationRaw[blockIndex], json.RawMessage(c.Raw))
+	raw := append(json.RawMessage(nil), state.eventData[s:e]...)
+	state.pendingCitationRaw[blockIndex] = append(state.pendingCitationRaw[blockIndex], raw)
 }
 
 // Stream folding: an unmapped block is buffered from its content_block_start and emitted
@@ -169,6 +137,10 @@ const (
 	providerBlockFoldContent // compaction_delta: escaped string fragments of "content"
 )
 
+// providerBlockScratch sits behind a pointer so growing it is not a store into the stream
+// state itself, which escape analysis would read as the state's maps escaping.
+type providerBlockScratch struct{ b []byte }
+
 type openProviderBlock struct {
 	index, shared int
 	kind          uint8
@@ -178,78 +150,91 @@ type openProviderBlock struct {
 // startProviderBlock opens an unmapped block from the event's raw content_block. Without
 // the event bytes there is nothing verbatim to copy, so the block is not tracked at all.
 func (state *AnthropicStreamState) startProviderBlock(blockIndex int) {
-	raw := gjson.Get(bytesAsString(state.eventData), "content_block")
-	if !raw.IsObject() {
+	data := state.eventData
+	s, e := jsonMember(data, 0, len(data), "content_block")
+	if !isJSONObjectAt(data, s, e) {
 		return
 	}
-	state.openBlock = openProviderBlock{index: blockIndex, shared: state.nextReasoningDetailIdx, kind: providerBlockOpen, objLen: len(raw.Raw)}
+	state.openBlock = openProviderBlock{index: blockIndex, shared: state.nextReasoningDetailIdx, kind: providerBlockOpen, objLen: e - s}
 	state.nextReasoningDetailIdx++
-	state.scratch = append(state.scratch[:0], raw.Raw...)
+	if state.scratch == nil {
+		state.scratch = &providerBlockScratch{}
+	}
+	state.scratch.b = append(state.scratch.b[:0], data[s:e]...)
 }
 
 // foldProviderBlockDelta appends one delta of the open block to the scratch. A delta it
 // cannot fold, or one that would fold into a second member, is dropped and counted.
 func (state *AnthropicStreamState) foldProviderBlockDelta(delta *AnthropicStreamDelta) {
 	var kind uint8
-	var part string
 	switch delta.Type {
 	case AnthropicStreamDeltaTypeInputJSON:
 		if delta.PartialJSON != nil {
-			kind, part = providerBlockFoldInput, *delta.PartialJSON
+			kind = providerBlockFoldInput
 		}
 	case AnthropicStreamDeltaTypeCompaction:
-		// The escaped bytes are kept as sent, so the fragments concatenate into one JSON string.
-		if v := gjson.Get(bytesAsString(state.eventData), "delta.content"); v.Type == gjson.String {
-			kind, part = providerBlockFoldContent, v.Raw[1:len(v.Raw)-1]
-		}
+		kind = providerBlockFoldContent
+	}
+	// The compaction fragment is kept escaped as sent, so the fragments concatenate
+	// into one JSON string.
+	data := state.eventData
+	ds, de := jsonMember(data, 0, len(data), "delta")
+	cs, ce := jsonMember(data, ds, de, "content")
+	if kind == providerBlockFoldContent && (cs < 0 || data[cs] != '"') {
+		kind = providerBlockClosed
 	}
 	if kind == providerBlockClosed || (state.openBlock.kind != providerBlockOpen && state.openBlock.kind != kind) {
 		state.providerBlockDrops.UnknownDelta++
 		return
 	}
+	if kind == providerBlockFoldContent && state.openBlock.kind == providerBlockOpen {
+		state.scratch.b = append(state.scratch.b, '"')
+	}
 	state.openBlock.kind = kind
-	state.scratch = append(state.scratch, part...)
+	if kind == providerBlockFoldInput {
+		state.scratch.b = append(state.scratch.b, *delta.PartialJSON...)
+	} else {
+		state.scratch.b = append(state.scratch.b, data[cs+1:ce-1]...)
+	}
+}
+
+// providerBlockFoldMember names the member a fold kind accumulates.
+func providerBlockFoldMember(kind uint8) string {
+	switch kind {
+	case providerBlockFoldInput:
+		return "input"
+	case providerBlockFoldContent:
+		return "content"
+	}
+	return ""
 }
 
 // closeProviderBlock assembles the open block and returns its one chunk: the start object
-// with the folded member replaced by the accumulated value, in a single allocation.
+// with the folded member set to the accumulated value. The splice is by hand, into one
+// sized allocation, because sjson's path handling costs two more allocations per block.
 func (state *AnthropicStreamState) closeProviderBlock() *schemas.BifrostChatResponse {
 	open := state.openBlock
 	state.openBlock = openProviderBlock{}
-	obj, acc := state.scratch[:open.objLen], state.scratch[open.objLen:]
-
-	var member, quote string
-	switch open.kind {
-	case providerBlockFoldInput:
-		member = "input"
-	case providerBlockFoldContent:
-		member, quote = "content", `"`
+	obj, acc := state.scratch.b[:open.objLen], state.scratch.b[open.objLen:]
+	member := providerBlockFoldMember(open.kind)
+	if open.kind == providerBlockFoldContent {
+		acc = append(acc, '"')
 	}
+
 	var block []byte
 	if member == "" || len(acc) == 0 {
 		block = bytes.Clone(obj)
-	} else if v := gjson.Get(bytesAsString(obj), member); v.Exists() && v.Index > 0 {
-		block = make([]byte, 0, len(obj)-len(v.Raw)+len(acc)+2*len(quote))
-		block = append(block, obj[:v.Index]...)
-		block = append(block, quote...)
-		block = append(block, acc...)
-		block = append(block, quote...)
-		block = append(block, obj[v.Index+len(v.Raw):]...)
+	} else if vs, ve := jsonMember(obj, 0, len(obj), member); vs > 0 {
+		block = make([]byte, 0, len(obj)-(ve-vs)+len(acc))
+		block = append(append(append(block, obj[:vs]...), acc...), obj[ve:]...)
 	} else {
 		end := bytes.LastIndexByte(obj, '}')
-		sep := ","
-		if len(bytes.TrimSpace(obj[1:end])) == 0 {
-			sep = ""
-		}
-		block = make([]byte, 0, len(obj)+len(sep)+len(member)+3+len(acc)+2*len(quote))
+		block = make([]byte, 0, len(obj)+len(member)+4+len(acc))
 		block = append(block, obj[:end]...)
-		block = append(block, sep...)
-		block = append(block, '"')
-		block = append(block, member...)
-		block = append(block, `":`...)
-		block = append(block, quote...)
-		block = append(block, acc...)
-		block = append(block, quote...)
+		if len(bytes.TrimSpace(obj[1:end])) > 0 {
+			block = append(block, ',')
+		}
+		block = append(append(append(append(block, '"'), member...), `":`...), acc...)
 		block = append(block, obj[end:]...)
 	}
 
@@ -351,7 +336,7 @@ func hasRawContentBlock(blocks []AnthropicContentBlock) bool {
 }
 
 // marshalContentBlocksWithRaw writes typed blocks as MarshalSorted does and replayed blocks
-// verbatim, appending the typed cache_control as a replayed block's last member.
+// verbatim, with the typed cache_control as a replayed block's last member.
 func marshalContentBlocksWithRaw(blocks []AnthropicContentBlock) ([]byte, error) {
 	buf := []byte{'['}
 	for i := range blocks {
@@ -375,14 +360,142 @@ func marshalContentBlocksWithRaw(blocks []AnthropicContentBlock) ([]byte, error)
 		if err != nil {
 			return nil, err
 		}
-		end := bytes.LastIndexByte(b.Raw, '}')
-		buf = append(buf, b.Raw[:end]...)
-		if len(bytes.TrimSpace(b.Raw[1:end])) > 0 {
-			buf = append(buf, ',')
+		// Raw never holds cache_control, so sjson appends it as the last member.
+		data, err := providerUtils.SetRawJSONField(b.Raw, "cache_control", cc)
+		if err != nil {
+			return nil, err
 		}
-		buf = append(buf, `"cache_control":`...)
-		buf = append(buf, cc...)
-		buf = append(buf, '}')
+		buf = append(buf, data...)
 	}
 	return append(buf, ']'), nil
+}
+
+// A minimal JSON span scanner for the stream converter's provider-block and
+// provider-citation paths. It returns byte offsets, never slices or strings, so
+// escape analysis sees no flow from its input: the stream state hands it the event
+// bytes, and a scanner that returned views into them (gjson does) would move the
+// whole state, its maps included, to the heap on every stream. It assumes JSON the
+// upstream produced and only finds value boundaries; it does not validate.
+
+// jsonSkipWS returns the offset of the first non-whitespace byte at or after i.
+func jsonSkipWS(b []byte, i int) int {
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+		i++
+	}
+	return i
+}
+
+// jsonValueEnd returns the offset just past the value starting at i, or -1.
+func jsonValueEnd(b []byte, i int) int {
+	if i >= len(b) {
+		return -1
+	}
+	switch b[i] {
+	case '"':
+		for j := i + 1; j < len(b); j++ {
+			switch b[j] {
+			case '\\':
+				j++
+			case '"':
+				return j + 1
+			}
+		}
+		return -1
+	case '{', '[':
+		depth := 0
+		for j := i; j < len(b); j++ {
+			switch b[j] {
+			case '"':
+				end := jsonValueEnd(b, j)
+				if end < 0 {
+					return -1
+				}
+				j = end - 1
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					return j + 1
+				}
+			}
+		}
+		return -1
+	}
+	j := i
+	for j < len(b) && b[j] != ',' && b[j] != '}' && b[j] != ']' && b[j] != ' ' && b[j] != '\t' && b[j] != '\n' && b[j] != '\r' {
+		j++
+	}
+	if j == i {
+		return -1
+	}
+	return j
+}
+
+// jsonMember returns the span of the value of key in the object b[start:end], or
+// (-1, -1). Keys are compared as written, which is exact for the unescaped keys
+// Anthropic uses.
+func jsonMember(b []byte, start, end int, key string) (int, int) {
+	if start < 0 || end > len(b) {
+		return -1, -1
+	}
+	b = b[:end]
+	i := jsonSkipWS(b, start)
+	if i >= len(b) || b[i] != '{' {
+		return -1, -1
+	}
+	i = jsonSkipWS(b, i+1)
+	for i < len(b) && b[i] == '"' {
+		kEnd := jsonValueEnd(b, i)
+		if kEnd < 0 {
+			return -1, -1
+		}
+		match := string(b[i+1:kEnd-1]) == key
+		i = jsonSkipWS(b, kEnd)
+		if i >= len(b) || b[i] != ':' {
+			return -1, -1
+		}
+		vStart := jsonSkipWS(b, i+1)
+		vEnd := jsonValueEnd(b, vStart)
+		if vEnd < 0 {
+			return -1, -1
+		}
+		if match {
+			return vStart, vEnd
+		}
+		i = jsonSkipWS(b, vEnd)
+		if i < len(b) && b[i] == ',' {
+			i = jsonSkipWS(b, i+1)
+		}
+	}
+	return -1, -1
+}
+
+// jsonEachElem calls fn with the span of each element of the array b[start:end].
+func jsonEachElem(b []byte, start, end int, fn func(s, e int)) {
+	if start < 0 || end > len(b) {
+		return
+	}
+	b = b[:end]
+	i := jsonSkipWS(b, start)
+	if i >= len(b) || b[i] != '[' {
+		return
+	}
+	i = jsonSkipWS(b, i+1)
+	for i < len(b) && b[i] != ']' {
+		e := jsonValueEnd(b, i)
+		if e < 0 {
+			return
+		}
+		fn(i, e)
+		i = jsonSkipWS(b, e)
+		if i < len(b) && b[i] == ',' {
+			i = jsonSkipWS(b, i+1)
+		}
+	}
+}
+
+// isJSONObjectAt reports whether a value span holds an object.
+func isJSONObjectAt(b []byte, s, e int) bool {
+	return s >= 0 && e > s && b[s] == '{'
 }

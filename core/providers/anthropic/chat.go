@@ -1335,20 +1335,17 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 	var annotations []schemas.ChatAssistantMessageAnnotation
 	seenAnnotations := make(map[anthropicAnnotationKey]struct{})
 	textOffset := 0
-	// rawCitations is set once a provider citation waits for its bytes from the raw body.
-	var rawCitations bool
 	// shared indexes reasoning details and provider blocks together, in content order.
 	shared := 0
+	rawContent, unmapped := rawResponseContent(response)
 	var providerBlocks []schemas.ChatProviderBlock
-	if response.rawBody != nil {
-		if n := countUnmappedBlocks(response.Content); n > 0 {
-			providerBlocks = make([]schemas.ChatProviderBlock, 0, n)
-		}
+	if unmapped > 0 {
+		providerBlocks = make([]schemas.ChatProviderBlock, 0, unmapped)
 	}
 
 	// Process content and tool calls
 	if response.Content != nil {
-		for _, c := range response.Content {
+		for i, c := range response.Content {
 			switch c.Type {
 			case AnthropicContentBlockTypeText:
 				if c.Text != nil {
@@ -1360,10 +1357,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 					textOffset += len(*c.Text)
 					if c.Citations != nil {
 						annotations = appendAnthropicWebSearchAnnotations(annotations, c.Citations.TextCitations, start, textOffset, seenAnnotations)
-						if response.rawBody != nil {
-							var added bool
-							annotations, added = appendProviderCitationAnnotations(annotations, c.Citations.TextCitations, nil, start, textOffset)
-							rawCitations = rawCitations || added
+						if rawContent != nil {
+							annotations = appendRawProviderCitations(annotations, c.Citations.TextCitations, rawContent[i], start, textOffset)
 						}
 					}
 				}
@@ -1436,15 +1431,14 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 					shared++
 				}
 			default:
-				if providerBlocks != nil {
-					providerBlocks = append(providerBlocks, schemas.ChatProviderBlock{Index: shared, Provider: schemas.ProviderBlockAnthropic})
+				// The raw bytes, never a re-marshal of the typed block: members core does not
+				// declare would be lost.
+				if rawContent != nil && rawContent[i].IsObject() {
+					providerBlocks = append(providerBlocks, schemas.ChatProviderBlock{Index: shared, Provider: schemas.ProviderBlockAnthropic, Block: json.RawMessage(rawContent[i].Raw)})
 					shared++
 				}
 			}
 		}
-	}
-	if len(providerBlocks) > 0 || rawCitations {
-		providerBlocks, annotations = fillRawResponseBytes(response.rawBody, response.Content, providerBlocks, annotations)
 	}
 
 	// choices[].message.content is a string on the chat completions surface, so
@@ -1833,7 +1827,7 @@ type AnthropicStreamState struct {
 	openBlock openProviderBlock
 	// scratch holds the open block's start object and its folded deltas. Allocated on the
 	// stream's first unmapped block and reused for every later one.
-	scratch            []byte
+	scratch            *providerBlockScratch
 	providerBlockDrops schemas.ProviderBlockDrops
 	// eventData is the current event's undecoded data, set by the stream loop before each
 	// conversion; unmapped blocks are copied from it verbatim.
@@ -1963,7 +1957,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				state.textBlockStart[*chunk.Index] = state.contentLen
 				if chunk.ContentBlock.Citations != nil && len(chunk.ContentBlock.Citations.TextCitations) > 0 {
 					state.pendingCitations[*chunk.Index] = append(state.pendingCitations[*chunk.Index], chunk.ContentBlock.Citations.TextCitations...)
-					state.keepProviderCitations(*chunk.Index, chunk.ContentBlock.Citations.TextCitations, "content_block.citations")
+					state.keepProviderCitations(*chunk.Index, chunk.ContentBlock.Citations.TextCitations)
 				}
 				return nil, nil, false
 
@@ -2095,8 +2089,8 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 						state.textBlockStart[*chunk.Index] = state.contentLen
 					}
 					state.pendingCitations[*chunk.Index] = append(state.pendingCitations[*chunk.Index], *chunk.Delta.Citation)
-					if chunk.Delta.Citation.Type != AnthropicCitationTypeWebSearchResultLocation {
-						state.keepProviderCitation(*chunk.Index, "delta.citation")
+					if isProviderCitation(*chunk.Delta.Citation) {
+						state.keepDeltaProviderCitation(*chunk.Index)
 					}
 				}
 				return nil, nil, false
@@ -2178,7 +2172,12 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				delete(state.pendingCitations, *chunk.Index)
 				delete(state.pendingCitationRaw, *chunk.Index)
 				annotations := appendAnthropicWebSearchAnnotations(nil, citations, blockStart, state.contentLen, make(map[anthropicAnnotationKey]struct{}))
-				annotations, _ = appendProviderCitationAnnotations(annotations, nil, rawCitations, blockStart, state.contentLen)
+				if len(rawCitations) > 0 {
+					span := &[2]int{blockStart, state.contentLen}
+					for _, raw := range rawCitations {
+						annotations = append(annotations, providerCitationAnnotation(span, raw))
+					}
+				}
 				if len(annotations) == 0 {
 					return nil, nil, false
 				}
