@@ -2351,6 +2351,10 @@ func goldenCases() []goldenCase {
 		{"claude responses stream", claudePath + "claude-sonnet-4-5:streamRawPredict", func(t *testing.T, p *VertexProvider, key schemas.Key) {
 			drainGoldenStream(t)(p.ResponsesStream(goldenContext(false), goldenNoHooks, nil, key, goldenResponses(t, p, goldenClaudeResponses)))
 		}},
+		{"claude count tokens", "/v1/projects/proj-eu/locations/europe-west4/publishers/anthropic/models/count-tokens:rawPredict", func(t *testing.T, p *VertexProvider, key schemas.Key) {
+			_, err := p.CountTokens(goldenContext(false), key, goldenResponses(t, p, goldenClaudeResponses))
+			checkGolden(t, err)
+		}},
 		{"claude route messages", claudePath + "claude-sonnet-4-5:rawPredict", passthrough(false, schemas.ClaudeRouteMessages, "", goldenClaudeRouteBody)},
 		{"claude route messages stream", claudePath + "claude-sonnet-4-5:streamRawPredict", passthrough(true, schemas.ClaudeRouteMessages, "", goldenClaudeRouteBody)},
 		{"passthrough", claudePath + "claude-sonnet-4-5:rawPredict", passthrough(false, "", claudePath+"claude-sonnet-4-5:rawPredict", goldenClaudeRouteBody)},
