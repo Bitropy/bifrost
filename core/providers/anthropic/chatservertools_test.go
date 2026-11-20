@@ -571,6 +571,7 @@ func runWebSearchStream(t *testing.T, events []string) wsStreamResult {
 		if err := sonic.Unmarshal([]byte(raw), &ev); err != nil {
 			t.Fatalf("unmarshal event %d: %v", i, err)
 		}
+		state.eventData = []byte(raw)
 		resp, bErr, _ := ev.ToBifrostChatCompletionStream(nil, "", state)
 		if bErr != nil {
 			t.Fatalf("event %d: unexpected error %+v", i, bErr)
@@ -686,20 +687,26 @@ func TestWebSearchChat_Stream_RealToolUseUnaffected(t *testing.T) {
 	}
 }
 
-// Non-web citation types are ignored without error, and a text block without
-// citations emits nothing extra on stop.
-func TestWebSearchChat_Stream_OtherCitationTypesIgnored(t *testing.T) {
+// A non-web citation becomes a provider_citation annotation at the block's stop,
+// never a url_citation, and a text block without citations emits nothing extra.
+func TestWebSearchChat_Stream_OtherCitationTypesBecomeProviderCitations(t *testing.T) {
 	events := []string{
 		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
 		`{"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"char_location","cited_text":"x","document_index":0,"start_char_index":0,"end_char_index":1}}}`,
 		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"From the doc."}}`,
 		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" More."}}`,
+		`{"type":"content_block_stop","index":1}`,
 	}
 	res := runWebSearchStream(t, events)
-	if res.content != "From the doc." {
+	if res.content != "From the doc. More." {
 		t.Errorf("content = %q", res.content)
 	}
-	if len(res.annotations) != 0 || len(res.toolCalls) != 0 {
-		t.Errorf("expected no annotations or tool calls, got %+v / %+v", res.annotations, res.toolCalls)
+	if len(res.toolCalls) != 0 {
+		t.Errorf("unexpected tool calls: %+v", res.toolCalls)
+	}
+	if len(res.annotations) != 1 || res.annotations[0].Type != schemas.ChatAnnotationTypeProviderCitation || res.annotationAfterEvent[0] != 3 {
+		t.Errorf("want one provider_citation at the first block's stop, got %+v after %v", res.annotations, res.annotationAfterEvent)
 	}
 }

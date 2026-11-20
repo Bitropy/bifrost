@@ -1264,6 +1264,9 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 		return data, err
 	}
 	if mc.ContentBlocks != nil {
+		if hasRawContentBlock(mc.ContentBlocks) {
+			return marshalContentBlocksWithRaw(mc.ContentBlocks)
+		}
 		return providerUtils.MarshalSorted(mc.ContentBlocks)
 	}
 	// If both are nil, return empty array instead of null.
@@ -1343,6 +1346,59 @@ const (
 	AnthropicContentBlockTypeCodeExecutionOutput     AnthropicContentBlockType = "code_execution_output"      // legacy Python output file
 	AnthropicContentBlockTypeBashCodeExecutionOutput AnthropicContentBlockType = "bash_code_execution_output" // bash output file
 )
+
+// ContentBlockTypes lists every AnthropicContentBlockType constant; a test pins it to the
+// constant block above, so a new block type shows up wherever the list is enumerated.
+var ContentBlockTypes = []AnthropicContentBlockType{
+	AnthropicContentBlockTypeText,
+	AnthropicContentBlockTypeImage,
+	AnthropicContentBlockTypeDocument,
+	AnthropicContentBlockTypeSearchResult,
+	AnthropicContentBlockTypeToolUse,
+	AnthropicContentBlockTypeServerToolUse,
+	AnthropicContentBlockTypeToolResult,
+	AnthropicContentBlockTypeWebSearchToolResult,
+	AnthropicContentBlockTypeWebSearchToolResultError,
+	AnthropicContentBlockTypeWebSearchResult,
+	AnthropicContentBlockTypeWebFetchToolResult,
+	AnthropicContentBlockTypeCodeExecutionToolResult,
+	AnthropicContentBlockTypeBashCodeExecutionToolResult,
+	AnthropicContentBlockTypeTextEditorCodeExecutionToolResult,
+	AnthropicContentBlockTypeToolSearchToolResult,
+	AnthropicContentBlockTypeToolSearchToolSearchResult,
+	AnthropicContentBlockTypeToolReference,
+	AnthropicContentBlockTypeContainerUpload,
+	AnthropicContentBlockTypeAdvisorToolResult,
+	AnthropicContentBlockTypeMCPToolUse,
+	AnthropicContentBlockTypeMCPToolResult,
+	AnthropicContentBlockTypeThinking,
+	AnthropicContentBlockTypeRedactedThinking,
+	AnthropicContentBlockTypeCompaction,
+	AnthropicContentBlockTypeFallback,
+	AnthropicContentBlockTypeToolAddition,
+	AnthropicContentBlockTypeToolRemoval,
+	AnthropicContentBlockTypeCodeExecutionResult,
+	AnthropicContentBlockTypeEncryptedCodeExecutionResult,
+	AnthropicContentBlockTypeBashCodeExecutionResult,
+	AnthropicContentBlockTypeTextEditorCodeExecutionResult,
+	AnthropicContentBlockTypeCodeExecutionToolResultError,
+	AnthropicContentBlockTypeBashCodeExecutionToolResultError,
+	AnthropicContentBlockTypeTextEditorCodeExecutionResultError,
+	AnthropicContentBlockTypeCodeExecutionOutput,
+	AnthropicContentBlockTypeBashCodeExecutionOutput,
+}
+
+// ChatMapsBlock reports whether the chat converters map a response block of type t to a
+// chat member (content, tool_calls, reasoning_details). Every other block, a type core
+// does not know included, reaches a chat client as a provider block.
+func ChatMapsBlock(t AnthropicContentBlockType) bool {
+	switch t {
+	case AnthropicContentBlockTypeText, AnthropicContentBlockTypeToolUse,
+		AnthropicContentBlockTypeThinking, AnthropicContentBlockTypeRedactedThinking:
+		return true
+	}
+	return false
+}
 
 // AnthropicToolCallerType identifies which agentic caller produced a tool
 // invocation. Appears on tool_use, server_tool_use, and every *_tool_result
@@ -1447,6 +1503,9 @@ type AnthropicContentBlock struct {
 	Tool *AnthropicToolChangeTarget `json:"tool,omitempty"`
 	// compaction block — server-recorded tool_addition / tool_removal entries of the compacted range, replayed verbatim
 	ToolChanges []AnthropicContentBlock `json:"tool_changes,omitempty"`
+
+	// Raw is a replayed provider block, written verbatim; Type and CacheControl are lifted out of it.
+	Raw json.RawMessage `json:"-"`
 }
 
 // AnthropicToolChangeTarget is the `tool` field of a tool_addition / tool_removal block, a
@@ -2124,6 +2183,16 @@ type AnthropicMessageResponse struct {
 	// capture it stays nil and omitempty keeps the response byte-identical to the
 	// documented Anthropic shape, so ordinary clients never see a non-conformant field.
 	ExtraFields *schemas.BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+
+	// rawBody is the undecoded response body, read only to copy unmapped blocks verbatim.
+	rawBody []byte
+}
+
+// SetRawBody hands the converter the body this response was decoded from, so
+// ToBifrostChatResponse can copy unmapped blocks byte for byte. b must stay valid until
+// the conversion returns; without it the converter emits no provider blocks.
+func (response *AnthropicMessageResponse) SetRawBody(b []byte) {
+	response.rawBody = b
 }
 
 // AnthropicTextResponse represents the response structure from Anthropic's text completion API
@@ -2256,9 +2325,8 @@ func addAnthropicUsageTokenFields(dst, src *AnthropicUsage) {
 		if dst.ServerToolUse == nil {
 			dst.ServerToolUse = &AnthropicServerToolUseUsage{}
 		}
-		if src.ServerToolUse.WebSearchRequests > dst.ServerToolUse.WebSearchRequests {
-			dst.ServerToolUse.WebSearchRequests = src.ServerToolUse.WebSearchRequests
-		}
+		maxServerToolCount(&dst.ServerToolUse.WebSearchRequests, src.ServerToolUse.WebSearchRequests)
+		maxServerToolCount(&dst.ServerToolUse.WebFetchRequests, src.ServerToolUse.WebFetchRequests)
 	}
 }
 
@@ -2287,9 +2355,44 @@ func (u *AnthropicUsage) ServerSideFallbackModel() *string {
 	return served
 }
 
+// maxServerToolCount keeps the larger server-tool count: each usage object reports a
+// per-request total, so counts split across events are max-merged, never summed.
+func maxServerToolCount(dst *int, n int) {
+	if n > *dst {
+		*dst = n
+	}
+}
+
+// foldServerToolUsage max-merges the server-tool counts of src into *dst, allocating
+// *dst and each per-tool count only when a count is reported.
+func foldServerToolUsage(dst **schemas.ToolUsage, src *AnthropicServerToolUseUsage) {
+	if src == nil {
+		return
+	}
+	for _, tool := range [2]struct {
+		n    int
+		slot func(*schemas.ToolUsage) **schemas.WebSearchToolUsage
+	}{
+		{src.WebSearchRequests, func(u *schemas.ToolUsage) **schemas.WebSearchToolUsage { return &u.WebSearch }},
+		{src.WebFetchRequests, func(u *schemas.ToolUsage) **schemas.WebSearchToolUsage { return &u.WebFetch }},
+	} {
+		if tool.n <= 0 {
+			continue
+		}
+		if *dst == nil {
+			*dst = &schemas.ToolUsage{}
+		}
+		if slot := tool.slot(*dst); *slot == nil || tool.n > (*slot).NumRequests {
+			*slot = &schemas.WebSearchToolUsage{NumRequests: tool.n}
+		}
+	}
+}
+
 // AnthropicServerToolUseUsage represents server tool use statistics in usage
 type AnthropicServerToolUseUsage struct {
 	WebSearchRequests int `json:"web_search_requests"` // Number of web search requests made
+	// omitempty keeps the Messages egress bytes of an answer without web fetch unchanged.
+	WebFetchRequests int `json:"web_fetch_requests,omitempty"` // Number of web fetch requests made
 }
 
 type AnthropicUsageCacheCreation struct {

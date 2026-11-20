@@ -971,6 +971,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		}
 
 		// Create final response
+		anthropicResponse.SetRawBody(responseBody)
 		response := anthropicResponse.ToBifrostChatResponse(ctx)
 
 		response.ExtraFields = schemas.BifrostResponseExtraFields{

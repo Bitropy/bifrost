@@ -2167,6 +2167,18 @@ type BifrostResponseExtraFields struct {
 	// Adaptations is the attempt's adaptation set (BifrostContextKeyAdaptations), on the unary
 	// response and on every stream chunk. Never serialized.
 	Adaptations Adaptation `json:"-"`
+	// ProviderBlockDrops counts the provider-block content a stream lost, on its final chunk.
+	// Never serialized.
+	ProviderBlockDrops ProviderBlockDrops `json:"-"`
+}
+
+// ProviderBlockDrops counts what a chat stream dropped from its provider blocks. Both stay
+// zero unless the upstream changes its stream shape.
+type ProviderBlockDrops struct {
+	// UnknownDelta counts deltas of a type the converter cannot fold into an open block.
+	UnknownDelta uint16
+	// Interleaved counts open blocks dropped because another block started before they stopped.
+	Interleaved uint16
 }
 
 type RoutingInfo struct {

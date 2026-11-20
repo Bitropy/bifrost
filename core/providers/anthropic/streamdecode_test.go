@@ -290,6 +290,7 @@ func TestHandleAnthropicChatCompletionStreaming_SameChunksAsSonicDecode(t *testi
 			if err != nil {
 				t.Fatalf("%s: sonic: %v", fx.name, err)
 			}
+			refState.eventData = payload
 			resp, bErr, last := event.ToBifrostChatCompletionStream(refCtx, "", refState)
 			if bErr != nil {
 				wantErr = bErr
