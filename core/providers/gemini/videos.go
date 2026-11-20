@@ -332,8 +332,11 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 			if numberOfVideos, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["numberOfVideos"]); ok {
 				params.NumberOfVideos = numberOfVideos
 			}
-			if storageURI, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["storageURI"]); ok {
-				params.StorageURI = storageURI
+			// storageUri is the Vertex spelling; storageURI is the older Bifrost key.
+			for _, k := range []string{"storageURI", "storageUri"} {
+				if storageURI, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams[k]); ok {
+					params.StorageURI = storageURI
+				}
 			}
 			if compressionQuality, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["compressionQuality"]); ok {
 				params.CompressionQuality = compressionQuality

@@ -3316,7 +3316,8 @@ type VideoGenerationParameters struct {
 	// Random seed for reproducibility (Veo 3, 3.1)
 	Seed *int `json:"seed,omitempty"`
 
-	StorageURI *string `json:"storageURI,omitempty"`
+	// Cloud Storage prefix the videos are written to; Vertex spells it storageUri.
+	StorageURI *string `json:"storageUri,omitempty"`
 
 	CompressionQuality *string `json:"compressionQuality,omitempty"`
 

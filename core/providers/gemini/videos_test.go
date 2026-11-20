@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
@@ -150,4 +151,24 @@ func TestGeminiVideoGenerationRequest_RoundTripsInstanceReferenceFields(t *testi
 	assert.Equal(t, &durationSeconds, got.Parameters.DurationSeconds)
 	assert.Empty(t, got.Parameters.ReferenceImages)
 	assert.Nil(t, got.Parameters.LastFrame)
+}
+
+// ExtraParams["storageURI"] reaches the Veo request as parameters.storageUri, the spelling the
+// Vertex predictLongRunning API reads; a misspelled key is ignored and the video comes back inline.
+// Both extra-param spellings are read: storageUri (Vertex's, and the image path's) and storageURI.
+func TestToGeminiVideoGenerationRequest_StorageURIOnTheWire(t *testing.T) {
+	for _, key := range []string{"storageURI", "storageUri"} {
+		t.Run(key, func(t *testing.T) {
+			got, err := gemini.ToGeminiVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+				Model:  "veo-3.1-generate-001",
+				Input:  &schemas.VideoGenerationInput{Prompt: "a wave rolling in"},
+				Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{key: "gs://bucket/jobs/video_1/"}},
+			})
+			require.NoError(t, err)
+			body, err := json.Marshal(got)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), `"storageUri":"gs://bucket/jobs/video_1/"`)
+			assert.NotContains(t, string(body), `"storageURI"`)
+		})
+	}
 }
