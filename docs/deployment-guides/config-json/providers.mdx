@@ -97,6 +97,7 @@ Per-provider `network_config` options (applies to all standard providers):
 | Field | Type | Description |
 |-------|------|-------------|
 | `default_request_timeout_in_seconds` | integer | Per-request timeout. For streaming requests it bounds the connection, request write and wait for response headers; the body is governed by `stream_idle_timeout_in_seconds` |
+| `connect_timeout_in_seconds` | integer | DNS resolution plus TCP dial budget (default: 30), never longer than `default_request_timeout_in_seconds`; an unreachable endpoint fails within it |
 | `max_retries` | integer | Retry attempts on transient errors |
 | `retry_backoff_initial` | integer | Initial backoff in milliseconds |
 | `retry_backoff_max` | integer | Maximum backoff in milliseconds |

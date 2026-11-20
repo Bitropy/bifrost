@@ -1,8 +1,11 @@
 package openai
 
 import (
+	"errors"
 	"testing"
+	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -207,5 +210,44 @@ func TestApplyStreamErrorStatus_PreservesExistingStatus(t *testing.T) {
 	applyStreamErrorStatus(bifrostErr)
 	if *bifrostErr.StatusCode != 429 {
 		t.Fatalf("StatusCode = %d, want 429 preserved", *bifrostErr.StatusCode)
+	}
+}
+
+// TestChatCompletion_UnreachableEndpointIsConnectTimeout: a request to a
+// blackholed base_url (192.0.2.1 is TEST-NET-1, never routed) fails within the
+// connect timeout, not the request timeout, and is classified as a connect
+// timeout (BIT-3061, maximhq/bifrost#5986).
+func TestChatCompletion_UnreachableEndpointIsConnectTimeout(t *testing.T) {
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        "http://192.0.2.1:81",
+			DefaultRequestTimeoutInSeconds: 60,
+			ConnectTimeoutInSeconds:        2,
+		},
+	}, nil)
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	start := time.Now()
+	_, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: *schemas.NewSecretVar("sk-test")}, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	})
+	elapsed := time.Since(start)
+
+	if bifrostErr == nil {
+		t.Fatal("expected error against blackholed base_url")
+	}
+	if elapsed > 15*time.Second {
+		t.Fatalf("took %v; connect timeout did not bound the request", elapsed)
+	}
+	if !errors.Is(bifrostErr.Error.Error, providerUtils.ErrConnectTimeout) {
+		t.Skipf("network rejected TEST-NET without timing out: %v", bifrostErr.Error.Error)
+	}
+	if bifrostErr.Error.Message != schemas.ErrProviderConnectTimedOut {
+		t.Fatalf("message = %q, want ErrProviderConnectTimedOut", bifrostErr.Error.Message)
 	}
 }

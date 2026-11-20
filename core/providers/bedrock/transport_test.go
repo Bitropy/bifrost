@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -406,6 +408,7 @@ func TestNewRequestError(t *testing.T) {
 		{"deadline", context.DeadlineExceeded, true, http.StatusGatewayTimeout, schemas.RequestTimedOut, schemas.ErrProviderRequestTimedOut},
 		{"network", &net.OpError{Op: "dial", Err: io.EOF}, false, http.StatusBadGateway, schemas.ProviderConnectionFailed, schemas.ErrProviderNetworkError},
 		{"other", io.ErrUnexpectedEOF, false, http.StatusBadGateway, schemas.ProviderConnectionFailed, schemas.ErrProviderDoRequest},
+		{"connect timeout", fmt.Errorf("%w dialing bedrock:443: %w", providerUtils.ErrConnectTimeout, context.DeadlineExceeded), true, http.StatusGatewayTimeout, schemas.RequestTimedOut, schemas.ErrProviderConnectTimedOut},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

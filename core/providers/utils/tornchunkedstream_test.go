@@ -51,7 +51,7 @@ func tornStreamResponse(t *testing.T, useTLS, torn bool) *fasthttp.Response {
 		ReadTimeout:  2 * time.Second,
 		WriteTimeout: 2 * time.Second,
 		TLSConfig:    &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // httptest's self-signed certificate
-	}, true)
+	}, schemas.NetworkConfig{AllowPrivateNetwork: true})
 	req := fasthttp.AcquireRequest()
 	t.Cleanup(func() { fasthttp.ReleaseRequest(req) })
 	resp := fasthttp.AcquireResponse()

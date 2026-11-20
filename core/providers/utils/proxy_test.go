@@ -511,7 +511,7 @@ func sendProxyMatrixRequest(t *testing.T, stack string, proxyConfig *schemas.Pro
 	case "fasthttp":
 		client := &fasthttp.Client{}
 		ConfigureProxy(client, proxyConfig, testLogger{})
-		ConfigureDialer(client, false)
+		ConfigureDialer(client, schemas.NetworkConfig{})
 		conn, err := client.Dial(hostPort)
 		if err == nil {
 			conn.Close()
@@ -636,7 +636,7 @@ func TestConfigureProxy_NoProxyDialsDirectlyThroughConfigureDialer(t *testing.T)
 		URL:     schemas.NewSecretVar("http://127.0.0.1:1"),
 		NoProxy: "127.0.0.1, .vpce.amazonaws.com",
 	}, testLogger{})
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	conn, err := client.Dial(strings.TrimPrefix(target.URL, "http://"))
 	if err != nil {
@@ -682,7 +682,7 @@ func TestConfigureProxy_EnvironmentNoProxyKeepsPrivateNetworkCheck(t *testing.T)
 
 	client := &fasthttp.Client{}
 	ConfigureProxy(client, &schemas.ProxyConfig{Type: schemas.EnvProxy}, testLogger{})
-	ConfigureDialer(client, false)
+	ConfigureDialer(client, schemas.NetworkConfig{})
 
 	_, err := client.Dial("10.0.0.5:443")
 	if err == nil || !strings.Contains(err.Error(), "connection to private IP 10.0.0.5 is not allowed") {
@@ -739,7 +739,7 @@ func TestConfigureProxy_UnresponsiveProxyDoesNotHang(t *testing.T) {
 	} {
 		client := &fasthttp.Client{}
 		ConfigureProxy(client, cfg, testLogger{})
-		ConfigureDialer(client, false)
+		ConfigureDialer(client, schemas.NetworkConfig{})
 		start := time.Now()
 		conn, err := client.Dial("api.bifrost.test:443")
 		if err == nil {
@@ -870,7 +870,7 @@ func TestInheritedSkipTLSVerify_OnlyCoversTheProxyHop(t *testing.T) {
 	} {
 		t.Run("fasthttp/"+tc.name, func(t *testing.T) {
 			client := ConfigureProxy(&fasthttp.Client{}, tc.proxy, testLogger{})
-			ConfigureDialer(client, false)
+			ConfigureDialer(client, schemas.NetworkConfig{})
 			client = ConfigureTLS(client, tc.network, testLogger{})
 			req := fasthttp.AcquireRequest()
 			resp := fasthttp.AcquireResponse()

@@ -40,7 +40,7 @@ func NewSageMakerProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 		ConnPoolStrategy:    fasthttp.FIFO,
 	}
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 
 	return &SageMakerProvider{

@@ -35,7 +35,7 @@ func TestBuildStreamingClient_KeepsHeaderTimeouts(t *testing.T) {
 		MaxConnWaitTimeout: 15 * time.Second,
 		MaxConnsPerHost:    123,
 	}
-	ConfigureDialer(base, false)
+	ConfigureDialer(base, schemas.NetworkConfig{})
 
 	stream := BuildStreamingClient(base)
 
@@ -108,7 +108,7 @@ func TestBuildStreamingClient_LongStreamSurvives(t *testing.T) {
 		ReadTimeout:  1 * time.Second, // would abort the stream without the fix
 		WriteTimeout: 1 * time.Second,
 	}
-	ConfigureDialer(base, false)
+	ConfigureDialer(base, schemas.NetworkConfig{})
 	stream := BuildStreamingClient(base)
 
 	req := fasthttp.AcquireRequest()
@@ -249,7 +249,7 @@ func TestBuildStreamingClient_PreservesMaxConnDuration(t *testing.T) {
 		WriteTimeout:    30 * time.Second,
 		MaxConnDuration: 5 * time.Minute,
 	}
-	ConfigureDialer(base, false)
+	ConfigureDialer(base, schemas.NetworkConfig{})
 
 	stream := BuildStreamingClient(base)
 
@@ -371,7 +371,7 @@ func TestDoStreamingRequest_SilentUpstreamTimesOutAtHeaderWait(t *testing.T) {
 		ReadTimeout:  300 * time.Millisecond,
 		WriteTimeout: 300 * time.Millisecond,
 	}
-	ConfigureDialer(base, true)
+	ConfigureDialer(base, schemas.NetworkConfig{AllowPrivateNetwork: true})
 	stream := BuildStreamingClient(base)
 
 	req, resp := newSilentStreamingRequest(upstream.URL())
@@ -408,7 +408,7 @@ func TestDoStreamingRequest_CtxCancelClosesSocketDuringHeaderWait(t *testing.T) 
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
-	ConfigureDialer(base, true)
+	ConfigureDialer(base, schemas.NetworkConfig{AllowPrivateNetwork: true})
 	stream := BuildStreamingClient(base)
 
 	req, resp := newSilentStreamingRequest(upstream.URL())
@@ -453,7 +453,7 @@ func TestBuildLargeResponseClient_SilentUpstreamTimesOutAtHeaderWait(t *testing.
 		ReadTimeout:  300 * time.Millisecond,
 		WriteTimeout: 300 * time.Millisecond,
 	}
-	ConfigureDialer(base, true)
+	ConfigureDialer(base, schemas.NetworkConfig{AllowPrivateNetwork: true})
 
 	req, resp := newSilentStreamingRequest(upstream.URL())
 
@@ -525,7 +525,7 @@ func TestBuildLargeResponseClient_HeaderDeadlineDoesNotCapBody(t *testing.T) {
 		ReadTimeout:  1 * time.Second,
 		WriteTimeout: 1 * time.Second,
 	}
-	ConfigureDialer(base, true)
+	ConfigureDialer(base, schemas.NetworkConfig{AllowPrivateNetwork: true})
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -593,7 +593,7 @@ func stallingLargeServer(t *testing.T, contentLength, prelude int) *httptest.Ser
 func largeResponseRequest(t *testing.T, srv *httptest.Server, idle time.Duration) (*schemas.BifrostContext, *fasthttp.Response, func()) {
 	t.Helper()
 	base := &fasthttp.Client{ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
-	ConfigureDialer(base, true)
+	ConfigureDialer(base, schemas.NetworkConfig{AllowPrivateNetwork: true})
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -802,7 +802,7 @@ func TestContextTransport_FreshDialCloseBeforeHeadersNotRetried(t *testing.T) {
 	upstream := newClosingUpstream(t)
 
 	base := &fasthttp.Client{ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second}
-	ConfigureDialer(base, true)
+	ConfigureDialer(base, schemas.NetworkConfig{AllowPrivateNetwork: true})
 	stream := BuildStreamingClient(base)
 
 	req, resp := newSilentStreamingRequest(upstream.URL())
@@ -856,7 +856,7 @@ func TestContextTransport_PooledStaleConnStillRetried(t *testing.T) {
 		}
 	}()
 
-	client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second}, true)
+	client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second}, schemas.NetworkConfig{AllowPrivateNetwork: true})
 	target := "http://" + ln.Addr().String()
 	for i := 1; i <= 2; i++ {
 		req, resp := newSilentStreamingRequest(target)
@@ -915,7 +915,7 @@ func TestContextTransport_PooledConnTruncatedBodyNotRetried(t *testing.T) {
 		}
 	}()
 
-	client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second}, true)
+	client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second}, schemas.NetworkConfig{AllowPrivateNetwork: true})
 	target := "http://" + ln.Addr().String()
 
 	req, resp := newSilentStreamingRequest(target)
@@ -948,7 +948,7 @@ func TestDoStreamingRequest_FirstTokenDeadlineClosesSocketDuringHeaderWait(t *te
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
-	ConfigureDialer(base, true)
+	ConfigureDialer(base, schemas.NetworkConfig{AllowPrivateNetwork: true})
 	stream := BuildStreamingClient(base)
 
 	req, resp := newSilentStreamingRequest(upstream.URL())

@@ -64,7 +64,7 @@ func NewGithubCopilotProvider(config *schemas.ProviderConfig, logger schemas.Log
 	// Order is load-bearing. ConfigureDialer wraps whatever Dial the proxy installed, and
 	// BuildStreamingClient clones the fully configured client, so it must come last.
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialer(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 

@@ -190,7 +190,7 @@ func TestXAIRealtimeActiveMintCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 	defer close(released)
-	client := providerUtils.ConfigureDialer(&fasthttp.Client{ReadTimeout: 3 * time.Second}, true)
+	client := providerUtils.ConfigureDialer(&fasthttp.Client{ReadTimeout: 3 * time.Second}, schemas.NetworkConfig{AllowPrivateNetwork: true})
 	provider := &XAIProvider{client: client, networkConfig: schemas.NetworkConfig{BaseURL: server.URL}}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	defer ctx.Cancel()
