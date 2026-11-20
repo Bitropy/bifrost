@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/stretchr/testify/assert"
@@ -596,11 +597,31 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 		t.Fatalf("expected custom provider key my-typesafe, got %q", provider.GetProviderKey())
 	}
 
-	_, err = bifrost.createBaseProvider("my-vertex", &schemas.ProviderConfig{
-		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex},
+	_, err = bifrost.createBaseProvider("my-mistral", &schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Mistral},
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
-		t.Fatalf("vertex is not a supported base provider, got err=%v", err)
+		t.Fatalf("mistral is not a supported base provider, got err=%v", err)
+	}
+}
+
+// TestCreateBaseProvider_CustomVertexBase pins vertex as a custom provider base: the instance is
+// a VertexProvider and answers to the custom name, so the worker queue, getProviderByKey and
+// ExtraFields.Provider follow that name.
+func TestCreateBaseProvider_CustomVertexBase(t *testing.T) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	provider, err := bifrost.createBaseProvider("vertex-eu", &schemas.ProviderConfig{
+		NetworkConfig:        schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 1},
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex},
+	})
+	if err != nil {
+		t.Fatalf("vertex must be a supported base provider: %v", err)
+	}
+	if _, ok := provider.(*vertex.VertexProvider); !ok {
+		t.Fatalf("want a *vertex.VertexProvider, got %T", provider)
+	}
+	if got := provider.GetProviderKey(); got != schemas.ModelProvider("vertex-eu") {
+		t.Fatalf("GetProviderKey() = %q, want vertex-eu", got)
 	}
 }
 

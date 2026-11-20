@@ -13,13 +13,14 @@ import (
 )
 
 // TestValidateClaudeRoute loops every provider (each standard one, and custom providers built on
-// anthropic and openai) over both entry points, every ClaudeRoute value, with and without Path, and
+// anthropic, vertex and openai) over both entry points, every ClaudeRoute value, with and without Path, and
 // checks validateClaudeRoute's answer against the BIT-2952 validation table. A rejected combination
 // is also sent through the public entry point, which must answer the same and call no upstream.
 func TestValidateClaudeRoute(t *testing.T) {
 	const (
 		customAnthropic = schemas.ModelProvider("custom-anthropic")
 		customOpenAI    = schemas.ModelProvider("custom-openai")
+		customVertex    = schemas.ModelProvider("custom-vertex")
 	)
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,13 +30,14 @@ func TestValidateClaudeRoute(t *testing.T) {
 		_, _ = io.WriteString(w, `{"type":"message","usage":{"input_tokens":1,"output_tokens":1}}`)
 	}))
 	t.Cleanup(srv.Close)
-	providers := append(slices.Clone(schemas.StandardProviders), customAnthropic, customOpenAI)
+	providers := append(slices.Clone(schemas.StandardProviders), customAnthropic, customOpenAI, customVertex)
 	account := NewMockAccount()
 	for _, provider := range providers {
 		configureUpstream(account, provider, "key-"+string(provider), srv.URL, 0)
 	}
 	account.SetCustomProviderConfig(customAnthropic, &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic})
 	account.SetCustomProviderConfig(customOpenAI, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI})
+	account.SetCustomProviderConfig(customVertex, &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex})
 	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
 	if err != nil {
 		t.Fatalf("Init: %v", err)
@@ -50,6 +52,7 @@ func TestValidateClaudeRoute(t *testing.T) {
 		schemas.Vertex:    {"", "", "", "config"},
 		schemas.Azure:     {"", "", "unsupported_operation", "config"},
 		customAnthropic:   {"", "", "", "config"},
+		customVertex:      {"", "", "", "config"},
 	}
 	want := func(provider schemas.ModelProvider, route schemas.ClaudeRoute, path string, stream bool) string {
 		if route == "" {
@@ -142,7 +145,7 @@ func TestValidateClaudeRoute(t *testing.T) {
 			req := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Model: "claude-x", Body: []byte(`{"model":"claude-x"}`), ClaudeRoute: route}
 			return testing.AllocsPerRun(100, func() { _ = client.validateClaudeRoute(provider, req, false) })
 		}
-		for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex, customAnthropic} {
+		for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex, customAnthropic, customVertex} {
 			for _, route := range []schemas.ClaudeRoute{schemas.ClaudeRouteMessages, schemas.ClaudeRouteCountTokens} {
 				if got := allocs(provider, route); got != 0 {
 					t.Fatalf("%s %s: allocs/op = %v, want 0", provider, route, got)

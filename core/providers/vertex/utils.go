@@ -362,7 +362,7 @@ func vertexKeyUsesAPIKeyOnly(key schemas.Key) bool {
 
 // buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
 // This is used for API-key-only keys, which cannot list the Model Garden catalog.
-func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
+func buildResponseFromConfig(providerKey schemas.ModelProvider, deployments schemas.KeyAliases, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
 	response := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
@@ -383,7 +383,7 @@ func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schem
 		if blacklistedModels.IsBlocked(alias) {
 			continue
 		}
-		modelID := string(schemas.Vertex) + "/" + alias
+		modelID := string(providerKey) + "/" + alias
 		if addedModelIDs[modelID] {
 			continue
 		}
@@ -407,7 +407,7 @@ func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schem
 		if schemas.IsRegexEntry(allowedModel) {
 			continue
 		}
-		modelID := string(schemas.Vertex) + "/" + allowedModel
+		modelID := string(providerKey) + "/" + allowedModel
 		if addedModelIDs[modelID] {
 			continue
 		}
