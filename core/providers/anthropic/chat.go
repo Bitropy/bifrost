@@ -1756,8 +1756,8 @@ type anthropicAnnotationKey struct {
 // the block: [start, end) are byte offsets of that block in the chat content
 // string, the same unit the Gemini provider passes through for its grounding
 // segments. Other citation types (document char/page/block locations, search
-// results) have no url_citation equivalent; appendProviderCitationAnnotations
-// carries them. Identical
+// results) have no url_citation equivalent and become provider_citation
+// annotations instead (providerCitationAnnotation). Identical
 // (url, span) pairs already in seen are dropped.
 func appendAnthropicWebSearchAnnotations(out []schemas.ChatAssistantMessageAnnotation, citations []AnthropicTextCitation, start, end int, seen map[anthropicAnnotationKey]struct{}) []schemas.ChatAssistantMessageAnnotation {
 	for _, citation := range citations {
@@ -1875,6 +1875,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 		state.pendingCitations = make(map[int][]AnthropicTextCitation)
 	}
 
+	if resp, handled := state.providerBlockEvent(chunk); handled {
+		return resp, nil, false
+	}
+
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
 		if chunk.Message != nil && chunk.Message.Role != "" {
@@ -1905,12 +1909,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 	case AnthropicStreamEventTypeContentBlockStart:
 		if chunk.Index != nil && chunk.ContentBlock != nil {
-			// The event yields one chunk and it belongs to the new block, so a block still
-			// open here, which Anthropic does not produce, is lost; it is counted.
-			if state.openBlock.kind != providerBlockClosed {
-				state.openBlock = openProviderBlock{}
-				state.providerBlockDrops.Interleaved++
-			}
 			switch chunk.ContentBlock.Type {
 			case AnthropicContentBlockTypeToolUse:
 				// Check if this is the structured output tool - if so, skip emitting tool call metadata
@@ -1990,9 +1988,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				}, nil, false
 
 			default:
-				if !ChatMapsBlock(chunk.ContentBlock.Type) {
-					state.startProviderBlock(*chunk.Index)
-				}
 				return nil, nil, false
 			}
 		}
@@ -2001,10 +1996,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 
 	case AnthropicStreamEventTypeContentBlockDelta:
 		if chunk.Index != nil && chunk.Delta != nil {
-			if state.openBlock.kind != providerBlockClosed && state.openBlock.index == *chunk.Index {
-				state.foldProviderBlockDelta(chunk.Delta)
-				return nil, nil, false
-			}
 			// Handle different delta types
 			switch chunk.Delta.Type {
 			case AnthropicStreamDeltaTypeText:
@@ -2160,9 +2151,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 		// with arguments:"" — concatenation yields "" and json.Unmarshal fails
 		// with "unexpected end of JSON input" on strict clients (genkit-go).
 		if chunk.Index != nil {
-			if state.openBlock.kind != providerBlockClosed && state.openBlock.index == *chunk.Index {
-				return state.closeProviderBlock(), nil, false
-			}
 			// A text block closes: emit its url_citation annotations, if any,
 			// spanning the block's bytes in the content string.
 			if blockStart, isTextBlock := state.textBlockStart[*chunk.Index]; isTextBlock {

@@ -940,3 +940,45 @@ func TestChatAnnotationEncode_URLCitationOnly_AllocBudget(t *testing.T) {
 		t.Fatalf("encoding allocates %v, budget %d", got, urlCitationEncodeAllocs)
 	}
 }
+
+// The span scanner only finds value boundaries; on malformed or truncated input it
+// reports nothing rather than a wrong span.
+func TestJSONSpanScanner(t *testing.T) {
+	tests := []struct {
+		name, in, key, want string
+	}{
+		{"member", `{"a":1,"b":{"c":[1,"]}"]},"d":"x"}`, "b", `{"c":[1,"]}"]}`},
+		{"escaped quote in string", `{"a":"q\"}","b":true}`, "b", `true`},
+		{"escaped quote in key", `{"a\"b":1,"b":2}`, "b", `2`},
+		{"whitespace", " { \"a\" :\n [ 1 , 2 ] } ", "a", `[ 1 , 2 ]`},
+		{"absent", `{"a":1}`, "b", ``},
+		{"truncated string", `{"a":"abc`, "a", ``},
+		{"truncated object", `{"a":{"b":1`, "a", ``},
+		{"not an object", `["a",1]`, "a", ``},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := []byte(tt.in)
+			s, e := jsonMember(b, 0, len(b), tt.key)
+			got := ""
+			if s >= 0 {
+				got = tt.in[s:e]
+			}
+			if got != tt.want {
+				t.Errorf("jsonMember(%s, %q) = %q, want %q", tt.in, tt.key, got, tt.want)
+			}
+		})
+	}
+	var elems []string
+	arr := []byte(`[ {"a":"]"}, 2 ,"x\"y", [3]]`)
+	jsonEachElem(arr, 0, len(arr), func(s, e int) { elems = append(elems, string(arr[s:e])) })
+	if strings.Join(elems, "|") != `{"a":"]"}|2|"x\"y"|[3]` {
+		t.Errorf("jsonEachElem = %q", elems)
+	}
+	elems = nil
+	trunc := []byte(`[1,"ab`)
+	jsonEachElem(trunc, 0, len(trunc), func(s, e int) { elems = append(elems, string(trunc[s:e])) })
+	if strings.Join(elems, "|") != `1` {
+		t.Errorf("jsonEachElem on truncated input = %q", elems)
+	}
+}

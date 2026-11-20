@@ -147,6 +147,42 @@ type openProviderBlock struct {
 	objLen        int
 }
 
+// providerBlockEvent handles every event of an unmapped block, ahead of the typed
+// conversion, and reports whether it did.
+func (state *AnthropicStreamState) providerBlockEvent(chunk *AnthropicStreamEvent) (*schemas.BifrostChatResponse, bool) {
+	if chunk.Index == nil {
+		return nil, false
+	}
+	open := state.openBlock.kind != providerBlockClosed && state.openBlock.index == *chunk.Index
+	switch chunk.Type {
+	case AnthropicStreamEventTypeContentBlockStart:
+		if chunk.ContentBlock == nil {
+			return nil, false
+		}
+		// The event yields one chunk and it belongs to the new block, so a block still
+		// open here, which Anthropic does not produce, is lost; it is counted.
+		if state.openBlock.kind != providerBlockClosed {
+			state.openBlock = openProviderBlock{}
+			state.providerBlockDrops.Interleaved++
+		}
+		if ChatMapsBlock(chunk.ContentBlock.Type) {
+			return nil, false
+		}
+		state.startProviderBlock(*chunk.Index)
+		return nil, true
+	case AnthropicStreamEventTypeContentBlockDelta:
+		if open && chunk.Delta != nil {
+			state.foldProviderBlockDelta(chunk.Delta)
+			return nil, true
+		}
+	case AnthropicStreamEventTypeContentBlockStop:
+		if open {
+			return state.closeProviderBlock(), true
+		}
+	}
+	return nil, false
+}
+
 // startProviderBlock opens an unmapped block from the event's raw content_block. Without
 // the event bytes there is nothing verbatim to copy, so the block is not tracked at all.
 func (state *AnthropicStreamState) startProviderBlock(blockIndex int) {

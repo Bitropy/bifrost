@@ -1504,9 +1504,7 @@ type AnthropicContentBlock struct {
 	// compaction block — server-recorded tool_addition / tool_removal entries of the compacted range, replayed verbatim
 	ToolChanges []AnthropicContentBlock `json:"tool_changes,omitempty"`
 
-	// Raw is a block a chat client replayed from provider_blocks, written verbatim in place of
-	// the typed fields. Type and CacheControl are lifted out of it so the typed strips and
-	// provider gates see the block; Raw itself never holds cache_control.
+	// Raw is a replayed provider block, written verbatim; Type and CacheControl are lifted out of it.
 	Raw json.RawMessage `json:"-"`
 }
 
