@@ -1167,3 +1167,34 @@ func BenchmarkKeyAliasesResolveConfig(b *testing.B) {
 		})
 	}
 }
+
+// TestResolveVertexFamily: only a custom provider whose attempt runs on the vertex base answers
+// Vertex; every other provider, custom bases included, keeps its own key.
+func TestResolveVertexFamily(t *testing.T) {
+	onBase := func(base ModelProvider) *BifrostContext {
+		ctx := NewBifrostContext(context.Background(), NoDeadline)
+		if base != "" {
+			ctx.SetValue(BifrostContextKeyBaseProviderType, base)
+		}
+		return ctx
+	}
+	for _, tt := range []struct {
+		name     string
+		ctx      *BifrostContext
+		provider ModelProvider
+		want     ModelProvider
+	}{
+		{"custom on vertex", onBase(Vertex), "vertex-eu", Vertex},
+		{"native vertex", onBase(Vertex), Vertex, Vertex},
+		{"custom on anthropic keeps its key", onBase(Anthropic), "anthropic-eu", "anthropic-eu"},
+		{"custom on openai keeps its key", onBase(OpenAI), "openai-eu", "openai-eu"},
+		{"no base on the context", onBase(""), "vertex-eu", "vertex-eu"},
+		{"nil context", nil, "vertex-eu", "vertex-eu"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveVertexFamily(tt.ctx, tt.provider); got != tt.want {
+				t.Fatalf("ResolveVertexFamily = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

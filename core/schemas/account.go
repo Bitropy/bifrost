@@ -645,6 +645,18 @@ func ResolveBaseProvider(ctx *BifrostContext, provider ModelProvider) ModelProvi
 	return provider
 }
 
+// ResolveVertexFamily returns Vertex for an attempt on a custom provider built on vertex, and
+// provider otherwise. The shared converters key Vertex family decisions (feature tables, beta
+// filters, capability rows, Vertex-only rewrites) on the request's provider. A vertex-based custom
+// provider must get Vertex's answer there. Every other custom base keeps reading its own key, so
+// this changes nothing for them, where ResolveBaseProvider would.
+func ResolveVertexFamily(ctx *BifrostContext, provider ModelProvider) ModelProvider {
+	if provider != Vertex && ResolveBaseProvider(ctx, provider) == Vertex {
+		return Vertex
+	}
+	return provider
+}
+
 // ChatReasoningModeRequiresResponses reports whether a chat request that sets
 // reasoning.mode is served on base by converting it to the Responses API. OpenAI
 // documents mode as Responses-only (developers.openai.com/api/docs/guides/reasoning#reasoning-mode),

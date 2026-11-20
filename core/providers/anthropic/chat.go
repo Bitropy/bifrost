@@ -381,9 +381,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		messages = messages[:trimmed]
 	}
 
+	familyProvider := schemas.ResolveVertexFamily(ctx, bifrostReq.Provider)
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
-		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, AnthropicDefaultMaxTokens),
+		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(familyProvider, bifrostReq.Model, AnthropicDefaultMaxTokens),
 	}
 
 	// capModel is the canonical model string used only for capability/version
@@ -674,7 +675,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		if bifrostReq.Params.ResponseFormat != nil {
 			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
 			// (output_config.format), so convert to a tool instead.
-			if ProviderRequiresSyntheticStructuredOutput(bifrostReq.Provider) {
+			if ProviderRequiresSyntheticStructuredOutput(familyProvider) {
 				responseFormatTool := convertChatResponseFormatToTool(ctx, bifrostReq.Params)
 				if responseFormatTool != nil {
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
@@ -749,7 +750,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					continue
 				}
 				// Non-function tool: attempt server-tool reconstruction.
-				if converted, ok := convertServerToolToAnthropic(tool, caps, bifrostReq.Provider); ok {
+				if converted, ok := convertServerToolToAnthropic(tool, caps, familyProvider); ok {
 					converted.AllowedCallers = anthropicAllowedCallers(converted.AllowedCallers, programmaticCaller)
 					tools = append(tools, converted)
 				}
@@ -1299,7 +1300,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// Strip request- and tool-level fields the target Anthropic-family
 	// provider does not support. Fail-closed tool validation stays in
 	// ValidateToolsForProvider; this is strip-silently for additive fields.
-	stripUnsupportedAnthropicFields(ctx, anthropicReq, bifrostReq.Provider, capModel)
+	stripUnsupportedAnthropicFields(ctx, anthropicReq, familyProvider, capModel)
 
 	// Exceeding the provider's cache-checkpoint cap is a hard rejection, not a degradation, so
 	// trim the earliest markers rather than let the whole request fail. Runs last, after every
