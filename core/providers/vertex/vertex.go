@@ -3008,8 +3008,12 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 
 // setVideoDownloadAuth points a GET at rawURL with the key's credential for a video artifact
 // download: the API key in the query string when one is set, else an OAuth bearer token from
-// the key's token source.
+// the key's token source. A gs:// artifact (a job submitted with a storageUri) is read through
+// the Cloud Storage JSON API, which takes only an OAuth token.
 func (provider *VertexProvider) setVideoDownloadAuth(key schemas.Key, req *fasthttp.Request, rawURL string) *schemas.BifrostError {
+	if strings.HasPrefix(rawURL, "gs://") {
+		return provider.setGCSVideoDownload(key, req, rawURL)
+	}
 	if keyValue := key.Value.GetValue(); keyValue != "" {
 		authQuery := fmt.Sprintf("key=%s", url.QueryEscape(keyValue))
 		if strings.Contains(rawURL, "?") {
@@ -3030,6 +3034,26 @@ func (provider *VertexProvider) setVideoDownloadAuth(key schemas.Key, req *fasth
 	}
 	req.SetRequestURI(rawURL)
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	return nil
+}
+
+// setGCSVideoDownload points a GET at the media of the gs://bucket/object artifact. The URI
+// never enters an error message: it names the customer's bucket.
+func (provider *VertexProvider) setGCSVideoDownload(key schemas.Key, req *fasthttp.Request, gcsURI string) *schemas.BifrostError {
+	if key.Value.GetValue() != "" {
+		return providerUtils.NewBifrostOperationError(
+			"the video artifact is in Cloud Storage, which an API-key Vertex key cannot read; use a service-account or ADC key", nil)
+	}
+	bucket, objectKey, err := parseGCSURI(gcsURI)
+	if err != nil || bucket == "" || objectKey == "" {
+		return providerUtils.NewBifrostOperationError("video artifact URI is not gs://bucket/object", nil)
+	}
+	authHeader, err := provider.gcsGetAuthHeader(key)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("error getting token", err)
+	}
+	req.SetRequestURI(fmt.Sprintf("%s/b/%s/o/%s?alt=media", gcsStorageBase, url.PathEscape(bucket), gcsEncodeObjectName(objectKey)))
+	req.Header.Set("Authorization", authHeader)
 	return nil
 }
 

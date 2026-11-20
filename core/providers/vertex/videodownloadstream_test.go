@@ -2,9 +2,11 @@ package vertex
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -14,6 +16,8 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+	"golang.org/x/oauth2"
 )
 
 const streamTestOperation = "projects/proj/locations/us-central1/publishers/google/models/veo-3.0-generate-001/operations/op-1"
@@ -358,5 +362,118 @@ func TestVertexVideoDownloadStreamNon200DrainIsCapped(t *testing.T) {
 		}
 	case <-time.After(2 * time.Minute):
 		t.Fatal("non-200 download did not return within 2m; the release drain is unbounded")
+	}
+}
+
+const gcsArtifactURI = "gs://veo-bucket/jobs/video_1/sample_0.mp4"
+
+// gcsVideoCall is the artifact GET as the fake Cloud Storage saw it.
+type gcsVideoCall struct{ host, uri, auth string }
+
+// newGCSVideoProvider serves the retrieve operation (artifact at gcsArtifactURI) from an HTTP fake
+// at the base URL, and sends every dial to storage.googleapis.com:443 to a TLS fake standing in
+// for the Cloud Storage JSON API, so the test sees the request the provider builds for the real
+// host. The key authenticates with an OAuth token, the only credential Cloud Storage accepts.
+func newGCSVideoProvider(t *testing.T, body string) (*VertexProvider, schemas.Key, <-chan gcsVideoCall) {
+	t.Helper()
+	retrieve := completedOperationJSON(streamTestOperation, gcsArtifactURI)
+	api := startVideoStreamServer(t, &retrieve, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("artifact requested from the Vertex base: %s", r.URL)
+	})
+	calls := make(chan gcsVideoCall, 1)
+	gcs := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls <- gcsVideoCall{r.Host, r.RequestURI, r.Header.Get("Authorization")}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(gcs.Close)
+
+	provider := newVideoStreamProvider(t, api.URL)
+	gcsAddr := gcs.Listener.Addr().String()
+	for _, client := range []*fasthttp.Client{provider.client, provider.videoDownloadClient} {
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test fake's self-signed cert
+		client.Dial = func(addr string) (net.Conn, error) {
+			if addr == "storage.googleapis.com:443" {
+				addr = gcsAddr
+			}
+			return fasthttp.Dial(addr)
+		}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID: *schemas.NewSecretVar("proj"), Region: *schemas.NewSecretVar("us-central1"), AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "gcs-token"}))
+	return provider, key, calls
+}
+
+const wantGCSMediaURI = "/storage/v1/b/veo-bucket/o/jobs%2Fvideo_1%2Fsample_0.mp4?alt=media"
+
+func assertGCSVideoCall(t *testing.T, calls <-chan gcsVideoCall) {
+	t.Helper()
+	select {
+	case got := <-calls:
+		if got.host != "storage.googleapis.com" || got.uri != wantGCSMediaURI || got.auth != "Bearer gcs-token" {
+			t.Fatalf("GCS request = %+v, want host storage.googleapis.com, uri %s, the key's bearer token", got, wantGCSMediaURI)
+		}
+	default:
+		t.Fatal("Cloud Storage was never asked for the artifact")
+	}
+}
+
+// A job submitted with a storageUri reports a gs:// artifact; the streamed download reads its
+// media through the Cloud Storage JSON API with the key's OAuth token.
+func TestVertexVideoDownloadStreamGCSArtifact(t *testing.T) {
+	const artifact = "gcs-video-bytes"
+	provider, key, calls := newGCSVideoProvider(t, artifact)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	resp, bifrostErr := provider.VideoDownloadStream(ctx, key, streamRequest(streamTestOperation))
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownloadStream: %v", bifrostErr.GetErrorString())
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != artifact || resp.ContentType != "video/mp4" {
+		t.Fatalf("body = %q (%s), want %q (video/mp4)", body, resp.ContentType, artifact)
+	}
+	assertGCSVideoCall(t, calls)
+}
+
+// The buffered download reads a gs:// artifact the same way.
+func TestVertexVideoDownloadGCSArtifact(t *testing.T) {
+	const artifact = "gcs-video-bytes"
+	provider, key, calls := newGCSVideoProvider(t, artifact)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	resp, bifrostErr := provider.VideoDownload(ctx, key, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Vertex, ID: streamTestOperation})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownload: %v", bifrostErr.GetErrorString())
+	}
+	if string(resp.Content) != artifact {
+		t.Fatalf("content = %q, want %q", resp.Content, artifact)
+	}
+	assertGCSVideoCall(t, calls)
+}
+
+// Cloud Storage takes no API key, so an API-key key is refused with a clear error before any
+// artifact request, and the error never names the bucket.
+func TestVertexVideoDownloadStreamGCSArtifactAPIKeyRefused(t *testing.T) {
+	provider, _, calls := newGCSVideoProvider(t, "unused")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	_, bifrostErr := provider.VideoDownloadStream(ctx, newVideoStreamKey(), streamRequest(streamTestOperation))
+	if bifrostErr == nil {
+		t.Fatal("an API-key key downloaded a Cloud Storage artifact")
+	}
+	if msg := bifrostErr.GetErrorString(); !strings.Contains(msg, "API-key") || strings.Contains(msg, "veo-bucket") {
+		t.Fatalf("error = %q, want the API-key refusal without the bucket", msg)
+	}
+	select {
+	case got := <-calls:
+		t.Fatalf("Cloud Storage reached with an API-key key: %+v", got)
+	default:
 	}
 }
