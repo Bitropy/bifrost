@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 // ChatParameters' reasoning union accepts clients that mirror the same
@@ -576,5 +577,14 @@ func TestDeepCopyChatMessage_ProviderCitationShareNothing(t *testing.T) {
 	cp.Citation[1] = 'X'
 	if start != 1 || string(orig.ChatAssistantMessage.Annotations[0].Citation) != `{"a":1}` {
 		t.Error("copy shares memory with the original")
+	}
+}
+
+// Every stream converter allocates one delta per event and MarshalJSON boxes it once more,
+// so a field that pushes the struct past the 192-byte size class costs bytes on every
+// event of every stream. Rarely set members go behind a pointer (ProviderBlocks).
+func TestChatStreamResponseChoiceDelta_StaysIn192ByteSizeClass(t *testing.T) {
+	if got := unsafe.Sizeof(ChatStreamResponseChoiceDelta{}); got > 192 {
+		t.Fatalf("ChatStreamResponseChoiceDelta is %d bytes, want <= 192", got)
 	}
 }
