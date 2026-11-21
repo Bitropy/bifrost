@@ -2107,7 +2107,7 @@ type ChatStreamResponseChoiceDelta struct {
 	Images           []ChatAssistantMessageImage      `json:"images,omitempty"`    // Generated images, whole per chunk
 	Reasoning        *string                          `json:"reasoning,omitempty"` // May be empty string or null
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
-	ProviderBlocks   []ChatProviderBlock              `json:"provider_blocks,omitempty"` // at most one entry, on the block's last event
+	ProviderBlocks   *[]ChatProviderBlock             `json:"provider_blocks,omitempty"` // at most one entry, on the block's last event
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`     // URL citations from web search
 	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`      // If tool calls used (supports incremental updates)
 	ExtraContent     json.RawMessage                  `json:"extra_content,omitempty"`   // Provider-specific metadata (e.g. Gemini thought markers, thought_signature)

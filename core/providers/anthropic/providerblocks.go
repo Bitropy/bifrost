@@ -274,14 +274,13 @@ func (state *AnthropicStreamState) closeProviderBlock() *schemas.BifrostChatResp
 		block = append(block, obj[end:]...)
 	}
 
+	blocks := []schemas.ChatProviderBlock{{Index: open.shared, Provider: schemas.ProviderBlockAnthropic, Block: block}}
 	return &schemas.BifrostChatResponse{
 		Object: "chat.completion.chunk",
 		Choices: []schemas.BifrostResponseChoice{{
 			Index: 0,
 			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-				Delta: &schemas.ChatStreamResponseChoiceDelta{
-					ProviderBlocks: []schemas.ChatProviderBlock{{Index: open.shared, Provider: schemas.ProviderBlockAnthropic, Block: block}},
-				},
+				Delta: &schemas.ChatStreamResponseChoiceDelta{ProviderBlocks: &blocks},
 			},
 		}},
 	}

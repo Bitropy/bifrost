@@ -8,7 +8,10 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"runtime"
+	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -199,8 +202,8 @@ func (o chatStreamOut) providerBlockChunks() ([]schemas.ChatProviderBlock, []int
 	var blocks []schemas.ChatProviderBlock
 	var at []int
 	for i, c := range o.chunks {
-		if pbs := c.Choices[0].ChatStreamResponseChoice.Delta.ProviderBlocks; len(pbs) > 0 {
-			blocks = append(blocks, pbs...)
+		if pbs := c.Choices[0].ChatStreamResponseChoice.Delta.ProviderBlocks; pbs != nil && len(*pbs) > 0 {
+			blocks = append(blocks, *pbs...)
 			at = append(at, o.atEvent[i])
 		}
 	}
@@ -407,8 +410,8 @@ func TestChatCompletionStream_ProviderBlocksAndDropsOnFinalChunk(t *testing.T) {
 		if c.BifrostError != nil {
 			t.Fatalf("stream error: %+v", c.BifrostError)
 		}
-		if r := c.BifrostChatResponse; r != nil && len(r.Choices) > 0 && r.Choices[0].ChatStreamResponseChoice != nil && r.Choices[0].Delta != nil {
-			blocks = append(blocks, r.Choices[0].Delta.ProviderBlocks...)
+		if r := c.BifrostChatResponse; r != nil && len(r.Choices) > 0 && r.Choices[0].ChatStreamResponseChoice != nil && r.Choices[0].Delta != nil && r.Choices[0].Delta.ProviderBlocks != nil {
+			blocks = append(blocks, *r.Choices[0].Delta.ProviderBlocks...)
 		}
 	}
 	if len(blocks) != 1 || compactJSON(t, blocks[0].Block) != `{"type":"server_tool_use","id":"s","name":"web_search","input":{"q":1}}` {
@@ -678,8 +681,8 @@ const (
 	noProviderBlockUnaryAllocs  = 24
 	// providerBlockStreamCeiling is what one unmapped block allocates on a warm
 	// stream: the chunk's response, choice slice, stream choice, delta, one-entry
-	// slice and the block copy.
-	providerBlockStreamCeiling = 6
+	// slice, its header and the block copy.
+	providerBlockStreamCeiling = 7
 )
 
 var noProviderBlockStreamEvents = []string{
@@ -737,6 +740,68 @@ func TestAnthropicChatStream_NoProviderBlock_AllocBudget(t *testing.T) {
 	t.Logf("stream without provider blocks: %v allocs", got)
 	if got > noProviderBlockStreamAllocs {
 		t.Fatalf("a stream without provider blocks allocates %v, budget %d", got, noProviderBlockStreamAllocs)
+	}
+}
+
+// Measured on the base pin over textStreamEvents(495) converted and marshalled: a stream
+// without provider blocks keeps its allocations and grows its bytes by at most 1%.
+const (
+	textStreamAllocs = 4465
+	textStreamBytes  = 622992
+)
+
+// textStreamEvents is a plain text answer of n deltas, the shape almost every chat stream has.
+func textStreamEvents(n int) []string {
+	events := []string{
+		`{"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"usage":{"input_tokens":12,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+	}
+	for i := 0; i < n; i++ {
+		events = append(events, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"word`+strconv.Itoa(i)+` "}}`)
+	}
+	return append(events,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":500}}`,
+		`{"type":"message_stop"}`,
+	)
+}
+
+// convertAndMarshal is the per-event work between the provider and the client socket:
+// convert each event and marshal the chunk's delta.
+func convertAndMarshal(evs []decodedEvent) {
+	state := NewAnthropicStreamState()
+	for _, e := range evs {
+		state.eventData = e.data
+		resp, _, _ := e.ev.ToBifrostChatCompletionStream(nil, "", state)
+		if resp != nil && resp.Choices[0].ChatStreamResponseChoice != nil && resp.Choices[0].Delta != nil {
+			_, _ = sonic.Marshal(resp.Choices[0].Delta)
+		}
+	}
+}
+
+func TestAnthropicChatStream_NoProviderBlock_BytesBudget(t *testing.T) {
+	skipAllocUnderRace(t)
+	evs := decodeEvents(t, textStreamEvents(495))
+	// A collection empties the sync.Pools the converter draws from and the refill would
+	// count as its bytes; the fixed run count bounds the uncollected heap.
+	gcPercent := debug.SetGCPercent(-1)
+	t.Cleanup(func() { debug.SetGCPercent(gcPercent) })
+	convertAndMarshal(evs) // warm sonic's encoder cache and the pools
+	const runs = 20
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for i := 0; i < runs; i++ {
+		convertAndMarshal(evs)
+	}
+	runtime.ReadMemStats(&after)
+	allocs := (after.Mallocs - before.Mallocs) / runs
+	bytes := (after.TotalAlloc - before.TotalAlloc) / runs
+	t.Logf("text stream of %d events: %d allocs, %d B", len(evs), allocs, bytes)
+	if allocs > textStreamAllocs {
+		t.Errorf("allocates %d per stream, budget %d", allocs, textStreamAllocs)
+	}
+	if bytes > textStreamBytes+textStreamBytes/100 {
+		t.Errorf("allocates %d B per stream, budget %d + 1%%", bytes, textStreamBytes)
 	}
 }
 
@@ -798,8 +863,8 @@ func runOnce(state *AnthropicStreamState, evs []decodedEvent) ([][]byte, error) 
 	for _, e := range evs {
 		state.eventData = e.data
 		resp, _, _ := e.ev.ToBifrostChatCompletionStream(nil, "", state)
-		if resp != nil {
-			for _, pb := range resp.Choices[0].Delta.ProviderBlocks {
+		if resp != nil && resp.Choices[0].Delta.ProviderBlocks != nil {
+			for _, pb := range *resp.Choices[0].Delta.ProviderBlocks {
 				blocks = append(blocks, pb.Block)
 			}
 		}
