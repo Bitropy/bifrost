@@ -199,8 +199,8 @@ func (o chatStreamOut) providerBlockChunks() ([]schemas.ChatProviderBlock, []int
 	var blocks []schemas.ChatProviderBlock
 	var at []int
 	for i, c := range o.chunks {
-		if pbs := c.Choices[0].ChatStreamResponseChoice.Delta.ProviderBlocks; len(pbs) > 0 {
-			blocks = append(blocks, pbs...)
+		if pbs := c.Choices[0].ChatStreamResponseChoice.Delta.ProviderBlocks; pbs != nil && len(*pbs) > 0 {
+			blocks = append(blocks, *pbs...)
 			at = append(at, o.atEvent[i])
 		}
 	}
@@ -407,8 +407,8 @@ func TestChatCompletionStream_ProviderBlocksAndDropsOnFinalChunk(t *testing.T) {
 		if c.BifrostError != nil {
 			t.Fatalf("stream error: %+v", c.BifrostError)
 		}
-		if r := c.BifrostChatResponse; r != nil && len(r.Choices) > 0 && r.Choices[0].ChatStreamResponseChoice != nil && r.Choices[0].Delta != nil {
-			blocks = append(blocks, r.Choices[0].Delta.ProviderBlocks...)
+		if r := c.BifrostChatResponse; r != nil && len(r.Choices) > 0 && r.Choices[0].ChatStreamResponseChoice != nil && r.Choices[0].Delta != nil && r.Choices[0].Delta.ProviderBlocks != nil {
+			blocks = append(blocks, *r.Choices[0].Delta.ProviderBlocks...)
 		}
 	}
 	if len(blocks) != 1 || compactJSON(t, blocks[0].Block) != `{"type":"server_tool_use","id":"s","name":"web_search","input":{"q":1}}` {
@@ -678,8 +678,8 @@ const (
 	noProviderBlockUnaryAllocs  = 24
 	// providerBlockStreamCeiling is what one unmapped block allocates on a warm
 	// stream: the chunk's response, choice slice, stream choice, delta, one-entry
-	// slice and the block copy.
-	providerBlockStreamCeiling = 6
+	// slice, its header and the block copy.
+	providerBlockStreamCeiling = 7
 )
 
 var noProviderBlockStreamEvents = []string{
@@ -798,8 +798,8 @@ func runOnce(state *AnthropicStreamState, evs []decodedEvent) ([][]byte, error) 
 	for _, e := range evs {
 		state.eventData = e.data
 		resp, _, _ := e.ev.ToBifrostChatCompletionStream(nil, "", state)
-		if resp != nil {
-			for _, pb := range resp.Choices[0].Delta.ProviderBlocks {
+		if resp != nil && resp.Choices[0].Delta.ProviderBlocks != nil {
+			for _, pb := range *resp.Choices[0].Delta.ProviderBlocks {
 				blocks = append(blocks, pb.Block)
 			}
 		}
