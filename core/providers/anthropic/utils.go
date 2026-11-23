@@ -3231,7 +3231,7 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 		stripped := false
 		kept := make([]gjson.Result, 0, len(blocks))
 		for _, block := range blocks {
-			if strippedThinkingBlock(block, keepUnsigned) {
+			if shouldStripThinkingBlock(block, keepUnsigned) {
 				stripped = true
 				continue
 			}
@@ -3275,7 +3275,7 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 	return jsonBody, nil
 }
 
-func strippedThinkingBlock(block gjson.Result, keepUnsigned bool) bool {
+func shouldStripThinkingBlock(block gjson.Result, keepUnsigned bool) bool {
 	if block.Get("type").String() != "thinking" {
 		return false
 	}

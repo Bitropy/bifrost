@@ -545,6 +545,11 @@ func isJSONObjectAt(b []byte, s, e int) bool {
 // block without text is Anthropic's omitted display, which the client's stream
 // accumulation leaves without a text member; it is sent as "" so the strip keeps
 // it and its encrypted reasoning reaches the model.
+//
+// Pass only Anthropic-shaped sources: a foreign signature sent to Claude is a 400.
+// Chat details are gated on reasoning.text by the caller; on Responses only Claude
+// (Anthropic, Bedrock) puts a Signature on a reasoning_text block, Gemini's thought
+// signature travels as encrypted content.
 func replayedThinkingText(text, signature *string) *string {
 	if text == nil && signature != nil && *signature != "" {
 		return &emptyThinkingText
