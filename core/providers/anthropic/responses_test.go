@@ -11,6 +11,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -4635,6 +4636,69 @@ func TestToAnthropicResponsesRequest_NamedChoiceParallelToolCalls(t *testing.T) 
 			got := out.ToolChoice.DisableParallelToolUse != nil && *out.ToolChoice.DisableParallelToolUse
 			if got != tc.wantDisable {
 				t.Errorf("disable_parallel_tool_use = %s, want %v", boolPtrString(out.ToolChoice.DisableParallelToolUse), tc.wantDisable)
+			}
+		})
+	}
+}
+
+// The Anthropic converters read the assistant-prefill capability as the Bedrock converter does:
+// a datasheet record wins, the context key is the fallback, and with neither the request is kept.
+func TestAnthropicConverters_ReadAssistantPrefillCap(t *testing.T) {
+	const model = "claude-opus-4-6"
+	no, yes := false, true
+	user, assistant := schemas.ResponsesInputMessageRoleUser, schemas.ResponsesInputMessageRoleAssistant
+	rows := []struct {
+		name    string
+		record  *bool
+		key     any
+		trimmed bool
+	}{
+		{"no record, no key", nil, nil, false},
+		{"record false", &no, nil, true},
+		{"record true wins over key false", &yes, false, false},
+		{"key false alone", nil, false, true},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			providerUtils.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+				if row.record != nil && p == schemas.Anthropic && m == model {
+					return &schemas.ModelCapabilities{SupportsAssistantPrefill: row.record}
+				}
+				return nil
+			})
+			t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+			newCtx := func() *schemas.BifrostContext {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if row.key != nil {
+					ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, row.key)
+				}
+				return ctx
+			}
+			want := 2
+			if row.trimmed {
+				want = 1
+			}
+
+			chat, err := ToAnthropicChatRequest(newCtx(), &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: model, Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+				{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("The answer is")}},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(chat.Messages) != want {
+				t.Fatalf("chat: %d messages, want %d", len(chat.Messages), want)
+			}
+
+			responses, err := ToAnthropicResponsesRequest(newCtx(), &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: model, Input: []schemas.ResponsesMessage{
+				{Role: &user, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+				{Role: &assistant, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("The answer is")}},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(responses.Messages) != want {
+				t.Fatalf("responses: %d messages, want %d", len(responses.Messages), want)
 			}
 		})
 	}

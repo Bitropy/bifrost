@@ -6306,7 +6306,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	}
 
 	trimIndex := len(bifrostMessages)
-	if isRequestMessage && ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
+	if isRequestMessage && !caps.SupportsAssistantPrefill(ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) != false) {
 		for trimIndex > 0 {
 			m := bifrostMessages[trimIndex-1]
 			if (m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant) || droppedAsEmpty(&m) {

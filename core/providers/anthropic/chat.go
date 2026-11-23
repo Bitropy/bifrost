@@ -373,13 +373,6 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	}
 
 	messages := providerUtils.ChatBreakpointsAsCacheControl(bifrostReq.Input, bifrostReq.Params, AnthropicMaxCacheBreakpoints)
-	if ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
-		trimmed := len(messages)
-		for trimmed > 0 && messages[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
-			trimmed--
-		}
-		messages = messages[:trimmed]
-	}
 
 	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
 	familyProvider := schemas.FamilyProvider(baseProvider, bifrostReq.Provider)
@@ -393,6 +386,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// A custom provider resolves to the built-in provider it wraps, so its datasheet row
 	// applies here as it already does in the request builder's re-strip.
 	caps := schemas.ResolveModelCaps(baseProvider, capModel)
+	if !caps.SupportsAssistantPrefill(ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) != false) {
+		trimmed := len(messages)
+		for trimmed > 0 && messages[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
+			trimmed--
+		}
+		messages = messages[:trimmed]
+	}
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
 	// choice below — the caller's and the synthetic structured-output pin — is
 	// dropped and the model answers under the default "auto".
