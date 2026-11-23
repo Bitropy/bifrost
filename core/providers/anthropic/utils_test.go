@@ -4493,6 +4493,7 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 	tests := []struct {
 		name          string
 		input         string
+		keepUnsigned  bool
 		wantUnchanged bool
 		wantMsgConts  []int // expected content-array length per message; -1 = string content, skip
 	}{
@@ -4512,11 +4513,89 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 			wantMsgConts: []int{1},
 		},
 		{
-			// Blocks where thinking="" are also stripped — Anthropic rejects them with
-			// "each thinking block must contain thinking", even if the signature is valid.
-			name:         "strips block with empty thinking even if signature is non-empty",
-			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc123"}]}]}`,
+			// Omitted display returns thinking:"" with the reasoning encrypted in the
+			// signature; dropping it loses that reasoning and can break the turn's chain.
+			name:          "keeps signed block with empty thinking (display omitted)",
+			input:         `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc123"}]}]}`,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
+		},
+		{
+			name:          "keeps signed block with empty thinking, keepUnsigned",
+			input:         `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc123"}]}]}`,
+			keepUnsigned:  true,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
+		},
+		{
+			name:          "keeps signed block with text, keepUnsigned",
+			input:         `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"abc123"}]}]}`,
+			keepUnsigned:  true,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
+		},
+		{
+			name:         "strips signed block without a thinking member",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","signature":"abc123"}]}]}`,
 			wantMsgConts: []int{0},
+		},
+		{
+			name:         "strips signed block without a thinking member, keepUnsigned",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","signature":"abc123"}]}]}`,
+			keepUnsigned: true,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "strips signed block with null thinking",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":null,"signature":"abc123"}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "strips signed block with non-string thinking",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":1,"signature":"abc123"}]}]}`,
+			keepUnsigned: true,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "strips unsigned block with non-string thinking, keepUnsigned",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":1}]}]}`,
+			keepUnsigned: true,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "strips unsigned empty block, keepUnsigned",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":""},{"type":"thinking","thinking":""}]}]}`,
+			keepUnsigned: true,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "strips empty block whose signature is a number or an object",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":123},{"type":"thinking","thinking":"","signature":{"a":"b"}}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:         "strips block with text whose signature is a number or an object",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":123},{"type":"thinking","thinking":"t","signature":{"a":"b"}}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:          "keeps unsigned block with text, keepUnsigned",
+			input:         `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":123},{"type":"thinking","thinking":"t"}]}]}`,
+			keepUnsigned:  true,
+			wantUnchanged: true,
+			wantMsgConts:  []int{2},
+		},
+		{
+			name:         "strips unsigned block with text and no signature member",
+			input:        `{"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"t"}]}]}`,
+			wantMsgConts: []int{0},
+		},
+		{
+			name:          "redacted_thinking type is not affected, keepUnsigned",
+			input:         `{"messages":[{"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque"}]}]}`,
+			keepUnsigned:  true,
+			wantUnchanged: true,
+			wantMsgConts:  []int{1},
 		},
 		{
 			name:          "no thinking blocks, body returned unchanged",
@@ -4557,12 +4636,13 @@ func TestStripEmptyThinkingBlocks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, err := StripEmptyThinkingBlocks([]byte(tt.input), false)
+			in := []byte(tt.input)
+			out, err := StripEmptyThinkingBlocks(in, tt.keepUnsigned)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if tt.wantUnchanged && string(out) != tt.input {
-				t.Errorf("expected body unchanged\ngot:  %s\nwant: %s", string(out), tt.input)
+			if tt.wantUnchanged && (len(out) == 0 || &out[0] != &in[0]) {
+				t.Errorf("expected the input slice back unchanged\ngot:  %s\nwant: %s", string(out), tt.input)
 			}
 			if tt.wantMsgConts == nil {
 				return

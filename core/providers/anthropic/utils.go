@@ -3190,12 +3190,16 @@ func hasProgrammaticCaller(callers []string) bool {
 	return false
 }
 
-// StripEmptyThinkingBlocks removes thinking content blocks that would be
-// rejected by Anthropic: those with an empty "thinking" field, or those
-// with an empty "signature" field. An empty signature means the block came
-// from a non-Anthropic upstream (OpenAI never emits signatures; Anthropic
-// always does), so it is unsafe to replay to Anthropic. keepUnsigned keeps the
-// latter for upstreams that never sign their own thinking (vLLM, SGLang).
+// StripEmptyThinkingBlocks removes thinking content blocks that Anthropic would
+// reject or that carry nothing: those whose "thinking" member is missing or not a
+// string, and unsigned ones that are empty. An unsigned block came from a
+// non-Anthropic upstream (Anthropic always signs), so one with text is removed too
+// unless keepUnsigned is set, for upstreams that never sign their own thinking
+// (vLLM, SGLang).
+//
+// A signed block is never removed, even with "thinking":"". Under omitted display
+// the signature holds the reasoning, encrypted, and Anthropic checks a turn's
+// consecutive thinking blocks together, so dropping some of them is a 400.
 //
 // The predicate must stay scoped to "thinking" blocks: "redacted_thinking"
 // blocks carry only an encrypted "data" payload (no thinking or signature
@@ -3227,8 +3231,7 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 		stripped := false
 		kept := make([]gjson.Result, 0, len(blocks))
 		for _, block := range blocks {
-			if block.Get("type").String() == "thinking" &&
-				(block.Get("thinking").String() == "" || (!keepUnsigned && block.Get("signature").String() == "")) {
+			if shouldStripThinkingBlock(block, keepUnsigned) {
 				stripped = true
 				continue
 			}
@@ -3270,6 +3273,20 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 		return nil, fmt.Errorf("failed to strip empty thinking blocks: %w", err)
 	}
 	return jsonBody, nil
+}
+
+func shouldStripThinkingBlock(block gjson.Result, keepUnsigned bool) bool {
+	if block.Get("type").String() != "thinking" {
+		return false
+	}
+	thinking := block.Get("thinking")
+	if thinking.Type != gjson.String {
+		return true
+	}
+	if sig := block.Get("signature"); sig.Type == gjson.String && sig.Str != "" {
+		return false
+	}
+	return thinking.Str == "" || !keepUnsigned
 }
 
 // rawJSONArray concatenates the raw JSON of each result into a single array, without
