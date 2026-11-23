@@ -21,9 +21,10 @@ const (
 	AdaptationStrict
 	AdaptationUnmapped
 	AdaptationTopK
+	AdaptationPrefill
 )
 
-var adaptationNames = [...]string{"sampling", "tool_choice", "max_tokens", "reasoning", "service_tier", "strict", "unmapped", "top_k"}
+var adaptationNames = [...]string{"sampling", "tool_choice", "max_tokens", "reasoning", "service_tier", "strict", "unmapped", "top_k", "prefill"}
 
 // Has reports whether every bit of b is set in a.
 func (a Adaptation) Has(b Adaptation) bool { return a&b == b }

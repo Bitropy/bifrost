@@ -391,6 +391,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		for trimmed > 0 && messages[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
 			trimmed--
 		}
+		if trimmed < len(messages) {
+			schemas.AddAdaptation(ctx, schemas.AdaptationPrefill)
+		}
 		messages = messages[:trimmed]
 	}
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced

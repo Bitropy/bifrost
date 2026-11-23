@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -860,3 +861,74 @@ func TestBuildChat_RefusalMode_ReplayBlocks(t *testing.T) {
 		}
 	}
 }
+
+// AC-17 (fork): with a record SupportsAssistantPrefill=false both builders drop the trailing
+// assistant run and set prefill; with no record and no key the body keeps it and no bit is set;
+// the key alone still trims. A trailing empty item the Responses converter drops anyway is no
+// adaptation.
+func TestBuild_PrefillAdaptation(t *testing.T) {
+	no := false
+	user, assistant := schemas.ResponsesInputMessageRoleUser, schemas.ResponsesInputMessageRoleAssistant
+	rows := []struct {
+		name   string
+		record bool
+		key    bool
+		want   schemas.Adaptation
+	}{
+		{"record false", true, false, schemas.AdaptationPrefill},
+		{"key false alone", false, true, schemas.AdaptationPrefill},
+		{"neither", false, false, 0},
+	}
+	for _, provider := range refusalTestProviders {
+		for _, row := range rows {
+			t.Run(string(provider)+"/"+row.name, func(t *testing.T) {
+				if row.record {
+					setCapsRecord(t, provider, refusalTestModel, schemas.ModelCapabilities{SupportsAssistantPrefill: &no})
+				}
+				newCtx := func() *schemas.BifrostContext {
+					ctx := refusalCtx(nil)
+					if row.key {
+						ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, false)
+					}
+					return ctx
+				}
+				cfg := AnthropicRequestBuildConfig{Provider: provider, Model: refusalTestModel}
+
+				ctx := newCtx()
+				chat := refusalChatRequest(t, provider, "", nil)
+				chat.Input = append(chat.Input, schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("The answer is")}})
+				body, bifrostErr := BuildAnthropicChatRequestBody(ctx, chat, cfg)
+				require.Nil(t, bifrostErr)
+				assert.Equal(t, row.want == 0, containsPrefill(body), "chat body: %s", body)
+				assert.Equal(t, row.want, schemas.AdaptationsFromContext(ctx), "chat")
+
+				ctx = newCtx()
+				responses := &schemas.BifrostResponsesRequest{Provider: provider, Model: refusalTestModel,
+					Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(1024)},
+					Input: []schemas.ResponsesMessage{
+						{Role: &user, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+						{Role: &assistant, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("The answer is")}},
+					}}
+				body, bifrostErr = BuildAnthropicResponsesRequestBody(ctx, responses, cfg)
+				require.Nil(t, bifrostErr)
+				assert.Equal(t, row.want == 0, containsPrefill(body), "responses body: %s", body)
+				assert.Equal(t, row.want, schemas.AdaptationsFromContext(ctx), "responses")
+			})
+		}
+	}
+
+	t.Run("responses: only an empty trailing item trimmed", func(t *testing.T) {
+		ctx := refusalCtx(nil)
+		ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, false)
+		_, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: refusalTestModel,
+			Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(1024)},
+			Input: []schemas.ResponsesMessage{
+				{Role: &user, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+				{Role: &assistant, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("")}},
+			}}, AnthropicRequestBuildConfig{Provider: schemas.Anthropic, Model: refusalTestModel})
+		require.Nil(t, bifrostErr)
+		assert.Zero(t, schemas.AdaptationsFromContext(ctx))
+	})
+}
+
+func containsPrefill(body []byte) bool { return bytes.Contains(body, []byte("The answer is")) }

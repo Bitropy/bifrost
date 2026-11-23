@@ -6307,13 +6307,20 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 
 	trimIndex := len(bifrostMessages)
 	if isRequestMessage && !caps.SupportsAssistantPrefill(ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) != false) {
+		trimmedTurn := false
 		for trimIndex > 0 {
 			m := bifrostMessages[trimIndex-1]
-			if (m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant) || droppedAsEmpty(&m) {
+			empty := droppedAsEmpty(&m)
+			if (m.Role != nil && *m.Role == schemas.ResponsesInputMessageRoleAssistant) || empty {
 				trimIndex--
 			} else {
 				break
 			}
+			// An empty item leaves no message anyway; only a trimmed assistant turn is an adaptation.
+			trimmedTurn = trimmedTurn || !empty
+		}
+		if trimmedTurn {
+			schemas.AddAdaptation(ctx, schemas.AdaptationPrefill)
 		}
 	}
 
