@@ -294,7 +294,13 @@ func anthropicReasoningBlock(detail schemas.ChatReasoningDetails) AnthropicConte
 	if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil && *detail.Data != "" {
 		return AnthropicContentBlock{Type: AnthropicContentBlockTypeRedactedThinking, Data: detail.Data}
 	}
-	return AnthropicContentBlock{Type: AnthropicContentBlockTypeThinking, Signature: detail.Signature, Thinking: detail.Text}
+	thinking := detail.Text
+	// Only Anthropic-shaped text details: a Gemini thought signature (encrypted, no
+	// data) must stay text-nil so the strip removes it; a foreign signature is a 400.
+	if detail.Type == schemas.BifrostReasoningDetailsTypeText {
+		thinking = replayedThinkingText(detail.Text, detail.Signature)
+	}
+	return AnthropicContentBlock{Type: AnthropicContentBlockTypeThinking, Signature: detail.Signature, Thinking: thinking}
 }
 
 // appendAnthropicLeadingRun appends an assistant turn's reasoning and replayed provider
@@ -534,3 +540,18 @@ func jsonEachElem(b []byte, start, end int, fn func(s, e int)) {
 func isJSONObjectAt(b []byte, s, e int) bool {
 	return s >= 0 && e > s && b[s] == '{'
 }
+
+// replayedThinkingText is the thinking text a replayed block is sent with. A signed
+// block without text is Anthropic's omitted display, which the client's stream
+// accumulation leaves without a text member; it is sent as "" so the strip keeps
+// it and its encrypted reasoning reaches the model.
+func replayedThinkingText(text, signature *string) *string {
+	if text == nil && signature != nil && *signature != "" {
+		return &emptyThinkingText
+	}
+	return text
+}
+
+// emptyThinkingText is shared so the omitted-display replay allocates nothing; the
+// block is marshalled, never written through.
+var emptyThinkingText = ""

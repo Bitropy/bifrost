@@ -8761,7 +8761,12 @@ func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg
 	emittedFromContentBlocks := false
 	if msg.Content != nil {
 		for _, block := range msg.Content.ContentBlocks {
-			if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+			if block.Type != schemas.ResponsesOutputMessageContentTypeReasoning {
+				continue
+			}
+			// Read the signature as received: an embedded item ID must never make a
+			// block count as signed.
+			if text := replayedThinkingText(block.Text, block.Signature); text != nil {
 				// signature is required by the Agent SDK; converted (non-Anthropic) reasoning
 				// has none, so default to empty rather than omitting the field.
 				signature := block.Signature
@@ -8774,7 +8779,7 @@ func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg
 				}
 				thinkingBlock := AnthropicContentBlock{
 					Type:      AnthropicContentBlockTypeThinking,
-					Thinking:  block.Text,
+					Thinking:  text,
 					Signature: signature,
 				}
 				thinkingBlocks = append(thinkingBlocks, thinkingBlock)
@@ -11149,10 +11154,10 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 			}
 		}
 	case schemas.ResponsesOutputMessageContentTypeReasoning:
-		if block.Text != nil {
+		if text := replayedThinkingText(block.Text, block.Signature); text != nil {
 			return &AnthropicContentBlock{
 				Type:      AnthropicContentBlockTypeThinking,
-				Thinking:  block.Text,
+				Thinking:  text,
 				Signature: block.Signature,
 			}
 		}
