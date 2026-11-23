@@ -11,9 +11,10 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// Feature is a set of explicit Anthropic parameters a strip removed because the target provider
-// and model cannot carry them: one bit per parameter of a closed vocabulary. The strips OR the bits
-// they remove into schemas.BifrostContextKeyRemovedFeatures; in refusal mode
+// Feature is a set of explicit Anthropic parameters the target provider and model cannot carry:
+// one bit per parameter of a closed vocabulary. The strips OR the bits they remove into
+// schemas.BifrostContextKeyRemovedFeatures; compaction_block is reported and still forwarded, so
+// only refusal mode changes what is sent for it. In refusal mode
 // (schemas.FeatureRefusal) RefuseRemovedFeatures turns a non-empty set into a refusal.
 type Feature uint32
 
@@ -37,13 +38,16 @@ const (
 	FeatureServerTool
 	FeatureToolVersion
 	FeatureAnthropicBeta
+	FeatureFallbackBlock
+	FeatureCompactionBlock
+	FeatureToolChangeBlock
 )
 
 var featureNames = [...]string{
 	"container", "container_skills", "mcp_servers", "speed", "task_budget", "inference_geo",
 	"diagnostics", "safeguards", "cache_control_scope", "fallback_credit_token", "context_management",
 	"defer_loading", "allowed_callers", "input_examples", "eager_input_streaming", "server_tool",
-	"tool_version", "anthropic_beta",
+	"tool_version", "anthropic_beta", "fallback_block", "compaction_block", "tool_change_block",
 }
 
 // First returns the name of the lowest set bit, or "" for none.
