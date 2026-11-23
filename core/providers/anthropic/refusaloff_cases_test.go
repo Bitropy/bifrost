@@ -46,7 +46,15 @@ var refusalOffRawKeys = map[string]string{
 	"x_unknown":             `{"a":1}`,
 }
 
-const refusalOffRawBody = `{"model":"claude-opus-4-7","max_tokens":64,"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"global"}}]}],` +
+// A replayed assistant turn: unsigned thinking with and without text, a signed empty thinking
+// block, fallback, compaction (with tool_changes) and tool-change blocks, then a trailing assistant prefill.
+const refusalOffRawReplay = `{"role":"assistant","content":[{"type":"thinking","thinking":"unsigned text"},{"type":"thinking","thinking":""},` +
+	`{"type":"thinking","thinking":"","signature":"sig"},{"type":"fallback"},` +
+	`{"type":"compaction","content":"summary","tool_changes":[{"type":"tool_addition","tool":{"type":"tool_reference","name":"f"}}]},` +
+	`{"type":"tool_removal","tool":{"type":"tool_reference","name":"g"}},{"type":"text","text":"answer"}]},` +
+	`{"role":"user","content":"next"},{"role":"assistant","content":"The answer is"}`
+
+const refusalOffRawBody = `{"model":"claude-opus-4-7","max_tokens":64,"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","scope":"global"}}]},` + refusalOffRawReplay + `],` +
 	`"container":"c1","mcp_servers":[{"type":"url","url":"u","name":"m"}],"speed":"fast","inference_geo":"us","diagnostics":{},"safeguards":{},` +
 	`"fallback_credit_token":"t","service_tier":"auto","thinking":{"type":"enabled","budget_tokens":2048},"output_config":{"effort":"max","task_budget":{"type":"tokens","total":1}},` +
 	`"context_management":{"edits":[{"type":"compact_20260112"}]},"tools":[{"name":"f","input_schema":{},"defer_loading":true,"allowed_callers":["direct"],"input_examples":[{"input":{}}],"eager_input_streaming":true,"strict":true},{"type":"web_search_20260209","name":"web_search"}]}`
@@ -78,7 +86,16 @@ func refusalOffBodies(t *testing.T, setup func(*schemas.BifrostContext)) map[str
 	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Azure, schemas.Vertex} {
 		for _, model := range []string{"claude-sonnet-4-5", "claude-opus-4-7"} {
 			cfg := AnthropicRequestBuildConfig{Provider: provider, Model: model, ProviderExtraHeaders: betas}
-			msgs := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}
+			msgs := []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+				{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("answer")},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{ProviderBlocks: []schemas.ChatProviderBlock{
+						{Index: 1, Provider: schemas.ProviderBlockAnthropic, Block: json.RawMessage(`{"type":"fallback"}`)},
+						{Index: 2, Provider: schemas.ProviderBlockAnthropic, Block: json.RawMessage(`{"type":"compaction","content":"summary"}`)},
+					}}},
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("next")}},
+				{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("The answer is")}},
+			}
 			name := string(provider) + "/" + model
 
 			typed := &schemas.ChatParameters{}
@@ -104,7 +121,10 @@ func refusalOffBodies(t *testing.T, setup func(*schemas.BifrostContext)) map[str
 			}
 			out[name+"/chat/rawbody"] = string(body)
 
-			rin := []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}}
+			rin := []schemas.ResponsesMessage{
+				{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+				{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("The answer is")}},
+			}
 			rparams := &schemas.ResponsesParameters{
 				Temperature: schemas.Ptr(0.5), TopP: schemas.Ptr(0.9), ServiceTier: schemas.Ptr(schemas.BifrostServiceTier("auto")),
 				ContextManagement: json.RawMessage(`{"edits":[{"type":"compact_20260112"}]}`),

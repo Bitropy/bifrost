@@ -255,6 +255,8 @@ var (
 	cacheControlScopeKeyToken = []byte(`"scope"`)
 	// fallbackBlockTypeToken is how the server-side fallback block type value is spelled.
 	fallbackBlockTypeToken = []byte(`"` + string(AnthropicContentBlockTypeFallback) + `"`)
+	// compactionBlockTypeToken is how the compaction block type value is spelled.
+	compactionBlockTypeToken = []byte(`"` + string(AnthropicContentBlockTypeCompaction) + `"`)
 	// toolAdditionTypeToken and toolRemovalTypeToken are the tail of the tool-change block type
 	// values through the closing quote. They skip the leading "tool": a needle starting on '_'
 	// scans ~2.7x faster than one starting on '"', which is on nearly every JSON byte pair.
@@ -269,6 +271,33 @@ var (
 // unicode escape for the underscore is not matched and reaches the provider as sent.
 func mayCarryToolChangeBlocks(jsonBody []byte) bool {
 	return bytes.Contains(jsonBody, toolAdditionTypeToken) || bytes.Contains(jsonBody, toolRemovalTypeToken)
+}
+
+// hasCompactionBlock reports whether a message carries a compaction content block.
+func hasCompactionBlock(messages []AnthropicMessage) bool {
+	for mi := range messages {
+		for bi := range messages[mi].Content.ContentBlocks {
+			if messages[mi].Content.ContentBlocks[bi].Type == AnthropicContentBlockTypeCompaction {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rawHasCompactionBlock is hasCompactionBlock over the raw body.
+func rawHasCompactionBlock(jsonBody []byte) bool {
+	found := false
+	providerUtils.GetJSONField(jsonBody, "messages").ForEach(func(_, msg gjson.Result) bool {
+		if content := msg.Get("content"); content.IsArray() {
+			content.ForEach(func(_, block gjson.Result) bool {
+				found = block.Get("type").String() == string(AnthropicContentBlockTypeCompaction)
+				return !found
+			})
+		}
+		return !found
+	})
+	return found
 }
 
 // mayCarryPerMessageOutputConfig is a conservative byte prefilter for messages[].output_config.
@@ -560,8 +589,15 @@ func stripUnsupportedAnthropicFields(ctx *schemas.BifrostContext, req *Anthropic
 			}
 			if len(kept) != len(blocks) {
 				req.Messages[mi].Content.ContentBlocks = kept
+				addRemoved(ctx, FeatureFallbackBlock)
 			}
 		}
+	}
+	// A replayed compaction block is forwarded where the model lacks compaction, and the provider
+	// answers. It is reported, not deleted, so refusal mode refuses it and every other body is unchanged.
+	// The ctx check skips the scan when nothing would record the report.
+	if ctx != nil && !caps.SupportsCompaction(features.Compaction) && hasCompactionBlock(req.Messages) {
+		addRemoved(ctx, FeatureCompactionBlock)
 	}
 	if req.ContextManagement != nil {
 		// Gate edits by their type — compaction vs context-editing flags.
@@ -776,6 +812,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 				if !dropped {
 					return true
 				}
+				addRemoved(ctx, FeatureFallbackBlock)
 				var kept []string
 				content.ForEach(func(_, block gjson.Result) bool {
 					if !isFallback(block) {
@@ -792,6 +829,12 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 				return nil, fmt.Errorf("strip raw fallback blocks: %w", err)
 			}
 		}
+	}
+
+	// compaction content blocks — reported and forwarded, as the typed arm does (ctx nil: no scan).
+	if ctx != nil && !caps.SupportsCompaction(features.Compaction) &&
+		bytes.Contains(jsonBody, compactionBlockTypeToken) && rawHasCompactionBlock(jsonBody) {
+		addRemoved(ctx, FeatureCompactionBlock)
 	}
 
 	// messages[].output_config — per-message effort (beta mid-conversation-output-config).
@@ -859,6 +902,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 					blockType := AnthropicContentBlockType(block.Get("type").String())
 					if isToolChangeBlock(blockType) {
 						changed = true
+						addRemoved(ctx, FeatureToolChangeBlock)
 						return true
 					}
 					raw := block.Raw
@@ -869,6 +913,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 							return false
 						}
 						changed = true
+						addRemoved(ctx, FeatureCompactionBlock)
 					}
 					kept = append(kept, raw)
 					return true
@@ -3212,6 +3257,14 @@ func hasProgrammaticCaller(callers []string) bool {
 // rewrite each affected message once and the messages array once.
 // Pinned by TestStripEmptyThinkingBlocks_AllocationScaling.
 func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error) {
+	return StripEmptyThinkingBlocksReport(nil, jsonBody, keepUnsigned)
+}
+
+// StripEmptyThinkingBlocksReport is StripEmptyThinkingBlocks that also records, when ctx is
+// non-nil, the reasoning adaptation when it removed an unsigned block with text: the model does
+// not see text the client replayed. Removing an empty or malformed block records nothing, since it
+// carries nothing the model could read. The body it returns is the same either way.
+func StripEmptyThinkingBlocksReport(ctx *schemas.BifrostContext, jsonBody []byte, keepUnsigned bool) ([]byte, error) {
 	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
 	if !messagesResult.Exists() || !messagesResult.IsArray() {
 		return jsonBody, nil
@@ -3222,6 +3275,7 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 	// Requests with nothing to strip are the common case and return the original
 	// bytes untouched, so they never pay for a copy.
 	keptByMessage := make(map[int][]gjson.Result)
+	droppedText := false
 	for mi, msg := range messages {
 		contentResult := msg.Get("content")
 		if !contentResult.Exists() || !contentResult.IsArray() {
@@ -3233,6 +3287,10 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 		for _, block := range blocks {
 			if shouldStripThinkingBlock(block, keepUnsigned) {
 				stripped = true
+				if ctx != nil && !droppedText {
+					thinking := block.Get("thinking")
+					droppedText = thinking.Type == gjson.String && thinking.Str != ""
+				}
 				continue
 			}
 			kept = append(kept, block)
@@ -3243,6 +3301,9 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 	}
 	if len(keptByMessage) == 0 {
 		return jsonBody, nil
+	}
+	if droppedText {
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 
 	// Pass 2: rebuild the messages array once. Untouched messages are copied verbatim

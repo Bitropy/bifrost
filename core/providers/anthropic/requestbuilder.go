@@ -522,7 +522,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
-	jsonBody, err = StripEmptyThinkingBlocks(jsonBody, defaults.KeepUnsignedThinking)
+	jsonBody, err = StripEmptyThinkingBlocksReport(ctx, jsonBody, defaults.KeepUnsignedThinking)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
@@ -853,7 +853,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 	}
 
-	jsonBody, err = StripEmptyThinkingBlocks(jsonBody, defaults.KeepUnsignedThinking)
+	jsonBody, err = StripEmptyThinkingBlocksReport(ctx, jsonBody, defaults.KeepUnsignedThinking)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}

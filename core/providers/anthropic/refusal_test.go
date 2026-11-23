@@ -1,12 +1,14 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -685,3 +687,248 @@ func TestStrip_BlockBindingDropIsReasoningAdaptation(t *testing.T) {
 		})
 	}
 }
+
+// AC-20: the vocabulary has 21 names, the three replay-block names appended last.
+func TestFeature_FirstNamesEveryBit(t *testing.T) {
+	var names []string
+	for i := range 32 {
+		if name := Feature(1 << i).First(); name != "" {
+			names = append(names, name)
+		}
+	}
+	require.Len(t, names, 21)
+	assert.Equal(t, []string{"anthropic_beta", "fallback_block", "compaction_block", "tool_change_block"}, names[17:])
+}
+
+func replayBlocksRequest(blocks ...AnthropicContentBlock) AnthropicMessageRequest {
+	return AnthropicMessageRequest{Messages: []AnthropicMessage{
+		{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: schemas.Ptr("hi")}},
+		{Role: AnthropicMessageRoleAssistant, Content: AnthropicContent{ContentBlocks: blocks}},
+	}}
+}
+
+// AC-20, typed arms: the fallback arm reports the block it deletes; the compaction arm reports a
+// block the model cannot take and deletes nothing.
+func TestStripUnsupportedAnthropicFields_ReplayBlocks(t *testing.T) {
+	no := false
+	text := AnthropicContentBlock{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("answer")}
+	fallback := AnthropicContentBlock{Type: AnthropicContentBlockTypeFallback}
+	compaction := AnthropicContentBlock{Type: AnthropicContentBlockTypeCompaction, Content: &AnthropicContent{ContentStr: schemas.Ptr("summary")}}
+	rows := []struct {
+		name       string
+		provider   schemas.ModelProvider
+		record     *schemas.ModelCapabilities
+		blocks     []AnthropicContentBlock
+		want       Feature
+		wantBlocks int
+	}{
+		{"fallback deleted on a route without server-side fallback", schemas.Vertex, nil, []AnthropicContentBlock{text, fallback}, FeatureFallbackBlock, 1},
+		{"fallback kept where carried", schemas.Anthropic, nil, []AnthropicContentBlock{text, fallback}, 0, 2},
+		{"compaction forwarded and reported without compaction", schemas.Anthropic, &schemas.ModelCapabilities{SupportsCompaction: &no}, []AnthropicContentBlock{compaction, text}, FeatureCompactionBlock, 2},
+		{"compaction carried", schemas.Anthropic, nil, []AnthropicContentBlock{compaction, text}, 0, 2},
+		{"no replay block", schemas.Vertex, &schemas.ModelCapabilities{SupportsCompaction: &no}, []AnthropicContentBlock{text}, 0, 1},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			if row.record != nil {
+				setCapsRecord(t, row.provider, refusalTestModel, *row.record)
+			}
+			ctx := refusalCtx(nil)
+			req := replayBlocksRequest(row.blocks...)
+			stripUnsupportedAnthropicFields(ctx, &req, row.provider, refusalTestModel)
+			assert.Equal(t, row.want, RemovedFeatures(ctx))
+			assert.Len(t, req.Messages[1].Content.ContentBlocks, row.wantBlocks)
+		})
+	}
+}
+
+// AC-20, raw arms: each bit is reported where the raw strip deletes (fallback, tool-change, a
+// compaction block's tool_changes) or would forward (compaction) the block, and the body is the
+// one the plain strip returns.
+func TestStripUnsupportedFieldsFromRawBodyReport_ReplayBlocks(t *testing.T) {
+	no := false
+	msgs := func(assistant string) string {
+		return `{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[` + assistant + `]}]}`
+	}
+	const (
+		text       = `{"type":"text","text":"answer"}`
+		fallback   = `{"type":"fallback"}`
+		compaction = `{"type":"compaction","content":"summary"}`
+		addition   = `{"type":"tool_addition","tool":{"type":"tool_reference","name":"f"}}`
+	)
+	// Every Claude provider carries mid-conversation tool changes; the test turns it off on Azure.
+	const noMidConv = schemas.Azure
+	withFeatures(t, noMidConv, func(f *ProviderFeatureSupport) { f.MidConvToolChanges = false })
+	compactionChanges := `{"type":"compaction","content":"summary","tool_changes":[` + addition + `]}`
+	rows := []struct {
+		name     string
+		provider schemas.ModelProvider
+		record   *schemas.ModelCapabilities
+		body     string
+		want     Feature
+		deleted  string
+	}{
+		{"fallback", schemas.Vertex, nil, msgs(text + "," + fallback), FeatureFallbackBlock, `"fallback"`},
+		{"fallback carried", schemas.Anthropic, nil, msgs(text + "," + fallback), 0, ""},
+		{"compaction without compaction", schemas.Anthropic, &schemas.ModelCapabilities{SupportsCompaction: &no}, msgs(compaction + "," + text), FeatureCompactionBlock, ""},
+		{"compaction carried", schemas.Anthropic, nil, msgs(compaction + "," + text), 0, ""},
+		{"tool_addition inside an assistant message", noMidConv, nil, msgs(text + "," + addition), FeatureToolChangeBlock, `"tool_addition"`},
+		{"compaction tool_changes", noMidConv, nil, msgs(compactionChanges + "," + text), FeatureCompactionBlock, `"tool_changes"`},
+		{"tool_addition carried", schemas.Anthropic, nil, msgs(text + "," + addition), 0, ""},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			if row.record != nil {
+				setCapsRecord(t, row.provider, refusalTestModel, *row.record)
+			}
+			ctx := refusalCtx(nil)
+			got, err := StripUnsupportedFieldsFromRawBodyReport(ctx, []byte(row.body), row.provider, refusalTestModel)
+			require.NoError(t, err)
+			plain, err := StripUnsupportedFieldsFromRawBody([]byte(row.body), row.provider, refusalTestModel)
+			require.NoError(t, err)
+			assert.Equal(t, string(plain), string(got))
+			assert.Equal(t, row.want, RemovedFeatures(ctx))
+			if row.deleted != "" {
+				assert.NotContains(t, string(got), row.deleted)
+			} else {
+				assert.Equal(t, row.body, string(got), "nothing is deleted")
+			}
+		})
+	}
+}
+
+// AC-20: a tool_addition block inside an assistant message reaches the raw tool-change arm only on
+// the merged-body pass (refusal mode with an unknown key merged); there it is refused.
+func TestBuildChat_RefusalMode_ToolChangeBlockOnMergedBody(t *testing.T) {
+	on := true
+	withFeatures(t, schemas.Vertex, func(f *ProviderFeatureSupport) { f.MidConvToolChanges = false })
+	ctx := refusalCtx(&on)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	req := refusalChatRequest(t, schemas.Vertex, "", rawExtra(map[string]string{"x_unknown": `1`}))
+	req.Input = append(req.Input, schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleAssistant,
+		ChatAssistantMessage: &schemas.ChatAssistantMessage{ProviderBlocks: []schemas.ChatProviderBlock{
+			{Index: 1, Provider: schemas.ProviderBlockAnthropic, Block: []byte(`{"type":"tool_addition","tool":{"type":"tool_reference","name":"f"}}`)},
+		}},
+		Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("answer")},
+	}, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("next")}})
+	_, bifrostErr := BuildAnthropicChatRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: schemas.Vertex, Model: refusalTestModel})
+	requireRefusal(t, bifrostErr, "tool_change_block")
+}
+
+// AC-8 / AC-20: a replayed fallback or compaction block the route cannot take is refused by the
+// builder in refusal mode on each Claude provider; with refusal mode off the same request builds,
+// the fallback block deleted and the compaction block forwarded.
+func TestBuildChat_RefusalMode_ReplayBlocks(t *testing.T) {
+	no := false
+	rows := []struct {
+		name    string
+		block   string
+		feature string
+		disable func(t *testing.T, provider schemas.ModelProvider)
+		offKeep bool
+	}{
+		{"fallback", `{"type":"fallback"}`, "fallback_block", func(t *testing.T, p schemas.ModelProvider) {
+			withFeatures(t, p, func(f *ProviderFeatureSupport) { f.ServerSideFallback = false })
+		}, false},
+		{"compaction", `{"type":"compaction","content":"summary"}`, "compaction_block", func(t *testing.T, p schemas.ModelProvider) {
+			setCapsRecord(t, p, refusalTestModel, schemas.ModelCapabilities{SupportsCompaction: &no})
+		}, true},
+	}
+	on, off := true, false
+	for _, provider := range refusalTestProviders {
+		for _, row := range rows {
+			t.Run(string(provider)+"/"+row.name, func(t *testing.T) {
+				row.disable(t, provider)
+				build := func(mode *bool) (string, *schemas.BifrostError) {
+					req := refusalChatRequest(t, provider, "", nil)
+					req.Input = append(req.Input, schemas.ChatMessage{
+						Role:    schemas.ChatMessageRoleAssistant,
+						Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("answer")},
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{ProviderBlocks: []schemas.ChatProviderBlock{
+							{Index: 0, Provider: schemas.ProviderBlockAnthropic, Block: []byte(row.block)},
+						}},
+					}, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("next")}})
+					body, bifrostErr := BuildAnthropicChatRequestBody(refusalCtx(mode), req, AnthropicRequestBuildConfig{Provider: provider, Model: refusalTestModel})
+					return string(body), bifrostErr
+				}
+				_, bifrostErr := build(&on)
+				requireRefusal(t, bifrostErr, row.feature)
+				body, bifrostErr := build(&off)
+				require.Nil(t, bifrostErr)
+				assert.Equal(t, row.offKeep, strings.Contains(body, `"type":"`+row.name+`"`), body)
+			})
+		}
+	}
+}
+
+// AC-17 (fork): with a record SupportsAssistantPrefill=false both builders drop the trailing
+// assistant run and set prefill; with no record and no key the body keeps it and no bit is set;
+// the key alone still trims. A trailing empty item the Responses converter drops anyway is no
+// adaptation.
+func TestBuild_PrefillAdaptation(t *testing.T) {
+	no := false
+	user, assistant := schemas.ResponsesInputMessageRoleUser, schemas.ResponsesInputMessageRoleAssistant
+	rows := []struct {
+		name   string
+		record bool
+		key    bool
+		want   schemas.Adaptation
+	}{
+		{"record false", true, false, schemas.AdaptationPrefill},
+		{"key false alone", false, true, schemas.AdaptationPrefill},
+		{"neither", false, false, 0},
+	}
+	for _, provider := range refusalTestProviders {
+		for _, row := range rows {
+			t.Run(string(provider)+"/"+row.name, func(t *testing.T) {
+				if row.record {
+					setCapsRecord(t, provider, refusalTestModel, schemas.ModelCapabilities{SupportsAssistantPrefill: &no})
+				}
+				newCtx := func() *schemas.BifrostContext {
+					ctx := refusalCtx(nil)
+					if row.key {
+						ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, false)
+					}
+					return ctx
+				}
+				cfg := AnthropicRequestBuildConfig{Provider: provider, Model: refusalTestModel}
+
+				ctx := newCtx()
+				chat := refusalChatRequest(t, provider, "", nil)
+				chat.Input = append(chat.Input, schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("The answer is")}})
+				body, bifrostErr := BuildAnthropicChatRequestBody(ctx, chat, cfg)
+				require.Nil(t, bifrostErr)
+				assert.Equal(t, row.want == 0, containsPrefill(body), "chat body: %s", body)
+				assert.Equal(t, row.want, schemas.AdaptationsFromContext(ctx), "chat")
+
+				ctx = newCtx()
+				responses := &schemas.BifrostResponsesRequest{Provider: provider, Model: refusalTestModel,
+					Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(1024)},
+					Input: []schemas.ResponsesMessage{
+						{Role: &user, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+						{Role: &assistant, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("The answer is")}},
+					}}
+				body, bifrostErr = BuildAnthropicResponsesRequestBody(ctx, responses, cfg)
+				require.Nil(t, bifrostErr)
+				assert.Equal(t, row.want == 0, containsPrefill(body), "responses body: %s", body)
+				assert.Equal(t, row.want, schemas.AdaptationsFromContext(ctx), "responses")
+			})
+		}
+	}
+
+	t.Run("responses: only an empty trailing item trimmed", func(t *testing.T) {
+		ctx := refusalCtx(nil)
+		ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, false)
+		_, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: refusalTestModel,
+			Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(1024)},
+			Input: []schemas.ResponsesMessage{
+				{Role: &user, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+				{Role: &assistant, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("")}},
+			}}, AnthropicRequestBuildConfig{Provider: schemas.Anthropic, Model: refusalTestModel})
+		require.Nil(t, bifrostErr)
+		assert.Zero(t, schemas.AdaptationsFromContext(ctx))
+	})
+}
+
+func containsPrefill(body []byte) bool { return bytes.Contains(body, []byte("The answer is")) }

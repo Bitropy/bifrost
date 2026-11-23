@@ -26,6 +26,8 @@ import (
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
@@ -6684,4 +6686,73 @@ func TestClaudeNativeVendorIgnoredWithoutClaudeRoute(t *testing.T) {
 			t.Fatalf("ClaudeNativeVendor=%v: dropped %#v, beta %q", nativeVendor, dropped, fr.Header.Peek("Anthropic-Beta"))
 		}
 	}
+}
+
+// AC-21 (fork): the reporting strip records reasoning exactly when it removed a P4 block (unsigned,
+// with text). P1 (thinking absent or not a string) and P3 (unsigned, empty) removals, a kept signed
+// block and an untouched body record nothing, and the body is the plain strip's.
+func TestStripEmptyThinkingBlocksReport(t *testing.T) {
+	turn := func(blocks string) string {
+		return `{"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[` + blocks + `,{"type":"text","text":"a"}]}]}`
+	}
+	const (
+		p1     = `{"type":"thinking","signature":"S"}`
+		p3     = `{"type":"thinking","thinking":""}`
+		p4     = `{"type":"thinking","thinking":"unsigned text"}`
+		signed = `{"type":"thinking","thinking":"","signature":"S"}`
+	)
+	rows := []struct {
+		name         string
+		body         string
+		keepUnsigned bool
+		want         schemas.Adaptation
+	}{
+		{"P4 removed", turn(p4), false, schemas.AdaptationReasoning},
+		{"P4 among P1 and P3", turn(p1 + "," + p3 + "," + p4), false, schemas.AdaptationReasoning},
+		{"P1 removed", turn(p1), false, 0},
+		{"non-string thinking removed", turn(`{"type":"thinking","thinking":7}`), false, 0},
+		{"P3 removed", turn(p3), false, 0},
+		{"signed empty kept", turn(signed), false, 0},
+		{"P4 kept with keepUnsigned", turn(p4), true, 0},
+		{"untouched", turn(`{"type":"redacted_thinking","data":"x"}`), false, 0},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := refusalCtx(nil)
+			got, err := StripEmptyThinkingBlocksReport(ctx, []byte(row.body), row.keepUnsigned)
+			require.NoError(t, err)
+			plain, err := StripEmptyThinkingBlocks([]byte(row.body), row.keepUnsigned)
+			require.NoError(t, err)
+			assert.Equal(t, string(plain), string(got))
+			assert.Equal(t, row.want, schemas.AdaptationsFromContext(ctx))
+		})
+	}
+}
+
+// AC-21 (fork): both builders run the reporting strip, so an unsigned replayed thinking block with
+// text is removed and recorded as reasoning on chat and Responses.
+func TestBuild_UnsignedThinkingReplayIsReasoningAdaptation(t *testing.T) {
+	t.Run("chat", func(t *testing.T) {
+		ctx := refusalCtx(nil)
+		req := refusalChatRequest(t, schemas.Anthropic, "", nil)
+		req.Input = append(req.Input, schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("answer")},
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ReasoningDetails: []schemas.ChatReasoningDetails{
+				{Index: 0, Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr("unsigned text")},
+			}},
+		}, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("next")}})
+		body, bifrostErr := BuildAnthropicChatRequestBody(ctx, req, AnthropicRequestBuildConfig{Provider: schemas.Anthropic, Model: refusalTestModel})
+		require.Nil(t, bifrostErr)
+		assert.NotContains(t, string(body), "unsigned text")
+		assert.Equal(t, schemas.AdaptationReasoning, schemas.AdaptationsFromContext(ctx))
+	})
+	t.Run("responses", func(t *testing.T) {
+		ctx := refusalCtx(nil)
+		item := reasoningItem(nil, []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr("unsigned text")}}, nil)
+		body, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, responsesReplay(item), AnthropicRequestBuildConfig{Provider: schemas.Anthropic})
+		require.Nil(t, bifrostErr)
+		assert.NotContains(t, string(body), "unsigned text")
+		assert.Equal(t, schemas.AdaptationReasoning, schemas.AdaptationsFromContext(ctx))
+	})
 }
