@@ -3257,6 +3257,14 @@ func hasProgrammaticCaller(callers []string) bool {
 // rewrite each affected message once and the messages array once.
 // Pinned by TestStripEmptyThinkingBlocks_AllocationScaling.
 func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error) {
+	return StripEmptyThinkingBlocksReport(nil, jsonBody, keepUnsigned)
+}
+
+// StripEmptyThinkingBlocksReport is StripEmptyThinkingBlocks that also records, when ctx is
+// non-nil, the reasoning adaptation when it removed an unsigned block with text: the model does
+// not see text the client replayed. Removing an empty or malformed block records nothing, since it
+// carries nothing the model could read. The body it returns is the same either way.
+func StripEmptyThinkingBlocksReport(ctx *schemas.BifrostContext, jsonBody []byte, keepUnsigned bool) ([]byte, error) {
 	messagesResult := providerUtils.GetJSONField(jsonBody, "messages")
 	if !messagesResult.Exists() || !messagesResult.IsArray() {
 		return jsonBody, nil
@@ -3267,6 +3275,7 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 	// Requests with nothing to strip are the common case and return the original
 	// bytes untouched, so they never pay for a copy.
 	keptByMessage := make(map[int][]gjson.Result)
+	droppedText := false
 	for mi, msg := range messages {
 		contentResult := msg.Get("content")
 		if !contentResult.Exists() || !contentResult.IsArray() {
@@ -3278,6 +3287,10 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 		for _, block := range blocks {
 			if shouldStripThinkingBlock(block, keepUnsigned) {
 				stripped = true
+				if ctx != nil && !droppedText {
+					thinking := block.Get("thinking")
+					droppedText = thinking.Type == gjson.String && thinking.Str != ""
+				}
 				continue
 			}
 			kept = append(kept, block)
@@ -3288,6 +3301,9 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 	}
 	if len(keptByMessage) == 0 {
 		return jsonBody, nil
+	}
+	if droppedText {
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 
 	// Pass 2: rebuild the messages array once. Untouched messages are copied verbatim
