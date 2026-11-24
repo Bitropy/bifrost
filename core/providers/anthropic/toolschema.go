@@ -34,7 +34,9 @@ func NormalizeAnthropicToolInputSchema(input *schemas.ToolFunctionParameters) (*
 	if input == nil {
 		return nil, nil
 	}
-	if len(input.OneOf) == 0 && len(input.AnyOf) == 0 && len(input.AllOf) == 0 {
+	// Presence, not length: a client-sent empty combinator is rejected at the
+	// root like any other, and the rewrite below drops it (it adds no branch).
+	if input.OneOf == nil && input.AnyOf == nil && input.AllOf == nil {
 		return input, nil
 	}
 
@@ -358,6 +360,9 @@ func intersectAnthropicBranchRequired(branches []anthropicSchemaBranch) []string
 			}
 		}
 		common = filtered
+	}
+	if len(common) == 0 {
+		return nil // nil, not [], so Required (omitzero) is omitted
 	}
 	return common
 }

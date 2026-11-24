@@ -54,7 +54,6 @@ func connectTool(config *schemas.MCPClientConfig) schemas.ChatTool {
 			Parameters: &schemas.ToolFunctionParameters{
 				Type:       "object",
 				Properties: schemas.NewOrderedMap(),
-				Required:   []string{},
 			},
 		},
 	}
