@@ -8819,9 +8819,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				if !bifrost.skipPromptUsageEstimation.Load() {
 					attemptChat, attemptResponses, attemptText = req.ChatRequest, req.ResponsesRequest, req.TextCompletionRequest
 				}
-				// The Anthropic stream handlers mark usage provisional per attempt; a mark left
-				// by an earlier attempt must not mark this one's usage as provisional.
+				// The stream handlers register usage state per attempt; nothing an earlier attempt
+				// left behind may mark this one's usage provisional or be billed as this one's (an
+				// attempt that fails before registering its handle bills from the context).
 				req.Context.ClearValue(schemas.BifrostContextKeyStreamUsageProvisional)
+				req.Context.ClearValue(schemas.BifrostContextKeyStreamAccumulatedUsage)
 				pipeline := bifrost.getPluginPipeline()
 				// Mirrors the retry loop's startup check for this attempt.
 				var isPreamble func(*schemas.BifrostStreamChunk) bool
