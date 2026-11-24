@@ -4703,3 +4703,35 @@ func TestAnthropicConverters_ReadAssistantPrefillCap(t *testing.T) {
 		})
 	}
 }
+
+// BIT-3177 S22: chat to Claude through the Responses API (core's own chat→Responses
+// route, ToResponsesRequestForTarget) keeps the cache_control of the text sent
+// alongside tool calls on the Anthropic Messages body.
+func TestChatToResponses_ClaudeToolTurnTextKeepsCacheControl(t *testing.T) {
+	eph := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	chat := &schemas.BifrostChatRequest{
+		Provider: schemas.Azure, Model: "claude-sonnet-4-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("q")}},
+			{Role: schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("reading"), CacheControl: eph}}},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{
+					{ID: schemas.Ptr("t1"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("read"), Arguments: "{}"}},
+				}}},
+			{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("t1")}, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("x")}},
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	t.Cleanup(ctx.Cancel)
+	out, err := ToAnthropicResponsesRequest(ctx, chat.ToResponsesRequestForTarget(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := sonic.Marshal(out.Messages[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `{"type":"text","text":"reading","cache_control":{"type":"ephemeral"}}`) {
+		t.Fatalf("assistant text block lost its cache_control: %s", body)
+	}
+}

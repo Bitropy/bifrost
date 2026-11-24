@@ -430,19 +430,20 @@ func (tc *ResponsesToolChoice) ToChatToolChoice() *ChatToolChoice {
 // ToResponsesMessages converts a ChatMessage to one or more ResponsesMessages
 // This handles the expansion of assistant messages with tool calls into separate function_call messages
 func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
-	return cm.toResponsesMessages(false)
+	messages, _ := cm.toResponsesMessages(false)
+	return messages
 }
 
 // toResponsesMessages is ToResponsesMessages; carryCacheControl also copies
 // the message blocks' and tool calls' cache_control onto the Responses items
 // (ToResponsesRequestWithCacheControl). A tool result's marker
-// (ChatToolMessage.CacheControl) is always carried.
-func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMessage {
+// (ChatToolMessage.CacheControl) is always carried. droppedReasoning reports a
+// replayed reasoning detail left out: a signed one with no text, or an
+// encrypted token other than the last (one reasoning item holds one).
+func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) (messages []ResponsesMessage, droppedReasoning bool) {
 	if cm == nil {
-		return []ResponsesMessage{}
+		return []ResponsesMessage{}, false
 	}
-
-	var messages []ResponsesMessage
 
 	// Emit reasoning first so chat->responses->anthropic preserves reasoning content
 	// (Anthropic signatures, OpenAI encrypted/summary entries) for clients to echo back; see symmetric ToChatMessages buffering.
@@ -489,6 +490,8 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 							Text:      d.Text,
 							Signature: d.Signature,
 						})
+					} else if d.Signature != nil && *d.Signature != "" {
+						droppedReasoning = true
 					}
 				case BifrostReasoningDetailsTypeSummary:
 					if d.Summary != nil {
@@ -499,6 +502,7 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 					}
 				case BifrostReasoningDetailsTypeEncrypted:
 					if d.Data != nil {
+						droppedReasoning = droppedReasoning || encryptedContent != nil
 						encryptedContent = d.Data
 					}
 				}
@@ -548,7 +552,8 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 		// Text sent alongside the calls becomes its own message item ahead of them.
 		if cm.Content != nil && ((cm.Content.ContentStr != nil && *cm.Content.ContentStr != "") || len(cm.Content.ContentBlocks) > 0) {
 			textOnly := ChatMessage{Role: cm.Role, Content: cm.Content}
-			messages = append(messages, textOnly.toResponsesMessages(carryCacheControl)...)
+			textMessages, _ := textOnly.toResponsesMessages(carryCacheControl)
+			messages = append(messages, textMessages...)
 		}
 		// Expand multiple tool calls into separate function_call items
 		for _, tc := range cm.ChatAssistantMessage.ToolCalls {
@@ -602,7 +607,7 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 
 			messages = append(messages, rm)
 		}
-		return messages
+		return messages, droppedReasoning
 	}
 
 	// Regular message conversion
@@ -832,7 +837,7 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 	}
 
 	messages = append(messages, rm)
-	return messages
+	return messages, droppedReasoning
 }
 
 // ToChatMessages converts a slice of ResponsesMessages back to ChatMessages
@@ -1463,28 +1468,6 @@ func (cr *BifrostChatRequest) ToResponsesRequestFor(ctx *BifrostContext, carryCa
 	return cr.toResponsesRequest(ctx, carryCacheControl)
 }
 
-// dropsClaudeReasoning reports whether toResponsesMessages leaves out a replayed
-// Claude reasoning detail: a signed thinking block with no text, or a
-// redacted_thinking block other than the last one (one Responses reasoning item
-// holds one encrypted token).
-func dropsClaudeReasoning(details []ChatReasoningDetails) bool {
-	encrypted := 0
-	for i := range details {
-		d := &details[i]
-		switch d.Type {
-		case BifrostReasoningDetailsTypeText:
-			if d.Signature != nil && *d.Signature != "" && (d.Text == nil || *d.Text == "") {
-				return true
-			}
-		case BifrostReasoningDetailsTypeEncrypted:
-			if d.Data != nil {
-				encrypted++
-			}
-		}
-	}
-	return encrypted > 1
-}
-
 // ToResponsesRequestForTarget is the chat request converted for the target it
 // is sent to through the Responses API: ToResponsesRequestWithCacheControl for
 // a Claude target (IsAnthropicModelFamily over cr.Model; its Responses egress
@@ -1513,12 +1496,11 @@ func (cr *BifrostChatRequest) toResponsesRequest(ctx *BifrostContext, carryCache
 			// A function_call_output carries only the media every Responses provider reads.
 			msg = ToolResultForResponses(ctx, msg)
 		}
-		// Both callers set carryCacheControl for a Claude target, whose replayed
-		// reasoning the mux drops in part (BIT-3177 S21).
-		if carryCacheControl && chatMsg.ChatAssistantMessage != nil && dropsClaudeReasoning(chatMsg.ReasoningDetails) {
+		responsesMessages, droppedReasoning := msg.toResponsesMessages(carryCacheControl)
+		// Both callers set carryCacheControl for a Claude target (BIT-3177 S21).
+		if droppedReasoning && carryCacheControl {
 			AddAdaptation(ctx, AdaptationReasoning)
 		}
-		responsesMessages := msg.toResponsesMessages(carryCacheControl)
 		for i := range responsesMessages {
 			item := &responsesMessages[i]
 			if item.Type == nil || item.ResponsesToolMessage == nil || item.CallID == nil {
