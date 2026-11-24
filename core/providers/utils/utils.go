@@ -5486,11 +5486,38 @@ type ToolSchemaPolicy struct {
 	StripLookaround    bool     // remove lookaround assertions from patterns
 	DropPattern        bool     // remove the pattern keyword outright
 	StringFormats      []string // formats a non-numeric schema may keep; nil keeps every format
+	// DropEmptyRootCombinators removes a root anyOf/oneOf/allOf sent as []:
+	// JSON Schema requires them non-empty and OpenAI answers one with a 400.
+	DropEmptyRootCombinators bool
 }
 
 // IsZero reports whether the policy leaves every schema untouched.
 func (p ToolSchemaPolicy) IsZero() bool {
-	return !p.NormalizeNULEscape && !p.StripLookaround && !p.DropPattern && p.StringFormats == nil
+	return !p.NormalizeNULEscape && !p.StripLookaround && !p.DropPattern && p.StringFormats == nil && !p.DropEmptyRootCombinators
+}
+
+// HasEmptyRootCombinator reports whether params' root holds an anyOf, oneOf
+// or allOf sent as [].
+func HasEmptyRootCombinator(params *schemas.ToolFunctionParameters) bool {
+	return params != nil && (params.AnyOf != nil && len(params.AnyOf) == 0 ||
+		params.OneOf != nil && len(params.OneOf) == 0 || params.AllOf != nil && len(params.AllOf) == 0)
+}
+
+// ChatToolsHaveEmptyRootCombinator reports whether a function tool's schema
+// root holds an empty combinator (HasEmptyRootCombinator).
+func ChatToolsHaveEmptyRootCombinator(tools []schemas.ChatTool) bool {
+	return slices.ContainsFunc(tools, func(t schemas.ChatTool) bool {
+		return t.Function != nil && HasEmptyRootCombinator(t.Function.Parameters)
+	})
+}
+
+// ResponsesToolsHaveEmptyRootCombinator is ChatToolsHaveEmptyRootCombinator
+// for Responses tools, namespace members included.
+func ResponsesToolsHaveEmptyRootCombinator(tools []schemas.ResponsesTool) bool {
+	return slices.ContainsFunc(tools, func(t schemas.ResponsesTool) bool {
+		return t.ResponsesToolFunction != nil && HasEmptyRootCombinator(t.ResponsesToolFunction.Parameters) ||
+			t.ResponsesToolNamespace != nil && ResponsesToolsHaveEmptyRootCombinator(t.ResponsesToolNamespace.Tools)
+	})
 }
 
 // rewritePattern applies the policy's regex rewrites, returning pattern unchanged
@@ -5691,6 +5718,14 @@ func ApplyToolSchemaPolicy(params *schemas.ToolFunctionParameters, p ToolSchemaP
 	}
 	if params.Format != nil && p.dropsFormat(*params.Format, params.Type) {
 		edit().Format = nil
+	}
+	if p.DropEmptyRootCombinators && HasEmptyRootCombinator(params) {
+		d := edit()
+		for _, c := range []*[]schemas.OrderedMap{&d.AnyOf, &d.OneOf, &d.AllOf} {
+			if len(*c) == 0 {
+				*c = nil
+			}
+		}
 	}
 
 	for _, field := range []struct {

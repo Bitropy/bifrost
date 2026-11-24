@@ -5339,6 +5339,65 @@ func TestHandleProviderRequest_ChatNormalizesToolSchemasForKimi(t *testing.T) {
 	assertKimiToolParamsNormalized(t, params, provider.got.Params.Tools[0].Function.Parameters)
 }
 
+// BIT-2466 delta 1: an empty root anyOf/oneOf/allOf is dropped on every wire (OpenAI
+// answers one with a 400) and recorded as AdaptationToolSchema; required:[] and enum:[]
+// are still carried, and a schema without an empty combinator is neither changed nor
+// flagged.
+func TestNormalizeToolSchemas_DropsEmptyRootCombinators(t *testing.T) {
+	schema := func(raw string) *schemas.ToolFunctionParameters {
+		var p schemas.ToolFunctionParameters
+		if err := schemas.Unmarshal([]byte(raw), &p); err != nil {
+			t.Fatal(err)
+		}
+		return &p
+	}
+	marshal := func(p *schemas.ToolFunctionParameters) string {
+		b, err := schemas.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for _, tc := range []struct{ in, want string }{
+		{`{"type":"object","properties":{"city":{"type":"string"}},"anyOf":[]}`, `{"type":"object","properties":{"city":{"type":"string"}}}`},
+		{`{"oneOf":[],"allOf":[]}`, `{"properties":{}}`},
+		{`{"type":"object","properties":{},"required":[],"enum":[],"oneOf":[]}`, `{"type":"object","properties":{},"required":[],"enum":[]}`},
+		{`{"type":"object","properties":{},"required":[]}`, ``},
+	} {
+		dropped := tc.want != ""
+		if !dropped {
+			tc.want = tc.in
+		}
+		t.Run(tc.in, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := schema(tc.in)
+			chat := normalizeChatToolSchemas(ctx, schemas.OpenAI, &schemas.BifrostChatRequest{Model: "gpt-5-mini", Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "f", Parameters: params},
+			}}}})
+			if got := marshal(chat.Params.Tools[0].Function.Parameters); got != tc.want {
+				t.Errorf("chat parameters = %s, want %s", got, tc.want)
+			}
+			if got := schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationToolSchema); got != dropped {
+				t.Errorf("chat tool_schema bit = %v, want %v", got, dropped)
+			}
+			if got := marshal(params); got != tc.in {
+				t.Errorf("the caller's schema was mutated: %s", got)
+			}
+
+			ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp := normalizeResponsesToolSchemas(ctx, schemas.OpenAI, &schemas.BifrostResponsesRequest{Model: "gpt-5-mini", Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type: schemas.ResponsesToolTypeFunction, Name: new("f"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+			}}}})
+			if got := marshal(resp.Params.Tools[0].ResponsesToolFunction.Parameters); got != tc.want {
+				t.Errorf("responses parameters = %s, want %s", got, tc.want)
+			}
+			if got := schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationToolSchema); got != dropped {
+				t.Errorf("responses tool_schema bit = %v, want %v", got, dropped)
+			}
+		})
+	}
+}
+
 // A datasheet row decides in either direction: it restricts a model the fallback leaves
 // alone, and lifts a restriction the fallback would apply. A model with neither row nor
 // fallback gets the zero policy, which skips the walk.

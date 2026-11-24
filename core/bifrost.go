@@ -9365,6 +9365,10 @@ func normalizeResponsesToolSchemas(ctx *schemas.BifrostContext, provider schemas
 		return r
 	}
 	policy := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)))
+	if providerUtils.ResponsesToolsHaveEmptyRootCombinator(r.Params.Tools) {
+		policy.DropEmptyRootCombinators = true
+		schemas.AddAdaptation(ctx, schemas.AdaptationToolSchema)
+	}
 	if policy.IsZero() {
 		return r
 	}
@@ -9386,6 +9390,10 @@ func normalizeChatToolSchemas(ctx *schemas.BifrostContext, provider schemas.Mode
 		return r
 	}
 	policy := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)))
+	if providerUtils.ChatToolsHaveEmptyRootCombinator(r.Params.Tools) {
+		policy.DropEmptyRootCombinators = true
+		schemas.AddAdaptation(ctx, schemas.AdaptationToolSchema)
+	}
 	if policy.IsZero() {
 		return r
 	}
