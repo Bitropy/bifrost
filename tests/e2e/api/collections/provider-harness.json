@@ -346506,6 +346506,140 @@
           }
         }
       ]
+    },
+    {
+      "name": "372. Empty root tool-schema combinator dropped on OpenAI (empty root combinator) (BIT-2466)",
+      "description": "OpenAI rejects a tool schema whose root anyOf/oneOf/allOf is [] (400 `[] should be non-empty`). Core drops an empty root combinator on every wire and records the tool_schema adaptation; a root left empty becomes {\"type\":\"object\",\"properties\":{}}. Each case is red before the fix (400) and green after (200 with a tool call).",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini chat typed root with empty anyOf - BIT-2466",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat typed root with empty anyOf is served - BIT-2466', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the empty combinator reached OpenAI').to.not.include('should be non-empty');",
+                  "  pm.expect(body, 'expected a get_weather tool call').to.include(\"get_weather\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Warsaw? Use the get_weather tool.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"anyOf\":[]}}}],\"tool_choice\":\"required\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini chat root of only an empty oneOf - BIT-2466",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat root of only an empty oneOf is served - BIT-2466', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the empty combinator reached OpenAI').to.not.include('should be non-empty');",
+                  "  pm.expect(body, 'expected a get_weather tool call').to.include(\"get_weather\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Warsaw? Use the get_weather tool.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"oneOf\":[]}}}],\"tool_choice\":\"required\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini responses typed root with empty anyOf - BIT-2466",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses typed root with empty anyOf is served - BIT-2466', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the empty combinator reached OpenAI').to.not.include('should be non-empty');",
+                  "  pm.expect(body, 'expected a get_weather tool call').to.include(\"function_call\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"max_output_tokens\":64,\"input\":\"What is the weather in Warsaw? Use the get_weather tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"anyOf\":[]}}],\"tool_choice\":\"required\"}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

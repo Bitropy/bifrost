@@ -5479,14 +5479,16 @@ func NormalizeRegexNULEscape(pattern string) string {
 // jsonSchemaFormatKey is the JSON Schema keyword naming a value's format.
 const jsonSchemaFormatKey = "format"
 
-// ToolSchemaPolicy is the tool-schema subset a model's validator accepts. The zero
-// value accepts everything, and callers skip the walk for it.
+// ToolSchemaPolicy is the tool-schema subset a model's validator accepts, plus one
+// request-shape rule: DropEmptyRootCombinators is set by the dispatcher when the
+// request carries an empty root combinator, never by a model's caps. The zero value
+// accepts everything, and callers skip the walk for it.
 type ToolSchemaPolicy struct {
 	NormalizeNULEscape       bool     // rewrite `\0` to `\x00` in patterns
 	StripLookaround          bool     // remove lookaround assertions from patterns
 	DropPattern              bool     // remove the pattern keyword outright
 	StringFormats            []string // formats a non-numeric schema may keep; nil keeps every format
-	DropEmptyRootCombinators bool     // remove a root anyOf/oneOf/allOf sent as [] (a request-shape rule, see applyToolSchemas)
+	DropEmptyRootCombinators bool     // remove a root anyOf/oneOf/allOf sent as []; a root left empty becomes the no-parameters object schema
 }
 
 // IsZero reports whether the policy leaves every schema untouched.
@@ -5723,6 +5725,11 @@ func ApplyToolSchemaPolicy(params *schemas.ToolFunctionParameters, p ToolSchemaP
 			if len(*c) == 0 {
 				*c = nil
 			}
+		}
+		// The client sent only empty combinators: the no-parameters tool schema
+		// every wire accepts. Any other typeless root stays typeless (BIT-2384).
+		if !d.HasSchemaFields() {
+			d.Type, d.Properties = "object", schemas.NewOrderedMap()
 		}
 	}
 

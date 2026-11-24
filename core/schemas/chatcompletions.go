@@ -854,6 +854,11 @@ func (t *ToolFunctionParameters) IsExplicitEmptyObject() bool {
 	return t != nil && t.explicitEmptyObject && !t.hasDefinedSchemaFields()
 }
 
+// HasSchemaFields reports whether any JSON Schema keyword is set.
+func (t *ToolFunctionParameters) HasSchemaFields() bool {
+	return t.hasDefinedSchemaFields()
+}
+
 // hasDefinedSchemaFields reports whether the schema contains any real JSON Schema
 // fields, allowing MarshalJSON to distinguish an explicit raw `{}` from a
 // populated object schema such as `{"type":"object","properties":{}}`.

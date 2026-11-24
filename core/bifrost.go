@@ -9394,28 +9394,23 @@ func normalizeChatToolSchemas(ctx *schemas.BifrostContext, provider schemas.Mode
 	return &cp
 }
 
-// applyToolSchemas applies the model's tool-schema policy to tools. First it drops an
-// empty root anyOf/oneOf/allOf (JSON Schema requires them non-empty; OpenAI answers one
-// with a 400) and records AdaptationToolSchema when that edit changed a tool (BIT-2466).
-// Neither runs when the attempt sends the client's raw bytes, so the bit never reports
-// an edit that did not reach the wire. hasEmpty is a root-only, allocation-free scan, so
-// a request without an empty combinator pays one check per tool.
+// applyToolSchemas applies the model's tool-schema policy to tools, every provider's
+// chat and Responses attempt alike, before its converter builds the wire schema. When a
+// tool's root holds an empty anyOf/oneOf/allOf (JSON Schema requires them non-empty;
+// OpenAI answers one with a 400) the same walk drops it and AdaptationToolSchema is
+// recorded (BIT-2466): the scan guarantees the walk edits that tool. The drop and the bit
+// are skipped when the attempt sends the client's raw bytes, so the bit never reports an
+// edit that did not reach the wire. hasEmpty is a root-only, allocation-free scan.
 func applyToolSchemas[T any](ctx *schemas.BifrostContext, tools []T, policy providerUtils.ToolSchemaPolicy,
 	hasEmpty func([]T) bool, apply func([]T, providerUtils.ToolSchemaPolicy) ([]T, bool)) ([]T, bool) {
-	changed := false
 	if hasEmpty(tools) && !sendsRawRequestBody(ctx) {
-		if dropped, ok := apply(tools, providerUtils.ToolSchemaPolicy{DropEmptyRootCombinators: true}); ok {
-			tools, changed = dropped, true
-			schemas.AddAdaptation(ctx, schemas.AdaptationToolSchema)
-		}
+		policy.DropEmptyRootCombinators = true
+		schemas.AddAdaptation(ctx, schemas.AdaptationToolSchema)
 	}
 	if policy.IsZero() {
-		return tools, changed
+		return tools, false
 	}
-	if normalized, ok := apply(tools, policy); ok {
-		return normalized, true
-	}
-	return tools, changed
+	return apply(tools, policy)
 }
 
 // sendsRawRequestBody reports whether the attempt's provider sends the client's own

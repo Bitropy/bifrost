@@ -5363,7 +5363,7 @@ func TestNormalizeToolSchemas_DropsEmptyRootCombinators(t *testing.T) {
 		dropped  bool
 	}{
 		{`{"type":"object","properties":{"city":{"type":"string"}},"anyOf":[]}`, `{"type":"object","properties":{"city":{"type":"string"}}}`, true},
-		{`{"oneOf":[],"allOf":[]}`, `{"properties":{}}`, true},
+		{`{"oneOf":[],"allOf":[]}`, `{"type":"object","properties":{}}`, true},
 		{`{"type":"object","properties":{},"required":[],"enum":[],"oneOf":[]}`, `{"type":"object","properties":{},"required":[],"enum":[]}`, true},
 		{`{"type":"object","properties":{},"required":[]}`, `{"type":"object","properties":{},"required":[]}`, false},
 	} {
