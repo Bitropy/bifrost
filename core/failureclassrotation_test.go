@@ -1236,20 +1236,9 @@ func TestCancelledStreamPromptEstimateFollowsSkipPromptUsageEstimation(t *testin
 
 // billedErrorRecorder keeps, per core attempt, the billed usage of each error its post-hook sees.
 type billedErrorRecorder struct {
+	endedAttemptRecorder
 	mu     sync.Mutex
 	billed map[int][]*schemas.BifrostLLMUsage
-}
-
-func (r *billedErrorRecorder) GetName() string { return "billed-error-recorder" }
-
-func (r *billedErrorRecorder) Cleanup() error { return nil }
-
-func (r *billedErrorRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
-	return nil
-}
-
-func (r *billedErrorRecorder) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	return req, nil, nil
 }
 
 func (r *billedErrorRecorder) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
