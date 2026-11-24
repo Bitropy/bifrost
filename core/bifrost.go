@@ -7630,6 +7630,9 @@ func executeRequestWithRetries[T any](
 
 	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
+		// An attempt that fails before registering its own usage handle must not bill the
+		// previous attempt's: that attempt's error already carries its own snapshot.
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, nil)
 
 		// Reset the trail on the first attempt so a reused or shared context (bifrost.ctx)
 		// doesn't carry over records from a previous request.
