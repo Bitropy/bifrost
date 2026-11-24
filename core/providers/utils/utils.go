@@ -5482,13 +5482,11 @@ const jsonSchemaFormatKey = "format"
 // ToolSchemaPolicy is the tool-schema subset a model's validator accepts. The zero
 // value accepts everything, and callers skip the walk for it.
 type ToolSchemaPolicy struct {
-	NormalizeNULEscape bool     // rewrite `\0` to `\x00` in patterns
-	StripLookaround    bool     // remove lookaround assertions from patterns
-	DropPattern        bool     // remove the pattern keyword outright
-	StringFormats      []string // formats a non-numeric schema may keep; nil keeps every format
-	// DropEmptyRootCombinators removes a root anyOf/oneOf/allOf sent as []:
-	// JSON Schema requires them non-empty and OpenAI answers one with a 400.
-	DropEmptyRootCombinators bool
+	NormalizeNULEscape       bool     // rewrite `\0` to `\x00` in patterns
+	StripLookaround          bool     // remove lookaround assertions from patterns
+	DropPattern              bool     // remove the pattern keyword outright
+	StringFormats            []string // formats a non-numeric schema may keep; nil keeps every format
+	DropEmptyRootCombinators bool     // remove a root anyOf/oneOf/allOf sent as [] (a request-shape rule, see applyToolSchemas)
 }
 
 // IsZero reports whether the policy leaves every schema untouched.

@@ -5358,17 +5358,17 @@ func TestNormalizeToolSchemas_DropsEmptyRootCombinators(t *testing.T) {
 		}
 		return string(b)
 	}
-	for _, tc := range []struct{ in, want string }{
-		{`{"type":"object","properties":{"city":{"type":"string"}},"anyOf":[]}`, `{"type":"object","properties":{"city":{"type":"string"}}}`},
-		{`{"oneOf":[],"allOf":[]}`, `{"properties":{}}`},
-		{`{"type":"object","properties":{},"required":[],"enum":[],"oneOf":[]}`, `{"type":"object","properties":{},"required":[],"enum":[]}`},
-		{`{"type":"object","properties":{},"required":[]}`, ``},
+	for _, tc := range []struct {
+		in, want string
+		dropped  bool
+	}{
+		{`{"type":"object","properties":{"city":{"type":"string"}},"anyOf":[]}`, `{"type":"object","properties":{"city":{"type":"string"}}}`, true},
+		{`{"oneOf":[],"allOf":[]}`, `{"properties":{}}`, true},
+		{`{"type":"object","properties":{},"required":[],"enum":[],"oneOf":[]}`, `{"type":"object","properties":{},"required":[],"enum":[]}`, true},
+		{`{"type":"object","properties":{},"required":[]}`, `{"type":"object","properties":{},"required":[]}`, false},
 	} {
-		dropped := tc.want != ""
-		if !dropped {
-			tc.want = tc.in
-		}
 		t.Run(tc.in, func(t *testing.T) {
+			dropped := tc.dropped
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			params := schema(tc.in)
 			chat := normalizeChatToolSchemas(ctx, schemas.OpenAI, &schemas.BifrostChatRequest{Model: "gpt-5-mini", Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
@@ -5393,6 +5393,33 @@ func TestNormalizeToolSchemas_DropsEmptyRootCombinators(t *testing.T) {
 			}
 			if got := schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationToolSchema); got != dropped {
 				t.Errorf("responses tool_schema bit = %v, want %v", got, dropped)
+			}
+
+			// A namespace member is scanned and rewritten like a top-level tool.
+			ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ns := normalizeResponsesToolSchemas(ctx, schemas.OpenAI, &schemas.BifrostResponsesRequest{Model: "gpt-5-mini", Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type: schemas.ResponsesToolTypeNamespace, Name: new("ns"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{{
+					Type: schemas.ResponsesToolTypeFunction, Name: new("f"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+				}}},
+			}}}})
+			if got := marshal(ns.Params.Tools[0].ResponsesToolNamespace.Tools[0].ResponsesToolFunction.Parameters); got != tc.want {
+				t.Errorf("namespace member parameters = %s, want %s", got, tc.want)
+			}
+			if got := schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationToolSchema); got != dropped {
+				t.Errorf("namespace tool_schema bit = %v, want %v", got, dropped)
+			}
+
+			// With the client's raw bytes on the wire nothing is edited or reported.
+			ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			raw := normalizeChatToolSchemas(ctx, schemas.OpenAI, &schemas.BifrostChatRequest{Model: "gpt-5-mini", Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "f", Parameters: params},
+			}}}})
+			if got := marshal(raw.Params.Tools[0].Function.Parameters); got != tc.in {
+				t.Errorf("raw-body parameters = %s, want the client's %s", got, tc.in)
+			}
+			if schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationToolSchema) {
+				t.Error("raw-body attempt reported tool_schema")
 			}
 		})
 	}
