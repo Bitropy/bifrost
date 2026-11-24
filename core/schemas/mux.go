@@ -1497,7 +1497,9 @@ func (cr *BifrostChatRequest) toResponsesRequest(ctx *BifrostContext, carryCache
 			msg = ToolResultForResponses(ctx, msg)
 		}
 		responsesMessages, droppedReasoning := msg.toResponsesMessages(carryCacheControl)
-		// Both callers set carryCacheControl for a Claude target (BIT-3177 S21).
+		// carryCacheControl is set for a Claude target: ToResponsesRequestForTarget
+		// and an embedder's ToResponsesRequestFor read it off the model family
+		// (BIT-2764). A Claude target is the route S21 reports (BIT-3177).
 		if droppedReasoning && carryCacheControl {
 			AddAdaptation(ctx, AdaptationReasoning)
 		}

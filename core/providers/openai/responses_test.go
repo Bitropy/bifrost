@@ -5808,8 +5808,8 @@ func claudeToolTurn(model string, reasoning []schemas.ChatReasoningDetails) *sch
 	}
 }
 
-// openAIResponsesBody converts chat the way bitrouter's N1 attempt does (BIT-2764:
-// cache_control carried for a Claude target) onto a custom OpenAI-base slug.
+// openAIResponsesBody converts chat through the Responses API for its target
+// (cache_control carried for a Claude target) onto a custom OpenAI-base provider.
 func openAIResponsesBody(t *testing.T, chat *schemas.BifrostChatRequest) (string, schemas.Adaptation) {
 	t.Helper()
 	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
@@ -5821,18 +5821,16 @@ func openAIResponsesBody(t *testing.T, chat *schemas.BifrostChatRequest) (string
 	return mintedItemID.ReplaceAllString(string(out), `"<minted>"`), schemas.AdaptationsFromContext(ctx)
 }
 
-func signed(text string) schemas.ChatReasoningDetails {
-	return schemas.ChatReasoningDetails{Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr(text), Signature: schemas.Ptr("sig")}
-}
-
-func redacted(data string) schemas.ChatReasoningDetails {
-	return schemas.ChatReasoningDetails{Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: schemas.Ptr(data)}
-}
-
 // BIT-3177 S21: a Claude-named model on an OpenAI Responses egress cannot read
 // Claude's signatures, so replayed thinking is removed and recorded as the
 // reasoning adaptation. S22: the text block's cache_control is carried.
 func TestClaudeOnOpenAIResponses_ReasoningRemovedIsAdapted(t *testing.T) {
+	signed := func(text string) schemas.ChatReasoningDetails {
+		return schemas.ChatReasoningDetails{Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr(text), Signature: schemas.Ptr("sig")}
+	}
+	redacted := func(data string) schemas.ChatReasoningDetails {
+		return schemas.ChatReasoningDetails{Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: schemas.Ptr(data)}
+	}
 	cases := []struct {
 		name      string
 		reasoning []schemas.ChatReasoningDetails
@@ -5852,7 +5850,8 @@ func TestClaudeOnOpenAIResponses_ReasoningRemovedIsAdapted(t *testing.T) {
 			assert.NotContains(t, body, "sig")
 			assert.NotContains(t, body, `"enc`)
 			assert.NotContains(t, body, `"plan"`)
-			// A content-only reasoning item is dropped; an encrypted one leaves an empty item.
+			// A content-only reasoning item is dropped; an encrypted-only one leaves the
+			// empty item the egress already sent before BIT-3177 (unchanged here).
 			assert.Equal(t, plain, regexp.MustCompile(`\{"id":"<minted>","type":"reasoning","summary":\[\]\},`).ReplaceAllString(body, ""))
 		})
 	}
@@ -5862,6 +5861,12 @@ func TestClaudeOnOpenAIResponses_ReasoningRemovedIsAdapted(t *testing.T) {
 // recorded. The OpenAI wire has no home for an assistant output_text block's
 // cache_control, so S22's carried marker leaves these bytes unchanged.
 func TestClaudeOnOpenAIResponses_NoReasoningGolden(t *testing.T) {
+	signed := func(text string) schemas.ChatReasoningDetails {
+		return schemas.ChatReasoningDetails{Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr(text), Signature: schemas.Ptr("sig")}
+	}
+	redacted := func(data string) schemas.ChatReasoningDetails {
+		return schemas.ChatReasoningDetails{Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: schemas.Ptr(data)}
+	}
 	const claudeGolden = `{"model":"claude-sonnet-4-5","input":[{"type":"message","role":"user","content":"q"},{"id":"<minted>","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"reading","annotations":[],"logprobs":[]}]},{"arguments":"{}","id":"<minted>","type":"function_call","call_id":"t1","name":"read"},{"type":"function_call_output","call_id":"t1","output":"x"}],"tools":[{"type":"function","name":"read"}]}`
 	const gptGolden = `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"q"},{"id":"<minted>","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"reading","annotations":[],"logprobs":[]}]},{"arguments":"{}","id":"<minted>","type":"function_call","call_id":"t1","name":"read"},{"type":"function_call_output","call_id":"t1","output":"x"}],"tools":[{"type":"function","name":"read"}]}`
 	body, got := openAIResponsesBody(t, claudeToolTurn("claude-sonnet-4-5", nil))

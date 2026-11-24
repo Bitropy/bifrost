@@ -665,6 +665,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// carry; recorded for a Claude target (BIT-3177 S21).
 	reasoningRemoved := false
 	for _, message := range bifrostReq.Input {
+		// Taken before the signature strip below; a type check for any other item.
 		replayed := replayedReasoningOf(&message)
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
@@ -963,7 +964,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				len(message.Content.ContentBlocks) > 0 &&
 				!usesContentBlocks &&
 				(message.ResponsesReasoning.EncryptedContent == nil || !isReasoning) {
-				reasoningRemoved = reasoningRemoved || replayed != (replayedReasoning{})
+				reasoningRemoved = reasoningRemoved || replayed.lostIn(replayedReasoning{})
 				continue
 			}
 
