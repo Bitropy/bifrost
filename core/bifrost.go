@@ -9365,10 +9365,7 @@ func normalizeResponsesToolSchemas(ctx *schemas.BifrostContext, provider schemas
 		return r
 	}
 	policy := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)))
-	if policy.IsZero() {
-		return r
-	}
-	tools, changed := providerUtils.ApplyResponsesToolSchemaPolicy(r.Params.Tools, policy)
+	tools, changed := applyToolSchemas(ctx, r.Params.Tools, policy, providerUtils.ResponsesToolsHaveEmptyRootCombinator, providerUtils.ApplyResponsesToolSchemaPolicy)
 	if !changed {
 		return r
 	}
@@ -9386,10 +9383,7 @@ func normalizeChatToolSchemas(ctx *schemas.BifrostContext, provider schemas.Mode
 		return r
 	}
 	policy := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, provider), schemas.ResolveCanonicalModel(ctx, r.Model)))
-	if policy.IsZero() {
-		return r
-	}
-	tools, changed := providerUtils.ApplyChatToolSchemaPolicy(r.Params.Tools, policy)
+	tools, changed := applyToolSchemas(ctx, r.Params.Tools, policy, providerUtils.ChatToolsHaveEmptyRootCombinator, providerUtils.ApplyChatToolSchemaPolicy)
 	if !changed {
 		return r
 	}
@@ -9398,6 +9392,32 @@ func normalizeChatToolSchemas(ctx *schemas.BifrostContext, provider schemas.Mode
 	cp := *r
 	cp.Params = &params
 	return &cp
+}
+
+// applyToolSchemas applies the model's tool-schema policy to tools, every provider's
+// chat and Responses attempt alike, before its converter builds the wire schema. When a
+// tool's root holds an empty anyOf/oneOf/allOf (JSON Schema requires them non-empty;
+// OpenAI answers one with a 400) the same walk drops it and AdaptationToolSchema is
+// recorded (BIT-2466): the scan guarantees the walk edits that tool. The drop and the bit
+// are skipped when the attempt sends the client's raw bytes, so the bit never reports an
+// edit that did not reach the wire. hasEmpty is a root-only, allocation-free scan.
+func applyToolSchemas[T any](ctx *schemas.BifrostContext, tools []T, policy providerUtils.ToolSchemaPolicy,
+	hasEmpty func([]T) bool, apply func([]T, providerUtils.ToolSchemaPolicy) ([]T, bool)) ([]T, bool) {
+	if hasEmpty(tools) && !sendsRawRequestBody(ctx) {
+		policy.DropEmptyRootCombinators = true
+		schemas.AddAdaptation(ctx, schemas.AdaptationToolSchema)
+	}
+	if policy.IsZero() {
+		return tools, false
+	}
+	return apply(tools, policy)
+}
+
+// sendsRawRequestBody reports whether the attempt's provider sends the client's own
+// bytes (raw-body or large-payload passthrough) instead of the typed request.
+func sendsRawRequestBody(ctx *schemas.BifrostContext) bool {
+	raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool)
+	return raw || providerUtils.IsLargePayloadPassthroughEnabled(ctx)
 }
 
 // moonshotSchemaFormats is the string `format` allowlist kimi-k3's tool validator

@@ -22,9 +22,11 @@ const (
 	AdaptationUnmapped
 	AdaptationTopK
 	AdaptationPrefill
+	// AdaptationToolSchema: an empty root anyOf/oneOf/allOf was dropped from a tool schema.
+	AdaptationToolSchema
 )
 
-var adaptationNames = [...]string{"sampling", "tool_choice", "max_tokens", "reasoning", "service_tier", "strict", "unmapped", "top_k", "prefill"}
+var adaptationNames = [...]string{"sampling", "tool_choice", "max_tokens", "reasoning", "service_tier", "strict", "unmapped", "top_k", "prefill", "tool_schema"}
 
 // Has reports whether every bit of b is set in a.
 func (a Adaptation) Has(b Adaptation) bool { return a&b == b }
