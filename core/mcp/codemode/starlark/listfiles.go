@@ -54,7 +54,6 @@ func (s *StarlarkCodeMode) createListToolFilesTool() schemas.ChatTool {
 			Parameters: &schemas.ToolFunctionParameters{
 				Type:       "object",
 				Properties: schemas.NewOrderedMap(),
-				Required:   []string{},
 			},
 		},
 	}

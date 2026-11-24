@@ -649,6 +649,10 @@ type ChatToolFunction struct {
 // (captured during UnmarshalJSON). When constructing programmatically, the default
 // struct field declaration order is used. This is critical because LLMs are
 // sensitive to JSON key ordering in tool schemas.
+//
+// Required, Enum, AnyOf, OneOf and AllOf are omitzero: nil means absent, an
+// empty slice means the client sent [] and is emitted. Leave them nil when
+// building a schema in Go unless an explicit [] is meant.
 type ToolFunctionParameters struct {
 	Type                 string                      `json:"type,omitempty"`                 // Type of the parameters; omitted when the schema has none (root oneOf/anyOf/allOf, bare properties)
 	Description          *string                     `json:"description,omitempty"`          // Description of the parameters

@@ -1170,6 +1170,22 @@ func TestConverseToolSchemaRootCompositionClaude(t *testing.T) {
 			}
 		})
 
+		// BIT-2466: a client-sent empty root combinator is carried by core, so
+		// the Claude gate keys on presence and drops it like a non-empty one.
+		t.Run(path+"/claude_empty_root_combinators_dropped", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := mustToolSchema(t, `{"type":"object","oneOf":[],"anyOf":[],"allOf":[],"properties":{"a":{"type":"string"}}}`)
+			schema, err := convertBedrockToolSchema(t, path, ctx, "global.anthropic.claude-sonnet-4-6", params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+				if _, ok := schema[keyword]; ok {
+					t.Fatalf("empty root %s must be dropped for Claude, got %v", keyword, schema)
+				}
+			}
+		})
+
 		t.Run(path+"/claude_root_allOf_flattened", func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			params := mustToolSchema(t, `{"type":"object","allOf":[{"type":"object","properties":{"left":{"type":"string"}},"required":["left"]},{"type":"object","properties":{"right":{"type":"string"}},"required":["right"]}]}`)

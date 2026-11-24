@@ -3973,7 +3973,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 			if parameters := tool.Function.Parameters; parameters != nil {
 				var err error
 				// Claude rejects oneOf/anyOf/allOf at the input_schema root.
-				if (len(parameters.OneOf) > 0 || len(parameters.AnyOf) > 0 || len(parameters.AllOf) > 0) && schemas.IsAnthropicModelFamily(ctx, model) {
+				if (parameters.OneOf != nil || parameters.AnyOf != nil || parameters.AllOf != nil) && schemas.IsAnthropicModelFamily(ctx, model) {
 					if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
 						return nil, nil, err
 					}
