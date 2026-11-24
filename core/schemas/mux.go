@@ -548,7 +548,7 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 		// Text sent alongside the calls becomes its own message item ahead of them.
 		if cm.Content != nil && ((cm.Content.ContentStr != nil && *cm.Content.ContentStr != "") || len(cm.Content.ContentBlocks) > 0) {
 			textOnly := ChatMessage{Role: cm.Role, Content: cm.Content}
-			messages = append(messages, textOnly.ToResponsesMessages()...)
+			messages = append(messages, textOnly.toResponsesMessages(carryCacheControl)...)
 		}
 		// Expand multiple tool calls into separate function_call items
 		for _, tc := range cm.ChatAssistantMessage.ToolCalls {
@@ -1463,6 +1463,28 @@ func (cr *BifrostChatRequest) ToResponsesRequestFor(ctx *BifrostContext, carryCa
 	return cr.toResponsesRequest(ctx, carryCacheControl)
 }
 
+// dropsClaudeReasoning reports whether toResponsesMessages leaves out a replayed
+// Claude reasoning detail: a signed thinking block with no text, or a
+// redacted_thinking block other than the last one (one Responses reasoning item
+// holds one encrypted token).
+func dropsClaudeReasoning(details []ChatReasoningDetails) bool {
+	encrypted := 0
+	for i := range details {
+		d := &details[i]
+		switch d.Type {
+		case BifrostReasoningDetailsTypeText:
+			if d.Signature != nil && *d.Signature != "" && (d.Text == nil || *d.Text == "") {
+				return true
+			}
+		case BifrostReasoningDetailsTypeEncrypted:
+			if d.Data != nil {
+				encrypted++
+			}
+		}
+	}
+	return encrypted > 1
+}
+
 // ToResponsesRequestForTarget is the chat request converted for the target it
 // is sent to through the Responses API: ToResponsesRequestWithCacheControl for
 // a Claude target (IsAnthropicModelFamily over cr.Model; its Responses egress
@@ -1490,6 +1512,11 @@ func (cr *BifrostChatRequest) toResponsesRequest(ctx *BifrostContext, carryCache
 		if chatMsg.Role == ChatMessageRoleTool {
 			// A function_call_output carries only the media every Responses provider reads.
 			msg = ToolResultForResponses(ctx, msg)
+		}
+		// Both callers set carryCacheControl for a Claude target, whose replayed
+		// reasoning the mux drops in part (BIT-3177 S21).
+		if carryCacheControl && chatMsg.ChatAssistantMessage != nil && dropsClaudeReasoning(chatMsg.ReasoningDetails) {
+			AddAdaptation(ctx, AdaptationReasoning)
 		}
 		responsesMessages := msg.toResponsesMessages(carryCacheControl)
 		for i := range responsesMessages {

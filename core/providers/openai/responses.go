@@ -638,6 +638,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
 		return t.Type == schemas.ResponsesToolTypeComputer
 	})
+	// A replayed reasoning signature, text or encrypted token the OpenAI wire
+	// does not carry; recorded below for a Claude target (BIT-3177 S21).
+	reasoningRemoved := false
 	for _, message := range bifrostReq.Input {
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
@@ -862,6 +865,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					continue
 				}
 				// Signature found; copy content and blocks before clearing
+				if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeReasoning {
+					reasoningRemoved = true
+				}
 				contentCopy := *message.Content
 				contentCopy.ContentBlocks = slices.Clone(message.Content.ContentBlocks)
 				for i := range contentCopy.ContentBlocks {
@@ -925,6 +931,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		} else if message.ResponsesReasoning != nil {
 			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(baseProvider, capModel))
 			isReasoning := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))
+			reasoningItem := message.Type != nil && *message.Type == schemas.ResponsesMessageTypeReasoning
 
 			// Models that read reasoning from summary[] have nothing to gain from a
 			// reasoning-only message carrying content blocks alone, so skip it.
@@ -936,12 +943,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				len(message.Content.ContentBlocks) > 0 &&
 				!usesContentBlocks &&
 				(message.ResponsesReasoning.EncryptedContent == nil || !isReasoning) {
+				reasoningRemoved = reasoningRemoved || reasoningItem
 				continue
 			}
 
 			// Models that read reasoning from content blocks need the summaries rewritten as blocks
 			if len(message.ResponsesReasoning.Summary) > 0 && usesContentBlocks &&
 				(message.Content == nil || len(message.Content.ContentBlocks) == 0) {
+				reasoningRemoved = reasoningRemoved || (reasoningItem && message.ResponsesReasoning.EncryptedContent != nil)
 				var newMessage schemas.ResponsesMessage
 				newMessage.ID = message.ID
 				newMessage.Type = message.Type
@@ -973,6 +982,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				// Compaction items always carry encrypted_content and must never be stripped.
 				isCompactionMessage := message.Type != nil && *message.Type == schemas.ResponsesMessageTypeCompaction
 				if !isReasoning && !isCompactionMessage {
+					reasoningRemoved = reasoningRemoved || (reasoningItem && message.ResponsesReasoning.EncryptedContent != nil)
 					message.ResponsesReasoning.EncryptedContent = nil
 				}
 				// Only gpt-oss carries its reasoning in reasoning_text content blocks. Every
@@ -988,6 +998,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					switch {
 					case !usesContentBlocks:
 						// Summary and encrypted_content already carry everything OpenAI will accept.
+						reasoningRemoved = reasoningRemoved || (reasoningItem && (len(message.Content.ContentBlocks) > 0 ||
+							(message.Content.ContentStr != nil && *message.Content.ContentStr != "")))
 						message.Content = nil
 					case message.Content.ContentStr != nil:
 						// OpenAI types reasoning.content as an array of reasoning_text blocks, so a
@@ -1017,6 +1029,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		} else {
 			messages = append(messages, message)
 		}
+	}
+	if reasoningRemoved && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+		schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 	}
 	if !caps.SupportsMidConversationSystem(true) {
 		messages = inlineResponsesMidConversationSystem(messages)
