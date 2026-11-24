@@ -1276,7 +1276,7 @@ func DeepCopyToolFunctionParameters(original *ToolFunctionParameters) *ToolFunct
 		copyParams.Description = &copyParamDesc
 	}
 	if original.Required != nil {
-		copyParams.Required = append([]string(nil), original.Required...)
+		copyParams.Required = slices.Clone(original.Required)
 	}
 	if original.Properties != nil {
 		copyParams.Properties = deepCopyOrderedMap(original.Properties)
@@ -1293,7 +1293,7 @@ func DeepCopyToolFunctionParameters(original *ToolFunctionParameters) *ToolFunct
 		copyParams.AdditionalProperties = &copyAdditionalProps
 	}
 	if original.Enum != nil {
-		copyParams.Enum = append([]string(nil), original.Enum...)
+		copyParams.Enum = slices.Clone(original.Enum)
 	}
 	if original.Defs != nil {
 		copyParams.Defs = deepCopyOrderedMap(original.Defs)

@@ -653,9 +653,9 @@ type ToolFunctionParameters struct {
 	Type                 string                      `json:"type,omitempty"`                 // Type of the parameters; omitted when the schema has none (root oneOf/anyOf/allOf, bare properties)
 	Description          *string                     `json:"description,omitempty"`          // Description of the parameters
 	Properties           *OrderedMap                 `json:"properties"`                     // Parameter properties - always include even if empty (required by JSON Schema and some providers like OpenAI); see MarshalJSON for a typeless schema
-	Required             []string                    `json:"required,omitempty"`             // Required parameter names
+	Required             []string                    `json:"required,omitzero"`              // Required parameter names
 	AdditionalProperties *AdditionalPropertiesStruct `json:"additionalProperties,omitempty"` // Whether to allow additional properties
-	Enum                 []string                    `json:"enum,omitempty"`                 // Enum values for the parameters
+	Enum                 []string                    `json:"enum,omitzero"`                  // Enum values for the parameters
 
 	// JSON Schema definition fields
 	Schema      *string     `json:"$schema,omitempty"`     // JSON Schema dialect identifier (e.g. https://json-schema.org/draft/2020-12/schema)
@@ -669,9 +669,9 @@ type ToolFunctionParameters struct {
 	MaxItems *int64      `json:"maxItems,omitempty"` // Maximum array length
 
 	// Composition fields (union types)
-	AnyOf []OrderedMap `json:"anyOf,omitempty"` // Union types (any of these schemas)
-	OneOf []OrderedMap `json:"oneOf,omitempty"` // Exclusive union types (exactly one of these)
-	AllOf []OrderedMap `json:"allOf,omitempty"` // Schema intersection (all of these)
+	AnyOf []OrderedMap `json:"anyOf,omitzero"` // Union types (any of these schemas)
+	OneOf []OrderedMap `json:"oneOf,omitzero"` // Exclusive union types (exactly one of these)
+	AllOf []OrderedMap `json:"allOf,omitzero"` // Schema intersection (all of these)
 
 	// String validation fields
 	Format    *string `json:"format,omitempty"`    // String format (email, date, uri, etc.)
@@ -857,7 +857,7 @@ func (t *ToolFunctionParameters) hasDefinedSchemaFields() bool {
 	if t == nil {
 		return false
 	}
-	if t.Type != "" || t.Description != nil || len(t.Required) > 0 || t.AdditionalProperties != nil || len(t.Enum) > 0 {
+	if t.Type != "" || t.Description != nil || t.Required != nil || t.AdditionalProperties != nil || t.Enum != nil {
 		return true
 	}
 	if t.Properties != nil || t.Schema != nil || t.Defs != nil || t.Definitions != nil || t.Ref != nil {
@@ -866,7 +866,7 @@ func (t *ToolFunctionParameters) hasDefinedSchemaFields() bool {
 	if t.Items != nil || t.MinItems != nil || t.MaxItems != nil {
 		return true
 	}
-	if len(t.AnyOf) > 0 || len(t.OneOf) > 0 || len(t.AllOf) > 0 {
+	if t.AnyOf != nil || t.OneOf != nil || t.AllOf != nil {
 		return true
 	}
 	if t.Format != nil || t.Pattern != nil || t.MinLength != nil || t.MaxLength != nil {

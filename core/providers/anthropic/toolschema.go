@@ -35,7 +35,14 @@ func NormalizeAnthropicToolInputSchema(input *schemas.ToolFunctionParameters) (*
 		return nil, nil
 	}
 	if len(input.OneOf) == 0 && len(input.AnyOf) == 0 && len(input.AllOf) == 0 {
-		return input, nil
+		if input.OneOf == nil && input.AnyOf == nil && input.AllOf == nil {
+			return input, nil
+		}
+		// A client-sent empty root combinator is rejected at the root like
+		// any other, and adds no branch: drop it as the rewrite below would.
+		out := new(*input)
+		out.OneOf, out.AnyOf, out.AllOf = nil, nil, nil
+		return out, nil
 	}
 
 	out := new(*input)
@@ -91,6 +98,10 @@ func NormalizeAnthropicToolInputSchema(input *schemas.ToolFunctionParameters) (*
 	out.Type = "object"
 	out.Properties = mergeAnthropicBranchProperties(branches)
 	out.Required = intersectAnthropicBranchRequired(branches)
+	if len(out.Required) == 0 {
+		// Required now emits an empty slice; an empty intersection is ours, not the client's.
+		out.Required = nil
+	}
 	if allAnthropicBranchesDisallowAdditionalProperties(branches) {
 		allow := false
 		out.AdditionalProperties = &schemas.AdditionalPropertiesStruct{AdditionalPropertiesBool: &allow}

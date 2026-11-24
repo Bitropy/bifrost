@@ -1043,6 +1043,48 @@ func TestToolFunctionParameters_ExplicitEmptyObjectPreserved(t *testing.T) {
 	assert.Equal(t, `{}`, string(normalized))
 }
 
+// TestToolFunctionParameters_CarriesEmptyArrays pins BIT-2466: a root
+// required, enum, anyOf, oneOf or allOf sent as [] is carried (omitzero keeps
+// a decoded empty slice, omits a nil one), so a root holding only such a
+// keyword is not turned into {"properties":{}}; DeepCopy keeps it, and
+// Normalized places it in struct order. A root keyword sent as null is the
+// field's zero value and stays dropped, as before.
+func TestToolFunctionParameters_CarriesEmptyArrays(t *testing.T) {
+	for in, want := range map[string]string{
+		`{"type":"object","properties":{"a":{"type":"string"}},"required":[]}`: ``,
+		`{"oneOf":[]}`:  ``,
+		`{"anyOf":[ ]}`: `{"anyOf":[]}`,
+		`{"allOf":[]}`:  ``,
+		`{"type":"object","enum":[],"properties":{}}`:     ``,
+		`{"type":"object","oneOf":[],"properties":{}}`:    ``,
+		`{"required":[],"title":null,"description":null}`: `{"required":[]}`,
+		`{"type":"object","properties":null,"enum":null}`: `{"type":"object","properties":{}}`,
+	} {
+		if want == "" {
+			want = in
+		}
+		var params ToolFunctionParameters
+		require.NoError(t, Unmarshal([]byte(in), &params), in)
+		got, err := Marshal(params)
+		require.NoError(t, err, in)
+		assert.Equal(t, want, string(got), in)
+		got, err = Marshal(DeepCopyToolFunctionParameters(&params))
+		require.NoError(t, err, in)
+		assert.Equal(t, want, string(got), "deep copy of %s", in)
+	}
+
+	// Normalized output does not depend on the client's key order.
+	var a, b ToolFunctionParameters
+	require.NoError(t, Unmarshal([]byte(`{"enum":[],"required":[],"type":"object"}`), &a))
+	require.NoError(t, Unmarshal([]byte(`{"required":[],"type":"object","enum":[]}`), &b))
+	gotA, err := Marshal(a.Normalized())
+	require.NoError(t, err)
+	gotB, err := Marshal(b.Normalized())
+	require.NoError(t, err)
+	assert.Equal(t, `{"type":"object","properties":{},"required":[],"enum":[]}`, string(gotA))
+	assert.Equal(t, string(gotA), string(gotB))
+}
+
 func TestToolFunctionParameters_ExplicitEmptyObjectWhitespacePreserved(t *testing.T) {
 	var params ToolFunctionParameters
 	err := Unmarshal([]byte(` { } `), &params)

@@ -45,6 +45,16 @@ func TestConvertFunctionToolToAnthropic_InputSchema(t *testing.T) {
 			`{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"integer"}},"required":["a"]}`},
 		{"root_allOf", `{"type":"function","function":{"name":"g","parameters":{"allOf":[{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]},{"type":"object","properties":{"b":{"type":"integer"}}}]}}}`,
 			`{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"integer"}},"required":["a"]}`},
+		// Root keywords sent as [] are carried (BIT-2466), except a root
+		// combinator: Anthropic rejects one at the root, so an empty one goes
+		// the way of the rewrite above.
+		{"root_empty_arrays", `{"type":"function","function":{"name":"g","parameters":{"type":"object","properties":{"a":{"type":"string"}},"required":[],"enum":[]}}}`,
+			`{"type":"object","properties":{"a":{"type":"string"}},"required":[],"enum":[]}`},
+		{"root_empty_oneOf", `{"type":"function","function":{"name":"g","parameters":{"oneOf":[]}}}`, `{"type":"object","properties":{}}`},
+		{"root_typed_empty_combinators", `{"type":"function","function":{"name":"g","parameters":{"type":"object","anyOf":[],"properties":{"a":{"type":"string"}},"allOf":[]}}}`,
+			`{"type":"object","properties":{"a":{"type":"string"}}}`},
+		{"root_empty_with_nonempty_combinator", `{"type":"function","function":{"name":"g","parameters":{"anyOf":[],"oneOf":[{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}]}}}`,
+			`{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var tool schemas.ChatTool
