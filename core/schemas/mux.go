@@ -430,19 +430,20 @@ func (tc *ResponsesToolChoice) ToChatToolChoice() *ChatToolChoice {
 // ToResponsesMessages converts a ChatMessage to one or more ResponsesMessages
 // This handles the expansion of assistant messages with tool calls into separate function_call messages
 func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
-	return cm.toResponsesMessages(false)
+	messages, _ := cm.toResponsesMessages(false)
+	return messages
 }
 
 // toResponsesMessages is ToResponsesMessages; carryCacheControl also copies
 // the message blocks' and tool calls' cache_control onto the Responses items
 // (ToResponsesRequestWithCacheControl). A tool result's marker
-// (ChatToolMessage.CacheControl) is always carried.
-func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMessage {
+// (ChatToolMessage.CacheControl) is always carried. droppedReasoning reports a
+// replayed reasoning detail left out: a signed one with no text, or an
+// encrypted token other than the last (one reasoning item holds one).
+func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) (messages []ResponsesMessage, droppedReasoning bool) {
 	if cm == nil {
-		return []ResponsesMessage{}
+		return []ResponsesMessage{}, false
 	}
-
-	var messages []ResponsesMessage
 
 	// Emit reasoning first so chat->responses->anthropic preserves reasoning content
 	// (Anthropic signatures, OpenAI encrypted/summary entries) for clients to echo back; see symmetric ToChatMessages buffering.
@@ -489,6 +490,8 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 							Text:      d.Text,
 							Signature: d.Signature,
 						})
+					} else if d.Signature != nil && *d.Signature != "" {
+						droppedReasoning = true
 					}
 				case BifrostReasoningDetailsTypeSummary:
 					if d.Summary != nil {
@@ -499,6 +502,7 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 					}
 				case BifrostReasoningDetailsTypeEncrypted:
 					if d.Data != nil {
+						droppedReasoning = droppedReasoning || encryptedContent != nil
 						encryptedContent = d.Data
 					}
 				}
@@ -548,7 +552,8 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 		// Text sent alongside the calls becomes its own message item ahead of them.
 		if cm.Content != nil && ((cm.Content.ContentStr != nil && *cm.Content.ContentStr != "") || len(cm.Content.ContentBlocks) > 0) {
 			textOnly := ChatMessage{Role: cm.Role, Content: cm.Content}
-			messages = append(messages, textOnly.ToResponsesMessages()...)
+			textMessages, _ := textOnly.toResponsesMessages(carryCacheControl)
+			messages = append(messages, textMessages...)
 		}
 		// Expand multiple tool calls into separate function_call items
 		for _, tc := range cm.ChatAssistantMessage.ToolCalls {
@@ -602,7 +607,7 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 
 			messages = append(messages, rm)
 		}
-		return messages
+		return messages, droppedReasoning
 	}
 
 	// Regular message conversion
@@ -832,7 +837,7 @@ func (cm *ChatMessage) toResponsesMessages(carryCacheControl bool) []ResponsesMe
 	}
 
 	messages = append(messages, rm)
-	return messages
+	return messages, droppedReasoning
 }
 
 // ToChatMessages converts a slice of ResponsesMessages back to ChatMessages
@@ -1491,7 +1496,13 @@ func (cr *BifrostChatRequest) toResponsesRequest(ctx *BifrostContext, carryCache
 			// A function_call_output carries only the media every Responses provider reads.
 			msg = ToolResultForResponses(ctx, msg)
 		}
-		responsesMessages := msg.toResponsesMessages(carryCacheControl)
+		responsesMessages, droppedReasoning := msg.toResponsesMessages(carryCacheControl)
+		// carryCacheControl is set for a Claude target: ToResponsesRequestForTarget
+		// and an embedder's ToResponsesRequestFor read it off the model family
+		// (BIT-2764). A Claude target is the route S21 reports (BIT-3177).
+		if droppedReasoning && carryCacheControl {
+			AddAdaptation(ctx, AdaptationReasoning)
+		}
 		for i := range responsesMessages {
 			item := &responsesMessages[i]
 			if item.Type == nil || item.ResponsesToolMessage == nil || item.CallID == nil {
