@@ -504,10 +504,10 @@ type OpenAIChatAssistantMessage struct {
 	// ReasoningAlias and ReasoningDetails capture the other two spellings callers use to
 	// replay assistant reasoning: OpenRouter-style "reasoning" and "reasoning_details".
 	//
-	// These are inbound-only. ConvertBifrostMessagesToOpenAIMessages is the sole
-	// construction site on the outbound path and never populates them, so they stay nil
-	// there and omitempty keeps them off the wire for every provider. Read them via
-	// ConvertOpenAIMessagesToBifrostMessages, which folds them into the Bifrost schema.
+	// ConvertBifrostMessagesToOpenAIMessages never populates them, so omitempty keeps
+	// them off the wire; ToOpenAIChatRequest sets ReasoningDetails for OpenRouter only
+	// (keepsReasoningDetails). Read them via ConvertOpenAIMessagesToBifrostMessages,
+	// which folds them into the Bifrost schema.
 	ReasoningAlias   *string                        `json:"reasoning,omitempty"`
 	ReasoningDetails []schemas.ChatReasoningDetails `json:"reasoning_details,omitempty"`
 	// ProviderBlocks is inbound-only for the same reason: no OpenAI-wire upstream reads it.
@@ -1310,6 +1310,49 @@ func isAnthropicOnlyResponsesToolType(t schemas.ResponsesTool) bool {
 // underlying model, so MarshalJSON keeps the block, tool-call and tool markers for it.
 func (req *OpenAIChatRequest) keepsCacheControl() bool {
 	return req.Provider == schemas.OpenRouter
+}
+
+// keepsReasoningDetails: OpenRouter takes replayed reasoning_details on an assistant
+// message and forwards them, signatures included, to the underlying model.
+func (req *OpenAIChatRequest) keepsReasoningDetails() bool {
+	return req.keepsCacheControl()
+}
+
+// carryReasoningDetails puts each input message's replayed reasoning details on its
+// wire message. out is ConvertBifrostMessagesToOpenAIMessages(in): index-aligned, and
+// its assistant structs are its own, so the caller's input is never written.
+func carryReasoningDetails(out []OpenAIMessage, in []schemas.ChatMessage) {
+	for i := range in {
+		if am := in[i].ChatAssistantMessage; am != nil && len(am.ReasoningDetails) > 0 && out[i].OpenAIChatAssistantMessage != nil {
+			out[i].OpenAIChatAssistantMessage.ReasoningDetails = am.ReasoningDetails
+		}
+	}
+}
+
+// reasoningDetailsLost reports a replayed reasoning detail the OpenAI wire cannot
+// carry: it has reasoning_content only, one text, so a signature, an encrypted token,
+// a summary or a second text is dropped. A single bare text is the one
+// reasoning_content already carries.
+func reasoningDetailsLost(msgs []schemas.ChatMessage) bool {
+	for i := range msgs {
+		am := msgs[i].ChatAssistantMessage
+		if am == nil {
+			continue
+		}
+		texts := 0
+		for _, d := range am.ReasoningDetails {
+			if d.Signature != nil && *d.Signature != "" || d.Data != nil || d.Summary != nil {
+				return true
+			}
+			if d.Text != nil && *d.Text != "" {
+				texts++
+			}
+		}
+		if texts > 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // chatCacheControlLost reports a cache_control marker MarshalJSON will not carry:
