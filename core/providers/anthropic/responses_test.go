@@ -13,6 +13,8 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWebSearchStreamQueryVariants(t *testing.T) {
@@ -4733,5 +4735,74 @@ func TestChatToResponses_ClaudeToolTurnTextKeepsCacheControl(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `{"type":"text","text":"reading","cache_control":{"type":"ephemeral"}}`) {
 		t.Fatalf("assistant text block lost its cache_control: %s", body)
+	}
+}
+
+// AC-3: a Responses web tool whose client-selected version the host remaps is sent downgraded and
+// recorded as tool_version at the tool actually sent, whether declared in tools[] or added by
+// value in a tool_addition block; a host without the remap records nothing.
+// webToolsSupplyCodeExecution resolves the same versions but takes no context, so it cannot record.
+func TestConvertBifrostToolToAnthropic_ReportsToolVersion(t *testing.T) {
+	webSearch := func(version string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{Version: schemas.Ptr(version)}}
+	}
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		version  string
+		wantType AnthropicToolType
+		want     Feature
+	}{
+		{"vertex remaps 20260209", schemas.Vertex, string(AnthropicToolTypeWebSearch20260209), AnthropicToolTypeWebSearch20250305, FeatureToolVersion},
+		{"vertex keeps 20250305", schemas.Vertex, string(AnthropicToolTypeWebSearch20250305), AnthropicToolTypeWebSearch20250305, 0},
+		{"anthropic keeps 20260209", schemas.Anthropic, string(AnthropicToolTypeWebSearch20260209), AnthropicToolTypeWebSearch20260209, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(tc.provider, "claude-sonnet-4-6")
+			tools := []schemas.ResponsesTool{webSearch(tc.version), webSearch(tc.version)}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			out := convertBifrostToolToAnthropic(ctx, caps, &tools[0], tc.provider, false)
+			require.NotNil(t, out)
+			require.NotNil(t, out.Type)
+			assert.Equal(t, tc.wantType, *out.Type)
+			assert.Equal(t, tc.want, RemovedFeatures(ctx))
+
+			ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			converted, _, err := convertBifrostToolsToAnthropic(ctx, caps, tools, tc.provider)
+			require.NoError(t, err)
+			require.Len(t, converted, 2)
+			assert.Equal(t, tc.want, RemovedFeatures(ctx), "two remapped tools record the one bit")
+
+			inline := webSearch(tc.version)
+			ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "claude-sonnet-4-6",
+				Input: []schemas.ResponsesMessage{
+					{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")}},
+					{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type:       schemas.ResponsesInputMessageContentBlockTypeToolAddition,
+						ToolChange: &schemas.ResponsesToolChangeTarget{Type: schemas.ResponsesToolChangeTargetTypeToolDefinition, Definition: &inline},
+					}}}},
+				},
+				Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(64)},
+			})
+			require.NoError(t, err)
+			var sent *AnthropicToolChangeTarget
+			for _, msg := range req.Messages {
+				for _, block := range msg.Content.ContentBlocks {
+					if block.Type == AnthropicContentBlockTypeToolAddition {
+						sent = block.Tool
+					}
+				}
+			}
+			require.NotNil(t, sent)
+			require.NotNil(t, sent.Definition)
+			require.NotNil(t, sent.Definition.Type)
+			assert.Equal(t, tc.wantType, *sent.Definition.Type)
+			assert.Equal(t, tc.want, RemovedFeatures(ctx), "an inline web tool records its remap")
+		})
 	}
 }

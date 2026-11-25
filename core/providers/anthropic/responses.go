@@ -3796,7 +3796,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 						// dated server-tool versions from the model, so resolve the attempt's caps
 						// instead of passing empty ones (which would downgrade web_search_20260209).
 						caps := schemas.ResolveModelCaps(schemas.ResolveFamilyProvider(ctx, attemptProvider(bifrostResp.ExtraFields)), attemptModel(bifrostResp.ExtraFields))
-						contentBlock.ToolChanges = convertBifrostContentBlocksToAnthropic(caps, cmp.ToolChanges)
+						contentBlock.ToolChanges = convertBifrostContentBlocksToAnthropic(nil, caps, cmp.ToolChanges)
 					}
 				} else if isFallbackItem(bifrostResp.Item) {
 					contentBlock.Type = AnthropicContentBlockTypeFallback
@@ -6063,9 +6063,14 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 // response (see convertBifrostReasoningToAnthropicThinking).
 func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifrostMessages []schemas.ResponsesMessage, isRequestMessage bool, caps schemas.ModelCaps, bridgedFromChat bool) ([]AnthropicMessage, *AnthropicContent) {
 	bifrostMessages = normalizeOpenAIToolSearchItems(ctx, bifrostMessages, isRequestMessage)
+	// Only a request records what its inline tool definitions lose; a response render must not.
+	reportCtx := ctx
+	if !isRequestMessage {
+		reportCtx = nil
+	}
 	// If only a single system message is present, convert it user message (since openai allows it)
 	if len(bifrostMessages) == 1 && bifrostMessages[0].Role != nil && (*bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleSystem || *bifrostMessages[0].Role == schemas.ResponsesInputMessageRoleDeveloper) {
-		if systemContent := convertBifrostMessageToAnthropicSystemContent(caps, &bifrostMessages[0]); systemContent != nil {
+		if systemContent := convertBifrostMessageToAnthropicSystemContent(reportCtx, caps, &bifrostMessages[0]); systemContent != nil {
 			return []AnthropicMessage{{
 				Role:    AnthropicMessageRoleUser,
 				Content: *systemContent,
@@ -6154,7 +6159,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 				}
 				continue
 			}
-			if convertContentBlockToAnthropicWithCaps(caps, block) != nil {
+			if convertContentBlockToAnthropicWithCaps(nil, caps, block) != nil {
 				return false
 			}
 		}
@@ -6361,7 +6366,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					currentAssistantMessage != nil) {
 					seenConversation = true
 				}
-				content := convertBifrostMessageToAnthropicSystemContent(caps, &msg)
+				content := convertBifrostMessageToAnthropicSystemContent(reportCtx, caps, &msg)
 				if msg.IsEffortOnlySystemItem() {
 					// content:"" with an override is the effort-only form too; a non-nil empty
 					// string must not fall through to the hoist branch and lose the effort.
@@ -6438,7 +6443,7 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 			}
 
 			// Regular user/assistant message
-			anthropicMsg := convertBifrostMessageToAnthropicMessage(caps, &msg, &pendingReasoningContentBlocks)
+			anthropicMsg := convertBifrostMessageToAnthropicMessage(reportCtx, caps, &msg, &pendingReasoningContentBlocks)
 			if anthropicMsg != nil {
 				anthropicMessages = append(anthropicMessages, *anthropicMsg)
 				// Register any tool_use ids carried on a regular assistant message so
@@ -7774,7 +7779,7 @@ func convertAnthropicToolChangesToBifrost(changes []AnthropicContentBlock) []sch
 // convertToolChangeTargetToAnthropic rebuilds the `tool` object of a tool_addition /
 // tool_removal block. A by-value definition goes through the regular tool converter so it
 // leaves exactly as a tools[] entry would.
-func convertToolChangeTargetToAnthropic(caps schemas.ModelCaps, target *schemas.ResponsesToolChangeTarget) *AnthropicToolChangeTarget {
+func convertToolChangeTargetToAnthropic(ctx *schemas.BifrostContext, caps schemas.ModelCaps, target *schemas.ResponsesToolChangeTarget) *AnthropicToolChangeTarget {
 	if target == nil {
 		return nil
 	}
@@ -7784,7 +7789,7 @@ func convertToolChangeTargetToAnthropic(caps schemas.ModelCaps, target *schemas.
 		ServerName: target.ServerName,
 	}
 	if target.Definition != nil {
-		out.Definition = convertInlineToolDefinitionToAnthropic(caps, target.Definition)
+		out.Definition = convertInlineToolDefinitionToAnthropic(ctx, caps, target.Definition)
 	}
 	return out
 }
@@ -7794,7 +7799,7 @@ func convertToolChangeTargetToAnthropic(caps schemas.ModelCaps, target *schemas.
 // flags restored, and a neutral MCP tool rebuilt as the mcp_toolset entry Anthropic accepts
 // by value. The programmatic caller is left unresolved: it is derived from the
 // code_execution version declared in tools[], which an inline definition does not see.
-func convertInlineToolDefinitionToAnthropic(caps schemas.ModelCaps, tool *schemas.ResponsesTool) *AnthropicTool {
+func convertInlineToolDefinitionToAnthropic(ctx *schemas.BifrostContext, caps schemas.ModelCaps, tool *schemas.ResponsesTool) *AnthropicTool {
 	if tool == nil {
 		return nil
 	}
@@ -7811,7 +7816,7 @@ func convertInlineToolDefinitionToAnthropic(caps schemas.ModelCaps, tool *schema
 		if normalized, err := normalizeInlineFunctionTool(tool); err == nil {
 			tool = normalized
 		}
-		out = convertBifrostToolToAnthropic(nil, caps, tool, caps.Provider(), false)
+		out = convertBifrostToolToAnthropic(ctx, caps, tool, caps.Provider(), false)
 	}
 	if out != nil {
 		applyResponsesToolAnthropicFlags(out, tool, "")
@@ -8625,7 +8630,7 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 
 // Helper functions for converting individual Bifrost message types to Anthropic messages
 // convertBifrostMessageToAnthropicSystemContent converts a Bifrost system message to Anthropic system content
-func convertBifrostMessageToAnthropicSystemContent(caps schemas.ModelCaps, msg *schemas.ResponsesMessage) *AnthropicContent {
+func convertBifrostMessageToAnthropicSystemContent(ctx *schemas.BifrostContext, caps schemas.ModelCaps, msg *schemas.ResponsesMessage) *AnthropicContent {
 	if msg.Content != nil {
 		if msg.Content.ContentStr != nil {
 			if *msg.Content.ContentStr == "" {
@@ -8635,7 +8640,7 @@ func convertBifrostMessageToAnthropicSystemContent(caps schemas.ModelCaps, msg *
 				ContentStr: msg.Content.ContentStr,
 			}
 		} else if msg.Content.ContentBlocks != nil {
-			contentBlocks := convertBifrostContentBlocksToAnthropic(caps, msg.Content.ContentBlocks)
+			contentBlocks := convertBifrostContentBlocksToAnthropic(ctx, caps, msg.Content.ContentBlocks)
 			if len(contentBlocks) > 0 {
 				return &AnthropicContent{
 					ContentBlocks: contentBlocks,
@@ -8663,7 +8668,7 @@ func perMessageOutputConfigFor(msg *schemas.ResponsesMessage, supported bool) *A
 }
 
 // convertBifrostMessageToAnthropicMessage converts a regular Bifrost message to Anthropic message
-func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schemas.ResponsesMessage, pendingReasoningContentBlocks *[]AnthropicContentBlock) *AnthropicMessage {
+func convertBifrostMessageToAnthropicMessage(ctx *schemas.BifrostContext, caps schemas.ModelCaps, msg *schemas.ResponsesMessage, pendingReasoningContentBlocks *[]AnthropicContentBlock) *AnthropicMessage {
 	anthropicMsg := AnthropicMessage{}
 
 	// Set role
@@ -8698,7 +8703,7 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 					})
 				}
 			} else if msg.Content.ContentBlocks != nil {
-				contentBlocks = append(contentBlocks, convertBifrostContentBlocksToAnthropic(caps, msg.Content.ContentBlocks)...)
+				contentBlocks = append(contentBlocks, convertBifrostContentBlocksToAnthropic(ctx, caps, msg.Content.ContentBlocks)...)
 			}
 		}
 		anthropicMsg.Content = AnthropicContent{
@@ -8715,7 +8720,7 @@ func convertBifrostMessageToAnthropicMessage(caps schemas.ModelCaps, msg *schema
 					}},
 				}
 			} else if msg.Content.ContentBlocks != nil {
-				contentBlocks := convertBifrostContentBlocksToAnthropic(caps, msg.Content.ContentBlocks)
+				contentBlocks := convertBifrostContentBlocksToAnthropic(ctx, caps, msg.Content.ContentBlocks)
 				if len(contentBlocks) > 0 {
 					anthropicMsg.Content = AnthropicContent{
 						ContentBlocks: contentBlocks,
@@ -11062,13 +11067,14 @@ func convertResponsesToolChoiceToAnthropic(toolChoice *schemas.ResponsesToolChoi
 
 // Helper function to convert ContentBlock to AnthropicContentBlock
 func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) *AnthropicContentBlock {
-	return convertContentBlockToAnthropicWithCaps(schemas.ModelCaps{}, block)
+	return convertContentBlockToAnthropicWithCaps(nil, schemas.ModelCaps{}, block)
 }
 
 // convertContentBlockToAnthropicWithCaps is convertContentBlockToAnthropic with the model
 // caps, which a tool_definition inside a tool_addition needs to normalize dated tool types
-// the way a tools[] entry is.
-func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schemas.ResponsesMessageContentBlock) *AnthropicContentBlock {
+// the way a tools[] entry is, and the request ctx its version remap is recorded on (nil
+// off the request path).
+func convertContentBlockToAnthropicWithCaps(ctx *schemas.BifrostContext, caps schemas.ModelCaps, block schemas.ResponsesMessageContentBlock) *AnthropicContentBlock {
 	switch block.Type {
 	case schemas.ResponsesInputMessageContentBlockTypeToolAddition, schemas.ResponsesInputMessageContentBlockTypeToolRemoval:
 		if block.ToolChange == nil {
@@ -11080,7 +11086,7 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 		}
 		return &AnthropicContentBlock{
 			Type:         blockType,
-			Tool:         convertToolChangeTargetToAnthropic(caps, block.ToolChange),
+			Tool:         convertToolChangeTargetToAnthropic(ctx, caps, block.ToolChange),
 			CacheControl: block.CacheControl,
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeText, schemas.ResponsesOutputMessageContentTypeText:
@@ -11124,7 +11130,7 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 					ContentStr: &block.ResponsesOutputMessageContentCompaction.Summary,
 				},
 				CacheControl: block.CacheControl,
-				ToolChanges:  convertBifrostContentBlocksToAnthropic(caps, block.ResponsesOutputMessageContentCompaction.ToolChanges),
+				ToolChanges:  convertBifrostContentBlocksToAnthropic(ctx, caps, block.ResponsesOutputMessageContentCompaction.ToolChanges),
 			}
 		}
 	case schemas.ResponsesOutputMessageContentTypeFallback:
@@ -11178,13 +11184,13 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 }
 
 // Helper to convert Bifrost content blocks slice to Anthropic content blocks
-func convertBifrostContentBlocksToAnthropic(caps schemas.ModelCaps, blocks []schemas.ResponsesMessageContentBlock) []AnthropicContentBlock {
+func convertBifrostContentBlocksToAnthropic(ctx *schemas.BifrostContext, caps schemas.ModelCaps, blocks []schemas.ResponsesMessageContentBlock) []AnthropicContentBlock {
 	if len(blocks) == 0 {
 		return nil
 	}
 	var result []AnthropicContentBlock
 	for _, block := range blocks {
-		if converted := convertContentBlockToAnthropicWithCaps(caps, block); converted != nil {
+		if converted := convertContentBlockToAnthropicWithCaps(ctx, caps, block); converted != nil {
 			result = append(result, *converted)
 		}
 	}
