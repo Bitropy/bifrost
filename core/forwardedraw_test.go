@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/anthropic/anthropictest"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -150,102 +151,28 @@ func converterClient(t *testing.T, provider schemas.ModelProvider, u *recordingU
 	return client
 }
 
-// forwardRow is one explicit feature as a chat and a Responses request carry it, and the token its
-// member leaves in an upstream body (or header) that forwards it.
-type forwardRow struct {
-	feature   anthropic.Feature
-	chat      func(*schemas.BifrostChatRequest)
-	responses func(*schemas.BifrostResponsesRequest)
-	token     string
-	betas     []string
+// forwardTokens is, per feature, the token its member leaves in an upstream body (or header)
+// that forwards it.
+var forwardTokens = map[string]string{
+	"container": "cprobe1", "container_skills": "skillprobe", "mcp_servers": "mcpprobe", "speed": `"speed"`,
+	"task_budget": "task_budget", "inference_geo": "inference_geo", "diagnostics": "cache_diagnosis",
+	"safeguards": "safeguards", "cache_control_scope": `"scope"`, "fallback_credit_token": "tokprobe",
+	"context_management": "compact_20260112", "defer_loading": "defer_loading", "allowed_callers": "allowed_callers",
+	"input_examples": "input_examples", "eager_input_streaming": "eager_input_streaming", "server_tool": "web_fetch",
+	"tool_version": "web_search_20260209", "anthropic_beta": anthropictest.MCPClientBeta, "fallback_block": "fallback",
+	"compaction_block": "compaction", "tool_change_block": "tool_addition",
 }
 
-func fwdChatParams(js string) func(*schemas.BifrostChatRequest) {
-	return func(r *schemas.BifrostChatRequest) {
-		if err := json.Unmarshal([]byte(js), r.Params); err != nil {
-			panic(err)
-		}
+// forwardResponses is how a Responses request carries row: its Responses shape, else its raw key.
+func forwardResponses(row anthropictest.FeatureRow) func(*schemas.BifrostResponsesRequest) {
+	if row.Responses != nil || len(row.Raw) == 0 {
+		return row.Responses
 	}
-}
-
-func fwdChatExtra(key, raw string) func(*schemas.BifrostChatRequest) {
-	return func(r *schemas.BifrostChatRequest) { r.Params.ExtraParams = map[string]any{key: json.RawMessage(raw)} }
-}
-
-func fwdRespExtra(key, raw string) func(*schemas.BifrostResponsesRequest) {
 	return func(r *schemas.BifrostResponsesRequest) {
-		r.Params.ExtraParams = map[string]any{key: json.RawMessage(raw)}
-	}
-}
-
-func fwdRespTool(js string) func(*schemas.BifrostResponsesRequest) {
-	return func(r *schemas.BifrostResponsesRequest) {
-		var tool schemas.ResponsesTool
-		if err := json.Unmarshal([]byte(js), &tool); err != nil {
-			panic(err)
+		r.Params.ExtraParams = make(map[string]any, len(row.Raw))
+		for k, v := range row.Raw {
+			r.Params.ExtraParams[k] = json.RawMessage(v)
 		}
-		r.Params.Tools = append(r.Params.Tools, tool)
-	}
-}
-
-func fwdChatReplay(block string) func(*schemas.BifrostChatRequest) {
-	return func(r *schemas.BifrostChatRequest) {
-		r.Input = append(r.Input, schemas.ChatMessage{
-			Role:    schemas.ChatMessageRoleAssistant,
-			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("answer")},
-			ChatAssistantMessage: &schemas.ChatAssistantMessage{ProviderBlocks: []schemas.ChatProviderBlock{
-				{Index: 0, Provider: schemas.ProviderBlockAnthropic, Block: []byte(block)},
-			}},
-		}, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("next")}})
-	}
-}
-
-func fwdRespReplay(block string) func(*schemas.BifrostResponsesRequest) {
-	return func(r *schemas.BifrostResponsesRequest) {
-		var items []schemas.ResponsesMessage
-		if err := json.Unmarshal([]byte(`[{"type":"message","role":"assistant","content":[`+block+`,{"type":"output_text","text":"answer"}]},`+
-			`{"type":"message","role":"user","content":"next"}]`), &items); err != nil {
-			panic(err)
-		}
-		r.Input = append(r.Input, items...)
-	}
-}
-
-func forwardRows() []forwardRow {
-	fn := func(flag string) string {
-		return `{"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}},` + flag + `}]}`
-	}
-	respFn := func(flag string) string {
-		return `{"type":"function","name":"f","parameters":{"type":"object"},` + flag + `}`
-	}
-	return []forwardRow{
-		{feature: anthropic.FeatureContainer, chat: fwdChatParams(`{"container":"cprobe1"}`), responses: fwdRespExtra("container", `"cprobe1"`), token: "cprobe1"},
-		{feature: anthropic.FeatureContainerSkills, chat: fwdChatParams(`{"container":{"id":"c1","skills":[{"type":"anthropic","skill_id":"skillprobe"}]}}`),
-			responses: fwdRespExtra("container", `{"id":"c1","skills":[{"type":"anthropic","skill_id":"skillprobe"}]}`), token: "skillprobe"},
-		{feature: anthropic.FeatureMCPServers, chat: fwdChatParams(`{"mcp_servers":[{"type":"url","url":"https://mcpprobe.example","name":"m"}]}`),
-			responses: fwdRespExtra("mcp_servers", `[{"type":"url","url":"https://mcpprobe.example","name":"m"}]`), token: "mcpprobe"},
-		{feature: anthropic.FeatureSpeed, chat: fwdChatParams(`{"speed":"fast"}`), responses: fwdRespExtra("speed", `"fast"`), token: `"speed"`},
-		{feature: anthropic.FeatureTaskBudget, chat: fwdChatParams(`{"task_budget":{"type":"tokens","total":4242}}`),
-			responses: fwdRespExtra("task_budget", `{"type":"tokens","total":4242}`), token: "task_budget"},
-		{feature: anthropic.FeatureInferenceGeo, chat: fwdChatParams(`{"inference_geo":"us"}`), responses: fwdRespExtra("inference_geo", `"us"`), token: "inference_geo"},
-		{feature: anthropic.FeatureDiagnostics, chat: fwdChatExtra("diagnostics", `{"cache_diagnosis":true}`), responses: fwdRespExtra("diagnostics", `{"cache_diagnosis":true}`), token: "cache_diagnosis"},
-		{feature: anthropic.FeatureSafeguards, chat: fwdChatExtra("safeguards", `{"mode":"auto"}`), responses: fwdRespExtra("safeguards", `{"mode":"auto"}`), token: "safeguards"},
-		{feature: anthropic.FeatureCacheControlScope, chat: fwdChatParams(`{"cache_control":{"type":"ephemeral","scope":"global"}}`),
-			responses: fwdRespTool(respFn(`"cache_control":{"type":"ephemeral","scope":"global"}`)), token: `"scope"`},
-		{feature: anthropic.FeatureFallbackCreditToken, chat: fwdChatExtra("fallback_credit_token", `"tokprobe"`), responses: fwdRespExtra("fallback_credit_token", `"tokprobe"`), token: "tokprobe"},
-		{feature: anthropic.FeatureContextManagement, chat: fwdChatParams(`{"context_management":{"edits":[{"type":"compact_20260112"}]}}`),
-			responses: fwdRespExtra("context_management", `{"edits":[{"type":"compact_20260112"}]}`), token: "compact_20260112"},
-		{feature: anthropic.FeatureDeferLoading, chat: fwdChatParams(fn(`"defer_loading":true`)), responses: fwdRespTool(respFn(`"defer_loading":true`)), token: "defer_loading"},
-		{feature: anthropic.FeatureAllowedCallers, chat: fwdChatParams(fn(`"allowed_callers":["direct"]`)), responses: fwdRespTool(respFn(`"allowed_callers":["direct"]`)), token: "allowed_callers"},
-		{feature: anthropic.FeatureInputExamples, chat: fwdChatParams(fn(`"input_examples":[{"input":{"q":"x"}}]`)), responses: fwdRespTool(respFn(`"input_examples":[{"input":{"q":"x"}}]`)), token: "input_examples"},
-		{feature: anthropic.FeatureEagerInputStreaming, chat: fwdChatParams(fn(`"eager_input_streaming":true`)), responses: fwdRespTool(respFn(`"eager_input_streaming":true`)), token: "eager_input_streaming"},
-		{feature: anthropic.FeatureServerTool, chat: fwdChatParams(`{"tools":[{"type":"web_fetch_20250910","name":"web_fetch"}]}`), responses: fwdRespTool(`{"type":"web_fetch"}`), token: "web_fetch"},
-		{feature: anthropic.FeatureToolVersion, chat: fwdChatParams(`{"tools":[{"type":"web_search_20260209","name":"web_search"}]}`),
-			responses: fwdRespTool(`{"type":"web_search","web_search_version":"web_search_20260209"}`), token: "web_search_20260209"},
-		{feature: anthropic.FeatureAnthropicBeta, betas: []string{"mcp-client-2025-11-20"}, token: "mcp-client-2025-11-20"},
-		{feature: anthropic.FeatureFallbackBlock, chat: fwdChatReplay(`{"type":"fallback"}`), responses: fwdRespReplay(`{"type":"fallback","from_model":"fromprobe","to_model":"b"}`), token: "fallback"},
-		{feature: anthropic.FeatureCompactionBlock, chat: fwdChatReplay(`{"type":"compaction","content":"summaryprobe"}`), responses: fwdRespReplay(`{"type":"compaction","summary":"summaryprobe"}`), token: "compaction"},
-		{feature: anthropic.FeatureToolChangeBlock, chat: fwdChatReplay(`{"type":"tool_addition","tool":{"type":"tool_reference","name":"f"}}`), token: "tool_addition"},
 	}
 }
 
@@ -291,7 +218,7 @@ func send(t *testing.T, client *Bifrost, u *recordingUpstream, ctx *schemas.Bifr
 // feature member puts it in the upstream request if and only if ForwardedRaw says so. Claude
 // branches are excluded: their builders carry members, which is Uncarried's question.
 func TestForwardedRaw_AgreesWithConverters(t *testing.T) {
-	rows := forwardRows()
+	rows := anthropictest.FeatureRows()
 	for _, tg := range converterTargets {
 		if schemas.IsAnthropicModelFamily(nil, tg.model) {
 			continue
@@ -318,25 +245,29 @@ func TestForwardedRaw_AgreesWithConverters(t *testing.T) {
 						chat, resp := baseChatRequest(tg), baseResponsesRequest(tg)
 						if kind == schemas.ChatCompletionRequest {
 							resp = nil
-							if row.chat != nil {
-								row.chat(chat)
-							} else if row.betas == nil {
+							if row.Chat != nil {
+								row.Chat(chat)
+							} else if row.Betas == nil {
 								continue
 							}
 						} else {
 							chat = nil
-							if row.responses != nil {
-								row.responses(resp)
-							} else if row.betas == nil {
+							if respond := forwardResponses(row); respond != nil {
+								respond(resp)
+							} else if row.Betas == nil {
 								continue
 							}
 						}
-						if strings.Contains(baseBody+baseHeaders, row.token) {
-							t.Fatalf("%s: the baseline already holds %q", row.feature.First(), row.token)
+						token := forwardTokens[row.Name]
+						if token == "" {
+							t.Fatalf("no forward token for %s", row.Name)
 						}
-						body, headers := send(t, client, u, converterRequestCtx(passthrough, row.betas), chat, resp)
-						if strings.Contains(body+headers, row.token) {
-							observed |= row.feature
+						if strings.Contains(baseBody+baseHeaders, token) {
+							t.Fatalf("%s: the baseline already holds %q", row.Name, token)
+						}
+						body, headers := send(t, client, u, converterRequestCtx(passthrough, row.Betas), chat, resp)
+						if strings.Contains(body+headers, token) {
+							observed |= row.Feature()
 						}
 					}
 					if observed != forwarded {

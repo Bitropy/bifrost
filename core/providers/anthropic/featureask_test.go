@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic/anthropictest"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -40,63 +41,9 @@ type featureRow struct {
 }
 
 const (
-	featureModel  = "claude-sonnet-4-5"
-	carrierModel  = "claude-opus-4-7"
-	mcpClientBeta = "mcp-client-2025-11-20"
+	featureModel = "claude-sonnet-4-5"
+	carrierModel = "claude-opus-4-7"
 )
-
-func chatParams(js string) func(*schemas.BifrostChatRequest) {
-	return func(r *schemas.BifrostChatRequest) {
-		if err := json.Unmarshal([]byte(js), r.Params); err != nil {
-			panic(err)
-		}
-	}
-}
-
-func chatExtra(key string, v any) func(*schemas.BifrostChatRequest) {
-	return func(r *schemas.BifrostChatRequest) {
-		r.Params.ExtraParams = map[string]any{key: v}
-	}
-}
-
-func respExtra(key string, v any) func(*schemas.BifrostResponsesRequest) {
-	return func(r *schemas.BifrostResponsesRequest) {
-		r.Params.ExtraParams = map[string]any{key: v}
-	}
-}
-
-func respTool(js string) func(*schemas.BifrostResponsesRequest) {
-	return func(r *schemas.BifrostResponsesRequest) {
-		var tool schemas.ResponsesTool
-		if err := json.Unmarshal([]byte(js), &tool); err != nil {
-			panic(err)
-		}
-		r.Params.Tools = append(r.Params.Tools, tool)
-	}
-}
-
-func chatReplay(block string) func(*schemas.BifrostChatRequest) {
-	return func(r *schemas.BifrostChatRequest) {
-		r.Input = append(r.Input, schemas.ChatMessage{
-			Role:    schemas.ChatMessageRoleAssistant,
-			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("answer")},
-			ChatAssistantMessage: &schemas.ChatAssistantMessage{ProviderBlocks: []schemas.ChatProviderBlock{
-				{Index: 0, Provider: schemas.ProviderBlockAnthropic, Block: []byte(block)},
-			}},
-		}, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("next")}})
-	}
-}
-
-func respReplay(block string) func(*schemas.BifrostResponsesRequest) {
-	return func(r *schemas.BifrostResponsesRequest) {
-		var items []schemas.ResponsesMessage
-		if err := json.Unmarshal([]byte(`[{"type":"message","role":"assistant","content":[`+block+`,{"type":"output_text","text":"answer"}]},`+
-			`{"type":"message","role":"user","content":"next"}]`), &items); err != nil {
-			panic(err)
-		}
-		r.Input = append(r.Input, items...)
-	}
-}
 
 func withCaps(provider schemas.ModelProvider, rec schemas.ModelCapabilities) func(t *testing.T) {
 	return func(t *testing.T) { setCapsRecord(t, provider, featureModel, rec) }
@@ -106,93 +53,59 @@ func withProviderFeatures(provider schemas.ModelProvider, edit func(*ProviderFea
 	return func(t *testing.T) { withFeatures(t, provider, edit) }
 }
 
+// featureRows are anthropictest.FeatureRows with each feature's Messages body, stripped-body
+// probe and lacking target.
 func featureRows() []featureRow {
 	no := false
-	tool := func(flag string) string {
-		return `{"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}},` + flag + `}]}`
+	vertex := func(row featureRow) featureRow {
+		row.provider, row.model = schemas.Vertex, featureModel
+		return row
 	}
-	respFn := func(flag string) string {
-		return `{"type":"function","name":"f","parameters":{"type":"object"},` + flag + `}`
+	local := map[string]featureRow{
+		"container": vertex(featureRow{body: `"container":"cprobe1"`, absent: `"container"`,
+			lacks: withProviderFeatures(schemas.Vertex, func(f *ProviderFeatureSupport) { f.ContainerBasic = false })}),
+		"container_skills": vertex(featureRow{body: `"container":{"id":"c1","skills":[{"type":"anthropic","skill_id":"skillprobe"}]}`, absent: `"skills"`}),
+		"mcp_servers":      vertex(featureRow{body: `"mcp_servers":[{"type":"url","url":"https://mcpprobe.example","name":"m"}]`, absent: `"mcp_servers"`}),
+		"speed":            {body: `"speed":"fast"`, absent: `"speed"`, provider: schemas.Azure, model: "claude-opus-4-6"},
+		"task_budget":      vertex(featureRow{body: `"output_config":{"task_budget":{"type":"tokens","total":4242}}`, absent: `"task_budget"`}),
+		"inference_geo":    vertex(featureRow{body: `"inference_geo":"us"`, absent: `"inference_geo"`}),
+		"diagnostics":      vertex(featureRow{body: `"diagnostics":{"cache_diagnosis":true}`, absent: `"diagnostics"`}),
+		"safeguards": vertex(featureRow{body: `"safeguards":{"mode":"auto"}`, absent: `"safeguards"`,
+			lacks: withCaps(schemas.Vertex, schemas.ModelCapabilities{SupportsSafeguards: &no})}),
+		"cache_control_scope": vertex(featureRow{body: `"cache_control":{"type":"ephemeral","scope":"global"}`, absent: `"scope"`}),
+		"fallback_credit_token": vertex(featureRow{body: `"fallback_credit_token":"tokprobe"`, absent: `"fallback_credit_token"`,
+			lacks: withProviderFeatures(schemas.Vertex, func(f *ProviderFeatureSupport) { f.FallbackCredit = false })}),
+		"context_management": vertex(featureRow{body: `"context_management":{"edits":[{"type":"compact_20260112"}]}`, absent: `"context_management"`,
+			lacks: withCaps(schemas.Vertex, schemas.ModelCapabilities{SupportsCompaction: &no})}),
+		"defer_loading": vertex(featureRow{body: `"tools":[{"name":"f","input_schema":{"type":"object"},"defer_loading":true}]`, absent: `"defer_loading"`,
+			lacks: withCaps(schemas.Vertex, schemas.ModelCapabilities{SupportsToolSearch: &no})}),
+		"allowed_callers": vertex(featureRow{body: `"tools":[{"name":"f","input_schema":{"type":"object"},"allowed_callers":["direct"]}]`, absent: `"allowed_callers"`}),
+		"input_examples":  vertex(featureRow{body: `"tools":[{"name":"f","input_schema":{"type":"object"},"input_examples":[{"input":{"q":"x"}}]}]`, absent: `"input_examples"`}),
+		"eager_input_streaming": vertex(featureRow{body: `"tools":[{"name":"f","input_schema":{"type":"object"},"eager_input_streaming":true}]`, absent: `"eager_input_streaming"`,
+			lacks: withCaps(schemas.Vertex, schemas.ModelCapabilities{SupportsEagerInputStreaming: &no})}),
+		"server_tool":  vertex(featureRow{body: `"tools":[{"type":"web_fetch_20250910","name":"web_fetch"}]`, absent: `web_fetch`}),
+		"tool_version": vertex(featureRow{body: `"tools":[{"type":"web_search_20260209","name":"web_search"}]`, absent: `web_search_20260209`}),
+		"anthropic_beta": vertex(featureRow{ctx: func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyClientAnthropicBeta, []string{anthropictest.MCPClientBeta})
+		}}),
+		"fallback_block": vertex(featureRow{body: `"messages":[{"role":"assistant","content":[{"type":"fallback"}]}]`, absent: `"type":"fallback"`}),
+		"compaction_block": vertex(featureRow{body: `"messages":[{"role":"assistant","content":[{"type":"compaction","content":"summaryprobe"}]}]`,
+			lacks: withCaps(schemas.Vertex, schemas.ModelCapabilities{SupportsCompaction: &no})}),
+		"tool_change_block": vertex(featureRow{body: `"messages":[{"role":"assistant","content":[{"type":"tool_addition","tool":{"type":"tool_reference","name":"f"}}]}]`,
+			absent: `tool_addition`,
+			lacks:  withProviderFeatures(schemas.Vertex, func(f *ProviderFeatureSupport) { f.MidConvToolChanges = false })}),
 	}
-	return []featureRow{
-		{feature: FeatureContainer, chat: chatParams(`{"container":"c1"}`), responses: respExtra("container", json.RawMessage(`"c1"`)),
-			raw: map[string]string{"container": `"c1"`}, body: `"container":"c1"`, absent: `"container"`,
-			provider: schemas.Vertex, model: featureModel, lacks: withProviderFeatures(schemas.Vertex, func(f *ProviderFeatureSupport) { f.ContainerBasic = false })},
-		{feature: FeatureContainerSkills, chat: chatParams(`{"container":{"id":"c1","skills":[{"type":"anthropic","skill_id":"pdf"}]}}`),
-			responses: respExtra("container", json.RawMessage(`{"id":"c1","skills":[{"type":"anthropic","skill_id":"pdf"}]}`)),
-			raw:       map[string]string{"container": `{"id":"c1","skills":[{"type":"anthropic","skill_id":"pdf"}]}`},
-			body:      `"container":{"id":"c1","skills":[{"type":"anthropic","skill_id":"pdf"}]}`, absent: `"skills"`,
-			provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureMCPServers, chat: chatParams(`{"mcp_servers":[{"type":"url","url":"https://mcp.example","name":"m"}]}`),
-			raw:  map[string]string{"mcp_servers": `[{"type":"url","url":"https://mcp.example","name":"m"}]`},
-			body: `"mcp_servers":[{"type":"url","url":"https://mcp.example","name":"m"}]`, absent: `"mcp_servers"`,
-			provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureSpeed, chat: chatParams(`{"speed":"fast"}`), responses: respExtra("speed", "fast"),
-			raw: map[string]string{"speed": `"fast"`}, body: `"speed":"fast"`, absent: `"speed"`,
-			provider: schemas.Azure, model: "claude-opus-4-6"},
-		{feature: FeatureTaskBudget, chat: chatParams(`{"task_budget":{"type":"tokens","total":1000}}`),
-			responses: respExtra("task_budget", json.RawMessage(`{"type":"tokens","total":1000}`)),
-			body:      `"output_config":{"task_budget":{"type":"tokens","total":1000}}`, absent: `"task_budget"`,
-			provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureInferenceGeo, chat: chatParams(`{"inference_geo":"us"}`), responses: respExtra("inference_geo", "us"),
-			raw: map[string]string{"inference_geo": `"us"`}, body: `"inference_geo":"us"`, absent: `"inference_geo"`,
-			provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureDiagnostics, chat: chatExtra("diagnostics", map[string]any{"cache_diagnosis": true}),
-			responses: respExtra("diagnostics", json.RawMessage(`{"cache_diagnosis":true}`)),
-			raw:       map[string]string{"diagnostics": `{"cache_diagnosis":true}`}, body: `"diagnostics":{"cache_diagnosis":true}`, absent: `"diagnostics"`,
-			provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureSafeguards, chat: chatExtra("safeguards", json.RawMessage(`{"mode":"auto"}`)),
-			responses: respExtra("safeguards", json.RawMessage(`{"mode":"auto"}`)),
-			raw:       map[string]string{"safeguards": `{"mode":"auto"}`}, body: `"safeguards":{"mode":"auto"}`, absent: `"safeguards"`,
-			provider: schemas.Vertex, model: featureModel, lacks: withCaps(schemas.Vertex, schemas.ModelCapabilities{SupportsSafeguards: &no})},
-		{feature: FeatureCacheControlScope, chat: chatParams(`{"cache_control":{"type":"ephemeral","scope":"global"}}`),
-			responses: respTool(respFn(`"cache_control":{"type":"ephemeral","scope":"global"}`)),
-			body:      `"cache_control":{"type":"ephemeral","scope":"global"}`, absent: `"scope"`,
-			provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureFallbackCreditToken, chat: chatExtra("fallback_credit_token", "tok"), responses: respExtra("fallback_credit_token", "tok"),
-			raw: map[string]string{"fallback_credit_token": `"tok"`}, body: `"fallback_credit_token":"tok"`, absent: `"fallback_credit_token"`,
-			provider: schemas.Vertex, model: featureModel, lacks: withProviderFeatures(schemas.Vertex, func(f *ProviderFeatureSupport) { f.FallbackCredit = false })},
-		{feature: FeatureContextManagement, chat: chatParams(`{"context_management":{"edits":[{"type":"compact_20260112"}]}}`),
-			responses: respExtra("context_management", json.RawMessage(`{"edits":[{"type":"compact_20260112"}]}`)),
-			raw:       map[string]string{"context_management": `{"edits":[{"type":"compact_20260112"}]}`},
-			body:      `"context_management":{"edits":[{"type":"compact_20260112"}]}`, absent: `"context_management"`,
-			provider: schemas.Vertex, model: featureModel, lacks: withCaps(schemas.Vertex, schemas.ModelCapabilities{SupportsCompaction: &no})},
-		{feature: FeatureDeferLoading, chat: chatParams(tool(`"defer_loading":true`)), responses: respTool(respFn(`"defer_loading":true`)),
-			body: `"tools":[{"name":"f","input_schema":{"type":"object"},"defer_loading":true}]`, absent: `"defer_loading"`,
-			provider: schemas.Vertex, model: featureModel, lacks: withCaps(schemas.Vertex, schemas.ModelCapabilities{SupportsToolSearch: &no})},
-		{feature: FeatureAllowedCallers, chat: chatParams(tool(`"allowed_callers":["direct"]`)), responses: respTool(respFn(`"allowed_callers":["direct"]`)),
-			body: `"tools":[{"name":"f","input_schema":{"type":"object"},"allowed_callers":["direct"]}]`, absent: `"allowed_callers"`,
-			provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureInputExamples, chat: chatParams(tool(`"input_examples":[{"input":{"q":"x"}}]`)), responses: respTool(respFn(`"input_examples":[{"input":{"q":"x"}}]`)),
-			body: `"tools":[{"name":"f","input_schema":{"type":"object"},"input_examples":[{"input":{"q":"x"}}]}]`, absent: `"input_examples"`,
-			provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureEagerInputStreaming, chat: chatParams(tool(`"eager_input_streaming":true`)), responses: respTool(respFn(`"eager_input_streaming":true`)),
-			body: `"tools":[{"name":"f","input_schema":{"type":"object"},"eager_input_streaming":true}]`, absent: `"eager_input_streaming"`,
-			provider: schemas.Vertex, model: featureModel, lacks: withCaps(schemas.Vertex, schemas.ModelCapabilities{SupportsEagerInputStreaming: &no})},
-		{feature: FeatureServerTool, chat: chatParams(`{"tools":[{"type":"web_fetch_20250910","name":"web_fetch"}]}`),
-			responses: respTool(`{"type":"web_fetch"}`),
-			body:      `"tools":[{"type":"web_fetch_20250910","name":"web_fetch"}]`, absent: `web_fetch`,
-			provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureToolVersion, chat: chatParams(`{"tools":[{"type":"web_search_20260209","name":"web_search"}]}`),
-			responses: respTool(`{"type":"web_search","web_search_version":"web_search_20260209"}`),
-			body:      `"tools":[{"type":"web_search_20260209","name":"web_search"}]`, absent: `web_search_20260209`,
-			provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureAnthropicBeta, betas: []string{mcpClientBeta},
-			provider: schemas.Vertex, model: featureModel,
-			ctx: func(ctx *schemas.BifrostContext) {
-				ctx.SetValue(schemas.BifrostContextKeyClientAnthropicBeta, []string{mcpClientBeta})
-			}},
-		{feature: FeatureFallbackBlock, chat: chatReplay(`{"type":"fallback"}`), responses: respReplay(`{"type":"fallback","from_model":"a","to_model":"b"}`),
-			body:   `"messages":[{"role":"assistant","content":[{"type":"fallback"}]}]`,
-			absent: `"type":"fallback"`, provider: schemas.Vertex, model: featureModel},
-		{feature: FeatureCompactionBlock, chat: chatReplay(`{"type":"compaction","content":"summary"}`), responses: respReplay(`{"type":"compaction","summary":"summary"}`),
-			body:     `"messages":[{"role":"assistant","content":[{"type":"compaction","content":"summary"}]}]`,
-			provider: schemas.Vertex, model: featureModel, lacks: withCaps(schemas.Vertex, schemas.ModelCapabilities{SupportsCompaction: &no})},
-		{feature: FeatureToolChangeBlock, chat: chatReplay(`{"type":"tool_addition","tool":{"type":"tool_reference","name":"f"}}`),
-			body:     `"messages":[{"role":"assistant","content":[{"type":"tool_addition","tool":{"type":"tool_reference","name":"f"}}]}]`,
-			absent:   `tool_addition`,
-			provider: schemas.Vertex, model: featureModel, lacks: withProviderFeatures(schemas.Vertex, func(f *ProviderFeatureSupport) { f.MidConvToolChanges = false })},
+	shared := anthropictest.FeatureRows()
+	rows := make([]featureRow, 0, len(shared))
+	for _, s := range shared {
+		row, ok := local[s.Name]
+		if !ok {
+			panic("featureRows: no local row for " + s.Name)
+		}
+		row.feature, row.chat, row.responses, row.raw, row.betas = s.Feature(), s.Chat, s.Responses, s.Raw, s.Betas
+		rows = append(rows, row)
 	}
+	return rows
 }
 
 // vertexChatPostBuild is VertexProvider.ChatCompletion's pass over a built Claude chat body
@@ -551,7 +464,7 @@ func TestResponsesAsk_ContainerForms(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{}}
-			respExtra("container", tc.v)(req)
+			anthropictest.RespExtra("container", tc.v)(req)
 			got := ResponsesAsk(req, nil).Features & (FeatureContainer | FeatureContainerSkills)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
@@ -581,7 +494,7 @@ func TestAsk_DecodedExtraMatchesRaw(t *testing.T) {
 		t.Run(tc.key+" "+tc.raw, func(t *testing.T) {
 			for _, v := range []any{tc.decoded, json.RawMessage(tc.raw)} {
 				req := &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{}}
-				respExtra(tc.key, v)(req)
+				anthropictest.RespExtra(tc.key, v)(req)
 				ask := ResponsesAsk(req, nil)
 				assert.Equal(t, tc.want, ask.Features&mask, "%T", v)
 				assert.Equal(t, tc.edits, ask.ContextEdits, "%T", v)
