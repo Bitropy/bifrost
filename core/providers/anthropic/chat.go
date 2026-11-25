@@ -766,10 +766,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			}
 		}
 
-		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
-		if forcedToolChoiceRejected {
-			schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
-		}
+		forcedToolChoiceRejected := caps.DropForcedToolChoice(ctx, bifrostReq.Params.ToolChoice.IsForced())
 
 		// Convert tool choice
 		if bifrostReq.Params.ToolChoice != nil && !forcedToolChoiceRejected {

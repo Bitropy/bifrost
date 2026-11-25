@@ -5492,10 +5492,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 
-		forcedToolChoiceRejected := !forcedToolChoiceSupported && bifrostReq.Params.ToolChoice.IsForced()
-		if forcedToolChoiceRejected {
-			schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
-		}
+		forcedToolChoiceRejected := caps.DropForcedToolChoice(ctx, bifrostReq.Params.ToolChoice.IsForced())
 
 		// Convert tool choice. allowed_tools narrows the declarations even when the model rejects a
 		// forced choice; only a forced choice itself is then dropped.

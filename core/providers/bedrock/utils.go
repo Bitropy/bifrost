@@ -4085,8 +4085,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 			}
 			// Fable 5.1+ rejects forced tool use outright; drop both spellings so
 			// the model answers under Converse's default "auto".
-			if toolChoice != nil && (toolChoice.Any != nil || toolChoice.Tool != nil) &&
-				!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(caps.Model())) {
+			if toolChoice != nil && caps.DropForcedToolChoice(ctx, toolChoice.Any != nil || toolChoice.Tool != nil) {
 				toolChoice = nil
 			}
 			if toolChoice != nil {

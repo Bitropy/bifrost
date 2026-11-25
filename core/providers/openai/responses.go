@@ -1131,10 +1131,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		req.ResponsesParameters.User = SanitizeUserField(req.ResponsesParameters.User)
-		// Fable 5.1+ rejects forced tool use outright. Drop the choice so the model
-		// answers under the default "auto" rather than the provider returning a 400.
-		if req.ResponsesParameters.ToolChoice.IsForced() &&
-			!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(capModel)) {
+		// A model that rejects forced tool use answers under the default "auto"
+		// rather than the provider returning a 400.
+		if caps.DropForcedToolChoice(ctx, req.ResponsesParameters.ToolChoice.IsForced()) {
 			req.ResponsesParameters.ToolChoice = nil
 		}
 		// The Anthropic integration emits the provider-generic forced tool choice "any".

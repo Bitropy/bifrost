@@ -3015,8 +3015,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 		// Fable 5.1+ rejects forced tool use outright; drop both spellings so
 		// the model answers under Converse's default "auto".
-		if bedrockToolChoice != nil && (bedrockToolChoice.Any != nil || bedrockToolChoice.Tool != nil) &&
-			!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(caps.Model())) {
+		if bedrockToolChoice != nil && caps.DropForcedToolChoice(ctx, bedrockToolChoice.Any != nil || bedrockToolChoice.Tool != nil) {
 			bedrockToolChoice = nil
 		}
 		// Only attach tool_choice when tools are actually present. Bedrock
