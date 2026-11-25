@@ -5476,7 +5476,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		// Convert tools
 		if bifrostReq.Params.Tools != nil {
-			anthropicTools, mcpServers, err := convertBifrostToolsToAnthropic(caps, tools, familyProvider)
+			anthropicTools, mcpServers, err := convertBifrostToolsToAnthropic(ctx, caps, tools, familyProvider)
 			if err != nil {
 				return nil, err
 			}
@@ -5565,7 +5565,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		// It goes through the regular conversion so its own flags (cache_control,
 		// defer_loading, allowed_callers) carry over as they do from tools.
 		if inlineSearch != nil && !messagesAddTool(anthropicMessages, searchName) {
-			searchTools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{clientToolSearchAsFunction(inlineSearch, searchName)}, familyProvider)
+			searchTools, _, err := convertBifrostToolsToAnthropic(ctx, caps, []schemas.ResponsesTool{clientToolSearchAsFunction(inlineSearch, searchName)}, familyProvider)
 			if err != nil {
 				return nil, err
 			}
@@ -7811,7 +7811,7 @@ func convertInlineToolDefinitionToAnthropic(caps schemas.ModelCaps, tool *schema
 		if normalized, err := normalizeInlineFunctionTool(tool); err == nil {
 			tool = normalized
 		}
-		out = convertBifrostToolToAnthropic(caps, tool, caps.Provider(), false)
+		out = convertBifrostToolToAnthropic(nil, caps, tool, caps.Provider(), false)
 	}
 	if out != nil {
 		applyResponsesToolAnthropicFlags(out, tool, "")
@@ -10538,7 +10538,7 @@ func convertToolOutputToAnthropicContent(output *schemas.ResponsesToolMessageOut
 // convertBifrostToolsToAnthropic converts all Bifrost tools to Anthropic tools and MCP servers.
 // It handles context-dependent conversions like code_interpreter, which must be skipped when
 // a web_search or web_fetch version that auto-injects code_execution is sent.
-func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServerV2, error) {
+func convertBifrostToolsToAnthropic(ctx *schemas.BifrostContext, caps schemas.ModelCaps, tools []schemas.ResponsesTool, provider schemas.ModelProvider) ([]AnthropicTool, []AnthropicMCPServerV2, error) {
 	// Anthropic auto-injects code_execution beside the 2026 web tool versions, so an
 	// explicit one conflicts there. Older versions inject nothing and keep the declared tool.
 	hasWebSearchOrFetch := webToolsSupplyCodeExecution(caps, tools, provider)
@@ -10606,7 +10606,7 @@ func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.Resp
 			toolCopy.ResponsesToolFunction = &functionCopy
 			toolForConversion = &toolCopy
 		}
-		anthropicTool := convertBifrostToolToAnthropic(caps, toolForConversion, provider, hasWebSearchOrFetch)
+		anthropicTool := convertBifrostToolToAnthropic(ctx, caps, toolForConversion, provider, hasWebSearchOrFetch)
 		if anthropicTool != nil {
 			applyResponsesToolAnthropicFlags(anthropicTool, &tool, programmaticCaller)
 			anthropicTools = append(anthropicTools, *anthropicTool)
@@ -10705,21 +10705,21 @@ func declaredCodeExecutionVersion(tools []schemas.ResponsesTool) (string, bool) 
 	return "", false
 }
 
-// requestedServerToolVersion preserves client intent while retaining host-specific downgrades.
-func requestedServerToolVersion(version *string, fallback AnthropicToolType, provider schemas.ModelProvider) AnthropicToolType {
+// requestedServerToolVersion preserves client intent while retaining host-specific downgrades;
+// remapped reports whether a downgrade replaced the client's version.
+func requestedServerToolVersion(version *string, fallback AnthropicToolType, provider schemas.ModelProvider) (_ AnthropicToolType, remapped bool) {
 	if version == nil || *version == "" {
-		return fallback
+		return fallback, false
 	}
-	for _, remap := range providerToolVersionRemaps[provider] {
-		if *version == remap.From {
-			return AnthropicToolType(remap.To)
-		}
+	if to, ok := remappedToolVersion(provider, *version); ok {
+		return AnthropicToolType(to), true
 	}
-	return AnthropicToolType(*version)
+	return AnthropicToolType(*version), false
 }
 
-// resolveWebSearchToolType returns the web_search version sent for tool.
-func resolveWebSearchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider) AnthropicToolType {
+// resolveWebSearchToolType returns the web_search version sent for tool, and whether the host
+// remapped the client's version.
+func resolveWebSearchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider) (_ AnthropicToolType, remapped bool) {
 	webSearchType := AnthropicToolTypeWebSearch20250305
 	// Prefer the datasheet's pinned version; otherwise dynamic filtering
 	// (web_search_20260209) is available on Anthropic + Azure for Opus 4.6+, Sonnet 4.6+.
@@ -10733,13 +10733,14 @@ func resolveWebSearchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesToo
 	}
 	// A client-selected version takes precedence over model defaults.
 	if tool.ResponsesToolWebSearch != nil {
-		webSearchType = requestedServerToolVersion(tool.ResponsesToolWebSearch.Version, webSearchType, provider)
+		webSearchType, remapped = requestedServerToolVersion(tool.ResponsesToolWebSearch.Version, webSearchType, provider)
 	}
-	return webSearchType
+	return webSearchType, remapped
 }
 
-// resolveWebFetchToolType returns the web_fetch version sent for tool.
-func resolveWebFetchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider) AnthropicToolType {
+// resolveWebFetchToolType returns the web_fetch version sent for tool, and whether the host
+// remapped the client's version.
+func resolveWebFetchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider) (_ AnthropicToolType, remapped bool) {
 	webFetchType := AnthropicToolTypeWebFetch20250910
 	// Prefer the datasheet's pinned version; otherwise the dynamic-filtering
 	// versions are only available on Anthropic + Azure.
@@ -10759,9 +10760,9 @@ func resolveWebFetchToolType(caps schemas.ModelCaps, tool *schemas.ResponsesTool
 	}
 	// A client-selected version takes precedence over model defaults and option upgrades.
 	if tool.ResponsesToolWebFetch != nil {
-		webFetchType = requestedServerToolVersion(tool.ResponsesToolWebFetch.Version, webFetchType, provider)
+		webFetchType, remapped = requestedServerToolVersion(tool.ResponsesToolWebFetch.Version, webFetchType, provider)
 	}
-	return webFetchType
+	return webFetchType, remapped
 }
 
 // webToolsSupplyCodeExecution reports whether a declared code_interpreter must be omitted
@@ -10773,9 +10774,9 @@ func webToolsSupplyCodeExecution(caps schemas.ModelCaps, tools []schemas.Respons
 		var toolType AnthropicToolType
 		switch tools[i].Type {
 		case schemas.ResponsesToolTypeWebSearch:
-			toolType = resolveWebSearchToolType(caps, &tools[i], provider)
+			toolType, _ = resolveWebSearchToolType(caps, &tools[i], provider)
 		case schemas.ResponsesToolTypeWebFetch:
-			toolType = resolveWebFetchToolType(caps, &tools[i], provider)
+			toolType, _ = resolveWebFetchToolType(caps, &tools[i], provider)
 		default:
 			continue
 		}
@@ -10791,8 +10792,9 @@ func providerSupportsCodeExecution(provider schemas.ModelProvider) bool {
 	return !slices.Contains(unsupportedRawToolTypes[provider], "code_execution")
 }
 
-// Helper function to convert Tool back to AnthropicTool
-func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider, hasWebSearchOrFetch bool) *AnthropicTool {
+// convertBifrostToolToAnthropic converts tool back to an AnthropicTool. It is the one place a
+// sent web tool's version remap is recorded (tool_version on ctx).
+func convertBifrostToolToAnthropic(ctx *schemas.BifrostContext, caps schemas.ModelCaps, tool *schemas.ResponsesTool, provider schemas.ModelProvider, hasWebSearchOrFetch bool) *AnthropicTool {
 	if tool == nil {
 		return nil
 	}
@@ -10840,7 +10842,10 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 	case schemas.ResponsesToolTypeComputerUsePreview, schemas.ResponsesToolTypeComputer:
 		return convertResponsesToAnthropicComputerTool(caps, tool)
 	case schemas.ResponsesToolTypeWebSearch:
-		webSearchType := resolveWebSearchToolType(caps, tool, provider)
+		webSearchType, remapped := resolveWebSearchToolType(caps, tool, provider)
+		if remapped {
+			addRemoved(ctx, FeatureToolVersion)
+		}
 		anthropicTool := &AnthropicTool{
 			Type:                   schemas.Ptr(webSearchType),
 			Name:                   string(AnthropicToolNameWebSearch),
@@ -10866,7 +10871,10 @@ func convertBifrostToolToAnthropic(caps schemas.ModelCaps, tool *schemas.Respons
 
 		return anthropicTool
 	case schemas.ResponsesToolTypeWebFetch:
-		webFetchType := resolveWebFetchToolType(caps, tool, provider)
+		webFetchType, remapped := resolveWebFetchToolType(caps, tool, provider)
+		if remapped {
+			addRemoved(ctx, FeatureToolVersion)
+		}
 		anthropicTool := &AnthropicTool{
 			Type:                  schemas.Ptr(webFetchType),
 			Name:                  string(AnthropicToolNameWebFetch),

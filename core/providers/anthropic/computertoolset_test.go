@@ -318,7 +318,7 @@ func TestComputerToolset_ForwardedWhenTargetAcceptsIt(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
 			caps := schemas.ResolveModelCaps(tc.provider, tc.model)
-			tool := convertBifrostToolToAnthropic(caps, &schemas.ResponsesTool{
+			tool := convertBifrostToolToAnthropic(nil, caps, &schemas.ResponsesTool{
 				Type:                            schemas.ResponsesToolTypeComputerUsePreview,
 				ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{Environment: "browser"},
 			}, tc.provider, false)
@@ -349,7 +349,7 @@ func TestComputerToolset_DroppedWhenTargetTakesNeitherForm(t *testing.T) {
 			caps := schemas.ResolveModelCaps(tc.provider, tc.model)
 			require.False(t, AcceptsComputerToolset(caps), "case is only meaningful where the toolset is rejected")
 
-			tool := convertBifrostToolToAnthropic(caps, &schemas.ResponsesTool{
+			tool := convertBifrostToolToAnthropic(nil, caps, &schemas.ResponsesTool{
 				Type:                            schemas.ResponsesToolTypeComputerUsePreview,
 				ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{Environment: "browser"},
 			}, tc.provider, false)
@@ -389,7 +389,7 @@ func TestComputerToolset_AcceptanceDatasheetOutranksFallback(t *testing.T) {
 // computer_use_preview still converts untouched.
 func TestComputerToolset_RealGeometryStillConverts(t *testing.T) {
 	caps := schemas.ResolveModelCaps(schemas.Anthropic, "claude-opus-5")
-	tool := convertBifrostToolToAnthropic(caps, &schemas.ResponsesTool{
+	tool := convertBifrostToolToAnthropic(nil, caps, &schemas.ResponsesTool{
 		Type: schemas.ResponsesToolTypeComputerUsePreview,
 		ResponsesToolComputerUsePreview: &schemas.ResponsesToolComputerUsePreview{
 			Environment: "browser", DisplayWidth: 1280, DisplayHeight: 800,
@@ -445,7 +445,7 @@ func TestComputerTool_OpenAIComputerToResponsesToolset(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			caps := schemas.ResolveModelCaps(tc.provider, tc.model)
-			tool := convertBifrostToolToAnthropic(caps, computer, tc.provider, false)
+			tool := convertBifrostToolToAnthropic(nil, caps, computer, tc.provider, false)
 			if tc.want == nil {
 				assert.Nil(t, tool)
 				return
@@ -510,7 +510,7 @@ func TestComputerToolset_DropsInputExamples(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			caps := schemas.ResolveModelCaps(schemas.Anthropic, tc.model)
-			tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{tc.tool}, schemas.Anthropic)
+			tools, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{tc.tool}, schemas.Anthropic)
 			require.NoError(t, err)
 			require.Len(t, tools, 1)
 			require.NotNil(t, tools[0].Type)

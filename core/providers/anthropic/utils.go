@@ -3123,6 +3123,16 @@ var providerToolVersionRemaps = map[schemas.ModelProvider][]ToolVersionRemap{
 	// Anthropic and Azure support all versions — no remaps needed
 }
 
+// remappedToolVersion returns the version provider downgrades toolType to, if it does.
+func remappedToolVersion(provider schemas.ModelProvider, toolType string) (string, bool) {
+	for _, remap := range providerToolVersionRemaps[provider] {
+		if toolType == remap.From {
+			return remap.To, true
+		}
+	}
+	return "", false
+}
+
 // unsupportedRawToolTypes lists tool type prefixes that should be rejected per provider
 // when found in raw request bodies (no remap possible, the feature itself is unsupported).
 var unsupportedRawToolTypes = map[schemas.ModelProvider][]string{
@@ -3596,8 +3606,7 @@ func RemapRawToolVersionsForProviderReport(ctx *schemas.BifrostContext, jsonBody
 	}
 
 	// Apply provider-specific version remaps (e.g. web_search downgrades for non-Anthropic providers)
-	remaps, ok := providerToolVersionRemaps[provider]
-	if !ok {
+	if _, ok := providerToolVersionRemaps[provider]; !ok {
 		return jsonBody, nil
 	}
 
@@ -3608,16 +3617,12 @@ func RemapRawToolVersionsForProviderReport(ctx *schemas.BifrostContext, jsonBody
 	anyRemapped := false
 	for i, tool := range tools {
 		remapped[i] = []byte(tool.Raw)
-		toolType := tool.Get("type").String()
-		for _, remap := range remaps {
-			if toolType == remap.From {
-				remapped[i], err = providerUtils.SetJSONField(remapped[i], "type", remap.To)
-				if err != nil {
-					return nil, fmt.Errorf("failed to remap tool type: %w", err)
-				}
-				anyRemapped = true
-				break
+		if to, ok := remappedToolVersion(provider, tool.Get("type").String()); ok {
+			remapped[i], err = providerUtils.SetJSONField(remapped[i], "type", to)
+			if err != nil {
+				return nil, fmt.Errorf("failed to remap tool type: %w", err)
 			}
+			anyRemapped = true
 		}
 	}
 	if anyRemapped {

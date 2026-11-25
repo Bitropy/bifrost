@@ -83,7 +83,7 @@ func TestConvertBifrostToolToAnthropicDatedToolSearch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := responsesToolFromJSON(t, tc.raw)
 
-			got := convertBifrostToolToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), &tool, schemas.Anthropic, false)
+			got := convertBifrostToolToAnthropic(nil, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), &tool, schemas.Anthropic, false)
 			require.NotNil(t, got, "tool_search meta-tool must not be dropped")
 
 			require.NotNil(t, got.Type,
@@ -112,7 +112,7 @@ func TestConvertBifrostToolsToAnthropicToolSearchCatalog(t *testing.T) {
 		responsesToolFromJSON(t, `{"type":"function","name":"get_weather","description":"Get the weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}},"defer_loading":true}`),
 	}
 
-	got, mcpServers, err := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), tools, schemas.Anthropic)
+	got, mcpServers, err := convertBifrostToolsToAnthropic(nil, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), tools, schemas.Anthropic)
 	require.NoError(t, err)
 	require.Empty(t, mcpServers)
 	require.Len(t, got, 2)
@@ -200,7 +200,7 @@ func TestConvertAnthropicToolToBifrostToolSearchRoundTrip(t *testing.T) {
 			require.NotNil(t, neutral)
 			assert.Equal(t, schemas.ResponsesToolTypeToolSearch, neutral.Type)
 
-			back := convertBifrostToolToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), neutral, schemas.Anthropic, false)
+			back := convertBifrostToolToAnthropic(nil, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5-20250929"), neutral, schemas.Anthropic, false)
 			require.NotNil(t, back)
 			require.NotNil(t, back.Type)
 			assert.Equal(t, tc.wantType, *back.Type, "variant must survive the round trip")
