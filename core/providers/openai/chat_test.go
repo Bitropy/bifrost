@@ -3890,3 +3890,55 @@ func TestCacheControlAdaptation_Chat(t *testing.T) {
 		})
 	}
 }
+
+// TestReasoningDetailsReplay_Chat: OpenRouter is sent the client's replayed
+// reasoning_details; every other chat wire carries one text as reasoning_content
+// and reports AdaptationUnmapped when a detail it cannot carry is dropped.
+func TestReasoningDetailsReplay_Chat(t *testing.T) {
+	assistant := func(members string) string {
+		return `[{"role":"user","content":"hi"},{"role":"assistant","content":"ok",` + members + `},{"role":"user","content":"more"}]`
+	}
+	signed := assistant(`"reasoning_details":[{"type":"reasoning.text","text":"think","signature":"sig1","index":0}]`)
+	bare := assistant(`"reasoning_details":[{"type":"reasoning.text","text":"think","index":0}]`)
+	twoTexts := assistant(`"reasoning_details":[{"type":"reasoning.text","text":"a","index":0},{"type":"reasoning.text","text":"b","index":1}]`)
+	encrypted := assistant(`"reasoning_details":[{"type":"reasoning.encrypted","data":"enc","index":0}]`)
+	alias := assistant(`"reasoning":"think"`)
+	rows := []struct {
+		name, msgs         string
+		provider, base     schemas.ModelProvider
+		wantHas, wantLacks []string
+		wantUnmapped       bool
+	}{
+		{name: "openrouter carries a signed detail", msgs: signed, provider: schemas.OpenRouter, wantHas: []string{`"reasoning_details":[{`, `"signature":"sig1"`, `"reasoning_content":"think"`}},
+		{name: "openrouter key on an OpenAI base carries", msgs: encrypted, provider: schemas.OpenRouter, base: schemas.OpenAI, wantHas: []string{`"data":"enc"`}},
+		{name: "openrouter base under another key drops", msgs: signed, provider: "my-router", base: schemas.OpenRouter, wantLacks: []string{"reasoning_details", "sig1"}, wantUnmapped: true},
+		{name: "openai drops a signature", msgs: signed, provider: schemas.OpenAI, wantHas: []string{`"reasoning_content":"think"`}, wantLacks: []string{"reasoning_details", "sig1"}, wantUnmapped: true},
+		{name: "openai drops an encrypted token", msgs: encrypted, provider: schemas.OpenAI, wantLacks: []string{"reasoning_details", "enc"}, wantUnmapped: true},
+		{name: "openai drops a second text", msgs: twoTexts, provider: schemas.OpenAI, wantHas: []string{`"reasoning_content":"a"`}, wantLacks: []string{`"b"`}, wantUnmapped: true},
+		{name: "openai carries one bare text", msgs: bare, provider: schemas.OpenAI, wantHas: []string{`"reasoning_content":"think"`}, wantLacks: []string{"reasoning_details"}},
+		{name: "openai carries the reasoning alias", msgs: alias, provider: schemas.OpenAI, wantHas: []string{`"reasoning_content":"think"`}},
+		{name: "no reasoning", msgs: assistant(`"refusal":null`), provider: schemas.OpenAI},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := samplingCtx(t)
+			if row.base != "" {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, row.base)
+			}
+			var in []OpenAIMessage
+			require.NoError(t, sonic.Unmarshal([]byte(row.msgs), &in))
+			req := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{Provider: row.provider, Model: "anthropic/claude-haiku-4.5", Input: ConvertOpenAIMessagesToBifrostMessages(in)})
+			require.NotNil(t, req)
+			out, err := providerUtils.MarshalSorted(req)
+			require.NoError(t, err)
+			wire := string(out)
+			for _, s := range row.wantHas {
+				assert.Contains(t, wire, s)
+			}
+			for _, s := range row.wantLacks {
+				assert.NotContains(t, wire, s)
+			}
+			assert.Equal(t, row.wantUnmapped, schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationUnmapped), wire)
+		})
+	}
+}

@@ -49,6 +49,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		Messages: ConvertBifrostMessagesToOpenAIMessages(ctx, bifrostReq.Input),
 		Provider: familyProvider,
 	}
+	// Before inlineChatMidConversationSystem below, which can change the message count.
+	if openaiReq.keepsReasoningDetails() {
+		carryReasoningDetails(openaiReq.Messages, bifrostReq.Input)
+	} else if reasoningDetailsLost(bifrostReq.Input) {
+		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
+	}
 
 	if !caps.SupportsDeveloperRole(true) {
 		for i := range openaiReq.Messages {
