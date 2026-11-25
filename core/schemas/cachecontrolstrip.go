@@ -78,3 +78,50 @@ func toolCallsMarked(calls []ChatAssistantMessageToolCall) bool {
 	}
 	return false
 }
+
+// ReportChatCacheControlDropped records AdaptationUnmapped on ctx when req
+// carries a cache_control marker, for a converter whose wire has no place for
+// one: the client's caching intent is lost, so the attempt says so.
+func ReportChatCacheControlDropped(ctx *BifrostContext, req *BifrostChatRequest) {
+	if req == nil {
+		return
+	}
+	var tools []ChatTool
+	if req.Params != nil {
+		tools = req.Params.Tools
+	}
+	if chatMessagesMarked(req.Input, false) || chatToolsMarked(tools) {
+		AddAdaptation(ctx, AdaptationUnmapped)
+	}
+}
+
+// chatMessagesMarked reports a cache_control on msgs' blocks, tool calls or
+// tool results; skipToolResults leaves out a tool message, whose markers a
+// function_call_output carries.
+func chatMessagesMarked(msgs []ChatMessage, skipToolResults bool) bool {
+	for i := range msgs {
+		m := &msgs[i]
+		if skipToolResults && m.Role == ChatMessageRoleTool {
+			continue
+		}
+		if m.ChatToolMessage != nil && m.ChatToolMessage.CacheControl != nil {
+			return true
+		}
+		if m.Content != nil && blocksMarked(m.Content.ContentBlocks) {
+			return true
+		}
+		if m.ChatAssistantMessage != nil && toolCallsMarked(m.ChatAssistantMessage.ToolCalls) {
+			return true
+		}
+	}
+	return false
+}
+
+func chatToolsMarked(tools []ChatTool) bool {
+	for i := range tools {
+		if tools[i].CacheControl != nil {
+			return true
+		}
+	}
+	return false
+}

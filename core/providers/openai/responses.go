@@ -1075,6 +1075,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 		applyResponsesCacheBreakpoints(messages, openAIFamily, promptCacheBreakpointCeiling(ctx, openAIFamily, callerCacheOptions, extraParams))
 	}
+	var tools []schemas.ResponsesTool
+	if bifrostReq.Params != nil {
+		tools = bifrostReq.Params.Tools
+	}
+	if responsesCacheControlLost(messages, tools) {
+		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
+	}
 	// Bedrock Mantle rejects prompt_cache_breakpoint.ttl on every model (no 12h there).
 	if cachePromptProvider == schemas.BedrockMantle || cachePromptProvider == schemas.Bedrock {
 		stripResponsesCacheBreakpointTTL(messages)

@@ -532,7 +532,7 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 	// and tools) when targeting OpenRouter. Everything else (citations,
 	// file types, Anthropic server tools, Anthropic-only tool flags) is still
 	// stripped — OpenRouter is otherwise an OpenAI-format endpoint.
-	keepCacheControl := req.Provider == schemas.OpenRouter
+	keepCacheControl := req.keepsCacheControl()
 
 	// First pass: check if we need to modify any messages
 	needsCopy := false
@@ -892,6 +892,39 @@ func (r *OpenAIResponsesRequestInput) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	return fmt.Errorf("openai responses request input is neither a string nor an array of responses messages")
+}
+
+// responsesCacheControlLost reports a cache_control marker MarshalJSON below strips
+// (the Responses wire carries none) that the breakpoint translation did not turn into a
+// prompt_cache_breakpoint. An item-level marker counts as carried once any of the
+// item's blocks holds a breakpoint, which is where the translation puts it. Allocation-free.
+func responsesCacheControlLost(messages []schemas.ResponsesMessage, tools []schemas.ResponsesTool) bool {
+	for i := range messages {
+		m := &messages[i]
+		var blocks []schemas.ResponsesMessageContentBlock
+		if m.Content != nil {
+			blocks = m.Content.ContentBlocks
+		}
+		carried := false
+		for _, set := range [2][]schemas.ResponsesMessageContentBlock{blocks, responsesToolOutputBlocks(m)} {
+			for j := range set {
+				if set[j].PromptCacheBreakpoint != nil {
+					carried = true
+				} else if set[j].CacheControl != nil {
+					return true
+				}
+			}
+		}
+		if m.CacheControl != nil && !carried {
+			return true
+		}
+	}
+	for i := range tools {
+		if tools[i].CacheControl != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // MarshalJSON implements custom JSON marshalling for OpenAIResponsesRequestInput
@@ -1271,6 +1304,49 @@ func responsesToolSupportsAllowedCallers(t schemas.ResponsesToolType) bool {
 func isAnthropicOnlyResponsesToolType(t schemas.ResponsesTool) bool {
 	return t.Type == schemas.ResponsesToolTypeWebFetch ||
 		t.Type == schemas.ResponsesToolTypeMemory
+}
+
+// keepsCacheControl: OpenRouter forwards Anthropic-style cache_control breakpoints to the
+// underlying model, so MarshalJSON keeps the block, tool-call and tool markers for it.
+func (req *OpenAIChatRequest) keepsCacheControl() bool {
+	return req.Provider == schemas.OpenRouter
+}
+
+// chatCacheControlLost reports a cache_control marker MarshalJSON will not carry:
+// without keepsCacheControl it strips every marker the breakpoint translation did not
+// turn into prompt_cache_breakpoint; a TextJoinOnWire content marshals as a string
+// without its markers; a tool result's marker has no chat field at all. Allocation-free.
+func chatCacheControlLost(req *OpenAIChatRequest) bool {
+	keep := req.keepsCacheControl()
+	for i := range req.Messages {
+		m := &req.Messages[i]
+		if m.ChatToolMessage != nil && m.ChatToolMessage.CacheControl != nil {
+			return true
+		}
+		if c := m.Content; c != nil {
+			for j := range c.ContentBlocks {
+				b := &c.ContentBlocks[j]
+				if b.CacheControl != nil && (c.TextJoinOnWire || !keep && b.PromptCacheBreakpoint == nil) {
+					return true
+				}
+			}
+		}
+		if a := m.OpenAIChatAssistantMessage; a != nil && !keep {
+			for j := range a.ToolCalls {
+				if a.ToolCalls[j].CacheControl != nil {
+					return true
+				}
+			}
+		}
+	}
+	if !keep {
+		for i := range req.ChatParameters.Tools {
+			if req.ChatParameters.Tools[i].CacheControl != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) bool {

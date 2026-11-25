@@ -15,6 +15,7 @@ func ToCohereChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sche
 		return nil, fmt.Errorf("bifrost request is nil")
 	}
 
+	schemas.ReportChatCacheControlDropped(ctx, bifrostReq) // no cache breakpoint on this wire
 	messages := bifrostReq.Input
 	cohereReq := &CohereChatRequest{
 		Model: bifrostReq.Model,

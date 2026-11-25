@@ -78,6 +78,7 @@ func ToHuggingFaceChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq 
 		return nil, nil
 	}
 
+	schemas.ReportChatCacheControlDropped(ctx, bifrostReq) // no cache breakpoint on this wire
 	// Create the HuggingFace request
 	// Sanitize messages to remove unsupported fields like reasoning_details
 	hfReq := &HuggingFaceChatRequest{

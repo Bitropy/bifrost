@@ -13,6 +13,7 @@ func ToPerplexityChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *
 	// Perplexity takes text only in a tool message, and its wire has no cache
 	// breakpoint (BIT-2764).
 	messages := schemas.ChatMessagesWithoutCacheControl(schemas.FlattenToolMessagesMedia(ctx, bifrostReq.Input))
+	schemas.ReportChatCacheControlDropped(ctx, bifrostReq)
 	perplexityReq := &PerplexityChatRequest{
 		Model:    bifrostReq.Model,
 		Messages: messages,

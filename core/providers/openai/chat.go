@@ -135,10 +135,13 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 	}
 
-	// OpenRouter forwards cache_control verbatim to Claude, which rejects more than four
-	// markers outright, so clamp the same way the direct Anthropic path does.
-	if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter && schemas.IsAnthropicModel(capModel) {
+	// The markers MarshalJSON keeps for OpenRouter reach Claude verbatim, which rejects more
+	// than four outright, so clamp the same way the direct Anthropic path does. A marker
+	// clamped away or stripped by MarshalJSON is reported (unmapped).
+	clamped := openaiReq.keepsCacheControl() && schemas.IsAnthropicModel(capModel) &&
 		clampOpenRouterCacheControl(openaiReq, maxResponsesCacheBreakpoints)
+	if clamped || chatCacheControlLost(openaiReq) {
+		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
 	}
 
 	// prompt_cache_options is a gpt-5.6+ model field, valid on any host serving one.
@@ -725,10 +728,10 @@ type openRouterCacheRef struct {
 }
 
 // clampOpenRouterCacheControl drops the earliest surplus markers so at most n remain
-// (same trade-off as clampAnthropicCacheBreakpoints).
-func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) {
+// (same trade-off as clampAnthropicCacheBreakpoints), and reports whether it dropped any.
+func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) bool {
 	if req == nil {
-		return
+		return false
 	}
 	var buf [8]openRouterCacheRef // stays on the stack for the usual marker counts
 	refs := buf[:0]
@@ -756,7 +759,7 @@ func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) {
 	}
 	excess := len(refs) - n
 	if excess <= 0 {
-		return
+		return false
 	}
 
 	toolsCopied := false
@@ -791,6 +794,7 @@ func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) {
 			msg.OpenAIChatAssistantMessage.ToolCalls[ref.toolCall].CacheControl = nil
 		}
 	}
+	return true
 }
 
 // stripChatCacheBreakpointTTL drops breakpoint ttl, which Chat Completions rejects (Responses-only).
