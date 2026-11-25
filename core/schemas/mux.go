@@ -1486,6 +1486,10 @@ func (cr *BifrostChatRequest) toResponsesRequest(ctx *BifrostContext, carryCache
 		Model:     cr.Model,
 		Fallbacks: cr.Fallbacks, // Copy fallbacks as-is
 	}
+	// Off a Claude target only a tool result's marker is carried; the rest are lost here.
+	if !carryCacheControl && (chatMessagesMarked(cr.Input, true) || cr.Params != nil && chatToolsMarked(cr.Params.Tools)) {
+		AddAdaptation(ctx, AdaptationUnmapped)
+	}
 
 	// Convert Input messages using existing ChatMessage.ToResponsesMessages()
 	var allResponsesMessages []ResponsesMessage

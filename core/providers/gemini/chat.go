@@ -22,6 +22,7 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 	}
 
 	bifrostReq.Model = NormalizeModelName(bifrostReq.Model)
+	schemas.ReportChatCacheControlDropped(ctx, bifrostReq) // no cache breakpoint on this wire
 
 	// Create the base Gemini generation request
 	geminiReq := &GeminiGenerationRequest{

@@ -25,6 +25,7 @@ func ToReplicateChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	// Build the input from messages
 	input := &ReplicatePredictionRequestInput{}
+	schemas.ReportChatCacheControlDropped(ctx, bifrostReq) // no cache breakpoint on this wire
 
 	isGPT5Structured := strings.HasPrefix(bifrostReq.Model, string(schemas.OpenAI)) && strings.Contains(bifrostReq.Model, "gpt-5-structured")
 

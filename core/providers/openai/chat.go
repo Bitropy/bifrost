@@ -137,8 +137,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	// OpenRouter forwards cache_control verbatim to Claude, which rejects more than four
 	// markers outright, so clamp the same way the direct Anthropic path does.
-	if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter && schemas.IsAnthropicModel(capModel) {
+	clamped := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter && schemas.IsAnthropicModel(capModel) &&
 		clampOpenRouterCacheControl(openaiReq, maxResponsesCacheBreakpoints)
+	if clamped || chatCacheControlLost(openaiReq) {
+		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
 	}
 
 	// prompt_cache_options is a gpt-5.6+ model field, valid on any host serving one.
@@ -725,10 +727,10 @@ type openRouterCacheRef struct {
 }
 
 // clampOpenRouterCacheControl drops the earliest surplus markers so at most n remain
-// (same trade-off as clampAnthropicCacheBreakpoints).
-func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) {
+// (same trade-off as clampAnthropicCacheBreakpoints), and reports whether it dropped any.
+func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) bool {
 	if req == nil {
-		return
+		return false
 	}
 	var buf [8]openRouterCacheRef // stays on the stack for the usual marker counts
 	refs := buf[:0]
@@ -756,7 +758,7 @@ func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) {
 	}
 	excess := len(refs) - n
 	if excess <= 0 {
-		return
+		return false
 	}
 
 	toolsCopied := false
@@ -791,6 +793,45 @@ func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) {
 			msg.OpenAIChatAssistantMessage.ToolCalls[ref.toolCall].CacheControl = nil
 		}
 	}
+	return true
+}
+
+// chatCacheControlLost reports a cache_control marker req will not carry to the wire.
+// MarshalJSON strips every marker off a request not keyed openrouter unless the
+// breakpoint translation turned it into prompt_cache_breakpoint; a TextJoinOnWire
+// content marshals as a string without its markers; a tool result's marker has no
+// chat field at all.
+func chatCacheControlLost(req *OpenAIChatRequest) bool {
+	keep := req.Provider == schemas.OpenRouter
+	for i := range req.Messages {
+		m := &req.Messages[i]
+		if m.ChatToolMessage != nil && m.ChatToolMessage.CacheControl != nil {
+			return true
+		}
+		if c := m.Content; c != nil {
+			for j := range c.ContentBlocks {
+				b := &c.ContentBlocks[j]
+				if b.CacheControl != nil && (c.TextJoinOnWire || !keep && b.PromptCacheBreakpoint == nil) {
+					return true
+				}
+			}
+		}
+		if a := m.OpenAIChatAssistantMessage; a != nil && !keep {
+			for j := range a.ToolCalls {
+				if a.ToolCalls[j].CacheControl != nil {
+					return true
+				}
+			}
+		}
+	}
+	if !keep {
+		for i := range req.ChatParameters.Tools {
+			if req.ChatParameters.Tools[i].CacheControl != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // stripChatCacheBreakpointTTL drops breakpoint ttl, which Chat Completions rejects (Responses-only).

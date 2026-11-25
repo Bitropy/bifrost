@@ -311,6 +311,39 @@ func responsesUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schema
 	}
 }
 
+// responsesCacheControlLost reports a cache_control marker the Responses serializer
+// strips (it carries none) that the breakpoint translation did not turn into a
+// prompt_cache_breakpoint. An item-level marker counts as carried once any of the
+// item's blocks holds a breakpoint, which is where the translation puts it.
+func responsesCacheControlLost(messages []schemas.ResponsesMessage, tools []schemas.ResponsesTool) bool {
+	for i := range messages {
+		m := &messages[i]
+		var blocks []schemas.ResponsesMessageContentBlock
+		if m.Content != nil {
+			blocks = m.Content.ContentBlocks
+		}
+		carried := false
+		for _, set := range [2][]schemas.ResponsesMessageContentBlock{blocks, responsesToolOutputBlocks(m)} {
+			for j := range set {
+				if set[j].PromptCacheBreakpoint != nil {
+					carried = true
+				} else if set[j].CacheControl != nil {
+					return true
+				}
+			}
+		}
+		if m.CacheControl != nil && !carried {
+			return true
+		}
+	}
+	for i := range tools {
+		if tools[i].CacheControl != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // responsesToolOutputBlocks returns the block-form output of a function_call_output
 // item, or nil when the item is not one or its output is a bare string.
 func responsesToolOutputBlocks(msg *schemas.ResponsesMessage) []schemas.ResponsesMessageContentBlock {
@@ -1074,6 +1107,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			extraParams = bifrostReq.Params.ExtraParams
 		}
 		applyResponsesCacheBreakpoints(messages, openAIFamily, promptCacheBreakpointCeiling(ctx, openAIFamily, callerCacheOptions, extraParams))
+	}
+	var tools []schemas.ResponsesTool
+	if bifrostReq.Params != nil {
+		tools = bifrostReq.Params.Tools
+	}
+	if responsesCacheControlLost(messages, tools) {
+		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
 	}
 	// Bedrock Mantle rejects prompt_cache_breakpoint.ttl on every model (no 12h there).
 	if cachePromptProvider == schemas.BedrockMantle || cachePromptProvider == schemas.Bedrock {

@@ -5841,12 +5841,13 @@ func TestClaudeOnOpenAIResponses_ReasoningRemovedIsAdapted(t *testing.T) {
 		{"two redacted_thinking", []schemas.ChatReasoningDetails{redacted("e1"), redacted("e2")}},
 		{"thinking and redacted_thinking", []schemas.ChatReasoningDetails{signed("plan"), redacted("enc")}},
 	}
+	// The text block's marker has no home on the OpenAI wire: unmapped (BIT-3246).
 	plain, none := openAIResponsesBody(t, claudeToolTurn("claude-sonnet-4-5", nil))
-	assert.Zero(t, none)
+	assert.Equal(t, schemas.AdaptationUnmapped, none)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			body, got := openAIResponsesBody(t, claudeToolTurn("claude-sonnet-4-5", tc.reasoning))
-			assert.Equal(t, schemas.AdaptationReasoning, got)
+			assert.Equal(t, schemas.AdaptationReasoning|schemas.AdaptationUnmapped, got)
 			assert.NotContains(t, body, "sig")
 			assert.NotContains(t, body, `"enc`)
 			assert.NotContains(t, body, `"plan"`)
@@ -5857,9 +5858,9 @@ func TestClaudeOnOpenAIResponses_ReasoningRemovedIsAdapted(t *testing.T) {
 	}
 }
 
-// With no Claude reasoning the body is the pre-BIT-3177 one and nothing is
-// recorded. The OpenAI wire has no home for an assistant output_text block's
-// cache_control, so S22's carried marker leaves these bytes unchanged.
+// With no Claude reasoning the body is the pre-BIT-3177 one and only the lost
+// marker is recorded. The OpenAI wire has no home for an assistant output_text
+// block's cache_control, so S22's carried marker leaves these bytes unchanged.
 func TestClaudeOnOpenAIResponses_NoReasoningGolden(t *testing.T) {
 	signed := func(text string) schemas.ChatReasoningDetails {
 		return schemas.ChatReasoningDetails{Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr(text), Signature: schemas.Ptr("sig")}
@@ -5870,16 +5871,17 @@ func TestClaudeOnOpenAIResponses_NoReasoningGolden(t *testing.T) {
 	const claudeGolden = `{"model":"claude-sonnet-4-5","input":[{"type":"message","role":"user","content":"q"},{"id":"<minted>","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"reading","annotations":[],"logprobs":[]}]},{"arguments":"{}","id":"<minted>","type":"function_call","call_id":"t1","name":"read"},{"type":"function_call_output","call_id":"t1","output":"x"}],"tools":[{"type":"function","name":"read"}]}`
 	const gptGolden = `{"model":"gpt-4o","input":[{"type":"message","role":"user","content":"q"},{"id":"<minted>","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"reading","annotations":[],"logprobs":[]}]},{"arguments":"{}","id":"<minted>","type":"function_call","call_id":"t1","name":"read"},{"type":"function_call_output","call_id":"t1","output":"x"}],"tools":[{"type":"function","name":"read"}]}`
 	body, got := openAIResponsesBody(t, claudeToolTurn("claude-sonnet-4-5", nil))
-	assert.Zero(t, got)
+	assert.Equal(t, schemas.AdaptationUnmapped, got)
 	assert.Equal(t, claudeGolden, body)
 
-	// A non-Claude target: the S22 carry does not apply and no bit is recorded,
-	// even for a reasoning history the egress removes (S21 is the Claude route).
+	// A non-Claude target: the S22 carry does not apply and no reasoning bit is
+	// recorded, even for a reasoning history the egress removes (S21 is the
+	// Claude route); the translation drops the marker (unmapped).
 	body, got = openAIResponsesBody(t, claudeToolTurn("gpt-4o", nil))
-	assert.Zero(t, got)
+	assert.Equal(t, schemas.AdaptationUnmapped, got)
 	assert.Equal(t, gptGolden, body)
 	_, got = openAIResponsesBody(t, claudeToolTurn("gpt-4o", []schemas.ChatReasoningDetails{signed(""), redacted("e1"), redacted("e2")}))
-	assert.Zero(t, got)
+	assert.Equal(t, schemas.AdaptationUnmapped, got)
 }
 
 // TestSamplingStrip_EveryBuilder runs one row table through the chat builder,
