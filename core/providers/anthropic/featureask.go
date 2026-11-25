@@ -115,12 +115,11 @@ func ChatAsk(req *schemas.BifrostChatRequest, betas []string) FeatureAsk {
 	}
 	if p := req.Params; p != nil {
 		if c := p.Container; c != nil {
-			switch {
-			case c.ContainerObject != nil && len(c.ContainerObject.Skills) > 0:
-				ask.Features |= FeatureContainerSkills
-			case c.ContainerObject != nil || (c.ContainerStr != nil && *c.ContainerStr != ""):
-				ask.Features |= FeatureContainer
+			skills := 0
+			if c.ContainerObject != nil {
+				skills = len(c.ContainerObject.Skills)
 			}
+			ask.addContainer(c.ContainerStr, c.ContainerObject != nil, skills)
 		}
 		ask.Features |= when(len(p.MCPServers) > 0, FeatureMCPServers) |
 			when(p.Speed != nil && *p.Speed != "", FeatureSpeed) |
@@ -334,6 +333,42 @@ func replayBlockFeatures(block gjson.Result) Feature {
 	return 0
 }
 
+// addContainer reads the container union in its typed forms (chat's ChatContainer and the
+// AnthropicContainer the Messages ingress leaves in ExtraParams share its shape).
+func (ask *FeatureAsk) addContainer(str *string, object bool, skills int) {
+	switch {
+	case object && skills > 0:
+		ask.Features |= FeatureContainerSkills
+	case object || (str != nil && *str != ""):
+		ask.Features |= FeatureContainer
+	}
+}
+
+// addExtraContainer reads every form the Responses converter accepts under ExtraParams
+// "container": the typed union, a bare id string, or JSON.
+func (ask *FeatureAsk) addExtraContainer(v any) {
+	switch c := v.(type) {
+	case *AnthropicContainer:
+		if c != nil {
+			ask.addTypedContainer(*c)
+		}
+	case AnthropicContainer:
+		ask.addTypedContainer(c)
+	case string:
+		ask.addContainer(&c, false, 0)
+	default:
+		ask.addRawContainer(extraResult(v))
+	}
+}
+
+func (ask *FeatureAsk) addTypedContainer(c AnthropicContainer) {
+	skills := 0
+	if c.ContainerObject != nil {
+		skills = len(c.ContainerObject.Skills)
+	}
+	ask.addContainer(c.ContainerStr, c.ContainerObject != nil, skills)
+}
+
 func (ask *FeatureAsk) addRawContainer(c gjson.Result) {
 	switch {
 	case c.IsObject() && rawMeaningful(c.Get("skills")):
@@ -376,7 +411,7 @@ func (ask *FeatureAsk) addExtra(extra map[string]any) {
 		return
 	}
 	if c, ok := extra["container"]; ok {
-		ask.addRawContainer(extraResult(c))
+		ask.addExtraContainer(c)
 	}
 	for _, m := range rawMemberFeatures {
 		top, rest, nested := strings.Cut(m.path, ".")
@@ -404,7 +439,7 @@ func (ask *FeatureAsk) addExtra(extra map[string]any) {
 }
 
 // extraResult views an ExtraParams value as JSON without copying when it already is JSON (raw
-// bytes or a string holding JSON); any other value yields an empty result.
+// bytes) and re-encodes a decoded object; any other value yields an empty result.
 func extraResult(v any) gjson.Result {
 	switch v := v.(type) {
 	case json.RawMessage:

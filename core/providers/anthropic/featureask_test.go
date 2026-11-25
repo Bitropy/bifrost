@@ -529,3 +529,33 @@ func TestRefuseRemovedFeatures_FirstMaskedBit(t *testing.T) {
 	assert.Nil(t, RefuseRemovedFeatures(ctx, schemas.Vertex))
 	assert.Equal(t, "speed", schemas.AdaptedFeaturesFromContext(ctx).String())
 }
+
+// The Messages ingress leaves the typed union in ExtraParams; the Responses converter also takes a
+// bare id string, so ResponsesAsk must read every form it accepts.
+func TestResponsesAsk_ContainerForms(t *testing.T) {
+	id := "c1"
+	withSkills := AnthropicContainer{ContainerObject: &AnthropicContainerObject{ID: &id, Skills: []AnthropicContainerSkill{{}}}}
+	cases := []struct {
+		name string
+		v    any
+		want Feature
+	}{
+		{"typed pointer id", &AnthropicContainer{ContainerStr: &id}, FeatureContainer},
+		{"typed value skills", withSkills, FeatureContainerSkills},
+		{"typed pointer skills", &withSkills, FeatureContainerSkills},
+		{"nil typed pointer", (*AnthropicContainer)(nil), 0},
+		{"bare string", "c1", FeatureContainer},
+		{"empty string", "", 0},
+		{"map skills", map[string]any{"id": "c1", "skills": []any{map[string]any{"type": "anthropic"}}}, FeatureContainerSkills},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{}}
+			respExtra("container", tc.v)(req)
+			got := ResponsesAsk(req, nil).Features & (FeatureContainer | FeatureContainerSkills)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
