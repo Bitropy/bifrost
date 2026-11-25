@@ -111,7 +111,11 @@ func TestToolResultMediaSized_Hook(t *testing.T) {
 func TestRefuseMask_AllocBudget(t *testing.T) {
 	ctx := NewBifrostContext(context.Background(), NoDeadline)
 	ctx.SetValue(BifrostContextKeyRequestBodyRewriter, &RequestBodyRewriteHook{RefuseMask: 1})
-	if allocs := testing.AllocsPerRun(100, func() { _ = RefuseMaskFromContext(ctx); _ = AdaptationsFromContext(ctx); _ = AdaptedFeaturesFromContext(ctx) }); allocs != 0 {
+	if allocs := testing.AllocsPerRun(100, func() {
+		_ = RefuseMaskFromContext(ctx)
+		_ = AdaptationsFromContext(ctx)
+		_ = AdaptedFeaturesFromContext(ctx)
+	}); allocs != 0 {
 		t.Fatalf("allocs = %v", allocs)
 	}
 }
