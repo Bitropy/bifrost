@@ -1239,25 +1239,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			req.ResponsesParameters.Reasoning.Effort != nil {
 			effort = *req.ResponsesParameters.Reasoning.Effort
 		}
-		if samplingParamUnsupported(caps, schemas.FieldTopP, capModel, effort) {
-			req.ResponsesParameters.TopP = nil
-		}
-		// Only OpenAI hosts gate these; third-party gpt-oss hosts accept them.
 		base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
-		if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(capModel)) {
-			if samplingParamUnsupported(caps, schemas.FieldTemperature, capModel, effort) {
-				req.ResponsesParameters.Temperature = nil
-			}
-			if samplingParamUnsupported(caps, schemas.FieldTopLogprobs, capModel, effort) {
-				req.ResponsesParameters.TopLogProbs = nil
-			}
-			if samplingParamUnsupported(caps, schemas.FieldLogprobs, capModel, effort) &&
-				slices.Contains(req.ResponsesParameters.Include, schemas.ResponsesIncludeOutputTextLogProbs) {
-				// Clone: Include shares its backing array with bifrostReq.Params.
-				req.ResponsesParameters.Include = slices.DeleteFunc(slices.Clone(req.ResponsesParameters.Include), func(s string) bool {
-					return s == schemas.ResponsesIncludeOutputTextLogProbs
-				})
-			}
+		if stripResponsesSampling(&req.ResponsesParameters, ResponsesSamplingStrip(caps, base, capModel, effort)) {
+			schemas.AddAdaptation(ctx, schemas.AdaptationSampling)
 		}
 		if base == schemas.OpenAI || base == schemas.Azure {
 			// Codex asks for encrypted reasoning on every request; models that do not
@@ -1337,9 +1321,55 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	return req
 }
 
+// SamplingStrip names the sampling fields a Responses request drops for its
+// target model: top_p, temperature, top_logprobs and the
+// message.output_text.logprobs include.
+type SamplingStrip struct {
+	TopP, Temperature, TopLogprobs, Logprobs bool
+}
+
+// ResponsesSamplingStrip is the sampling decision ToOpenAIResponsesRequest makes
+// for an attempt on base (the resolved base provider) to capModel at effort, the
+// reasoning effort the request sends ("" for none). An embedder forwarding a
+// client's raw Responses body applies the same decision to it.
+func ResponsesSamplingStrip(caps schemas.ModelCaps, base schemas.ModelProvider, capModel, effort string) SamplingStrip {
+	s := SamplingStrip{TopP: samplingParamUnsupported(caps, schemas.FieldTopP, capModel, effort)}
+	// Only OpenAI hosts gate these; third-party gpt-oss hosts accept them.
+	if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(capModel)) {
+		s.Temperature = samplingParamUnsupported(caps, schemas.FieldTemperature, capModel, effort)
+		s.TopLogprobs = samplingParamUnsupported(caps, schemas.FieldTopLogprobs, capModel, effort)
+		s.Logprobs = samplingParamUnsupported(caps, schemas.FieldLogprobs, capModel, effort)
+	}
+	return s
+}
+
+// stripResponsesSampling drops the fields s names from p and reports whether p
+// set one of them.
+func stripResponsesSampling(p *schemas.ResponsesParameters, s SamplingStrip) bool {
+	logprobs := s.Logprobs && slices.Contains(p.Include, schemas.ResponsesIncludeOutputTextLogProbs)
+	stripped := s.TopP && p.TopP != nil || s.Temperature && p.Temperature != nil || s.TopLogprobs && p.TopLogProbs != nil || logprobs
+	if s.TopP {
+		p.TopP = nil
+	}
+	if s.Temperature {
+		p.Temperature = nil
+	}
+	if s.TopLogprobs {
+		p.TopLogProbs = nil
+	}
+	if logprobs {
+		// Clone: Include shares its backing array with bifrostReq.Params.
+		p.Include = slices.DeleteFunc(slices.Clone(p.Include), func(s string) bool {
+			return s == schemas.ResponsesIncludeOutputTextLogProbs
+		})
+	}
+	return stripped
+}
+
 // samplingParamUnsupported reports whether the model rejects a sampling field
 // (top_p, temperature, top_logprobs, logprobs). The datasheet can mark it
-// unsupported outright, or conditionally via "when_effort_none" — accepted only
+// unsupported outright, a false supports_sampling_params rejects temperature and
+// top_p, or the datasheet marks it conditionally via "when_effort_none" — accepted only
 // while reasoning is off. The fallback is name detection: OpenAI reasoning models
 // (o1/o3 series, GPT-6) reject it, except GPT-5.x while effort is "none". An
 // omitted effort counts as "none" only where that is the model's default: the
@@ -1354,6 +1384,12 @@ func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort strin
 	// row rejects the field whatever the effort. Probed with a false fallback so
 	// only an explicit true short-circuits.
 	if caps.FieldUnsupported(field, false) {
+		return true
+	}
+	// A false supports_sampling_params is a measured fact about the model, so it
+	// holds at any effort; only an explicit unsupported_fields entry outranks it.
+	if (field == schemas.FieldTemperature || field == schemas.FieldTopP) && !caps.SupportsSamplingParams(true) &&
+		caps.FieldUnsupported(field, true) {
 		return true
 	}
 	if caps.FieldCondition(field) == schemas.ConditionWhenEffortNone {
