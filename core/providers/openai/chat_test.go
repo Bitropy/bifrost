@@ -3942,3 +3942,61 @@ func TestReasoningDetailsReplay_Chat(t *testing.T) {
 		})
 	}
 }
+
+// TestReasoningObject_Chat: OpenRouter is sent the client's reasoning object when
+// it asks for more than an effort; every other chat wire sends reasoning_effort and
+// reports AdaptationUnmapped for a member it cannot carry.
+func TestReasoningObject_Chat(t *testing.T) {
+	r := func(enabled *bool, effort *string, maxTokens *int) *schemas.ChatReasoning {
+		return &schemas.ChatReasoning{Enabled: enabled, Effort: effort, MaxTokens: maxTokens}
+	}
+	high, on := schemas.Ptr("high"), schemas.Ptr(true)
+	rows := []struct {
+		name               string
+		provider, base     schemas.ModelProvider
+		custom             bool
+		model              string
+		reasoning          *schemas.ChatReasoning
+		wantHas, wantLacks []string
+		wantUnmapped       bool
+	}{
+		{name: "openrouter effort stays reasoning_effort", provider: schemas.OpenRouter, model: "anthropic/claude-haiku-4.5", reasoning: r(nil, high, nil), wantHas: []string{`"reasoning_effort":"high"`}, wantLacks: []string{`"reasoning":`}},
+		{name: "openrouter max_tokens carried", provider: schemas.OpenRouter, model: "anthropic/claude-haiku-4.5", reasoning: r(nil, nil, schemas.Ptr(1024)), wantHas: []string{`"reasoning":{"max_tokens":1024}`}, wantLacks: []string{"reasoning_effort"}},
+		{name: "openrouter enabled carried", provider: schemas.OpenRouter, base: schemas.OpenAI, model: "anthropic/claude-haiku-4.5", reasoning: r(on, nil, nil), wantHas: []string{`"reasoning":{"enabled":true}`}},
+		{name: "openrouter enabled and effort carried", provider: schemas.OpenRouter, model: "anthropic/claude-haiku-4.5", reasoning: r(on, high, nil), wantHas: []string{`"enabled":true`, `"effort":"high"`}, wantLacks: []string{"reasoning_effort"}},
+		{name: "openrouter display dropped", provider: schemas.OpenRouter, model: "anthropic/claude-haiku-4.5", reasoning: &schemas.ChatReasoning{Effort: high, Display: schemas.Ptr("summarized")}, wantLacks: []string{"summarized"}, wantUnmapped: true},
+		{name: "openai effort", provider: schemas.OpenAI, model: "gpt-5", reasoning: r(nil, high, nil), wantHas: []string{`"reasoning_effort":"high"`}, wantLacks: []string{`"reasoning":`}},
+		{name: "openai max_tokens becomes the effort", provider: schemas.OpenAI, model: "gpt-5", reasoning: r(nil, nil, schemas.Ptr(1024)), wantHas: []string{"reasoning_effort"}, wantLacks: []string{"max_tokens"}},
+		{name: "openai max_tokens beside an effort dropped", provider: schemas.OpenAI, model: "gpt-5", reasoning: r(nil, high, schemas.Ptr(1024)), wantHas: []string{`"reasoning_effort":"high"`}, wantUnmapped: true},
+		{name: "openai enabled alone dropped", provider: schemas.OpenAI, model: "gpt-5", reasoning: r(on, nil, nil), wantLacks: []string{"enabled", "reasoning_effort"}, wantUnmapped: true},
+		{name: "openai enabled with an effort", provider: schemas.OpenAI, model: "gpt-5", reasoning: r(on, high, nil), wantHas: []string{`"reasoning_effort":"high"`}, wantLacks: []string{"enabled"}},
+		{name: "openai type dropped", provider: schemas.OpenAI, model: "gpt-5", reasoning: &schemas.ChatReasoning{Type: schemas.Ptr("between_tools")}, wantLacks: []string{"between_tools"}, wantUnmapped: true},
+		{name: "openrouter base under another key: max_tokens becomes the effort", provider: "my-router", base: schemas.OpenRouter, model: "anthropic/claude-haiku-4.5", reasoning: r(nil, nil, schemas.Ptr(1024)), wantHas: []string{"reasoning_effort"}, wantLacks: []string{`"reasoning":`}},
+		{name: "custom provider max_tokens dropped", provider: "my-vllm", base: schemas.OpenAI, custom: true, model: "qwen3", reasoning: r(nil, nil, schemas.Ptr(1024)), wantLacks: []string{`"reasoning":`, "reasoning_effort"}, wantUnmapped: true},
+		{name: "no reasoning", provider: schemas.OpenAI, model: "gpt-5"},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := samplingCtx(t)
+			if row.base != "" {
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, row.base)
+			}
+			if row.custom {
+				ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+			}
+			msgs := decodeChatMessages(t, `[{"role":"user","content":"hi"}]`)
+			req := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{Provider: row.provider, Model: row.model, Input: msgs, Params: &schemas.ChatParameters{Reasoning: row.reasoning}})
+			require.NotNil(t, req)
+			out, err := providerUtils.MarshalSorted(req)
+			require.NoError(t, err)
+			wire := string(out)
+			for _, s := range row.wantHas {
+				assert.Contains(t, wire, s)
+			}
+			for _, s := range row.wantLacks {
+				assert.NotContains(t, wire, s)
+			}
+			assert.Equal(t, row.wantUnmapped, schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationUnmapped), wire)
+		})
+	}
+}

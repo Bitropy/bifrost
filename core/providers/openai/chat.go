@@ -33,11 +33,31 @@ func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	}
 }
 
-// ToOpenAIChatRequest converts a Bifrost chat completion request to OpenAI format
+// ToOpenAIChatRequest converts a Bifrost chat completion request to OpenAI format.
+// OpenRouter is sent the client's reasoning object; on any other provider a
+// member of it the wire cannot carry is recorded as AdaptationUnmapped.
 func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
+	// Snapshot first: a provider arm may edit the reasoning it was handed.
+	var in *schemas.ChatReasoning
+	if bifrostReq.Params != nil && bifrostReq.Params.Reasoning != nil {
+		in = new(*bifrostReq.Params.Reasoning)
+	}
+	req := toOpenAIChatRequest(ctx, bifrostReq)
+	if in != nil {
+		if req.keepsReasoningObject() {
+			req.carryReasoningObject(in)
+		}
+		if chatReasoningLost(in, req) {
+			schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
+		}
+	}
+	return req
+}
+
+func toOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequest {
 
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
