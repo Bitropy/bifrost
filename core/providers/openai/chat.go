@@ -368,20 +368,20 @@ func (req *OpenAIChatRequest) stripUnsupportedSamplingParams(ctx *schemas.Bifros
 	if req.ChatParameters.Reasoning != nil && req.ChatParameters.Reasoning.Effort != nil {
 		effort = *req.ChatParameters.Reasoning.Effort
 	}
-	model := caps.Model()
+	s := samplingStrip(caps, caps.Model(), effort)
 	p := &req.ChatParameters
 	stripped := false
-	if samplingParamUnsupported(caps, schemas.FieldTopP, model, effort) {
-		stripped, p.TopP = stripped || p.TopP != nil, nil
+	if s.TopP && p.TopP != nil {
+		p.TopP, stripped = nil, true
 	}
-	if samplingParamUnsupported(caps, schemas.FieldTemperature, model, effort) {
-		stripped, p.Temperature = stripped || p.Temperature != nil, nil
+	if s.Temperature && p.Temperature != nil {
+		p.Temperature, stripped = nil, true
 	}
-	if samplingParamUnsupported(caps, schemas.FieldTopLogprobs, model, effort) {
-		stripped, p.TopLogProbs = stripped || p.TopLogProbs != nil, nil
+	if s.TopLogprobs && p.TopLogProbs != nil {
+		p.TopLogProbs, stripped = nil, true
 	}
-	if samplingParamUnsupported(caps, schemas.FieldLogprobs, model, effort) {
-		stripped, p.LogProbs = stripped || p.LogProbs != nil, nil
+	if s.Logprobs && p.LogProbs != nil {
+		p.LogProbs, stripped = nil, true
 	}
 	if stripped {
 		schemas.AddAdaptation(ctx, schemas.AdaptationSampling)

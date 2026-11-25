@@ -1321,49 +1321,76 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	return req
 }
 
-// SamplingStrip names the sampling fields a Responses request drops for its
-// target model: top_p, temperature, top_logprobs and the
-// message.output_text.logprobs include.
+// SamplingStrip names the sampling fields a request drops for its target model:
+// top_p, temperature, top_logprobs and logprobs (on Responses, the
+// message.output_text.logprobs include).
 type SamplingStrip struct {
 	TopP, Temperature, TopLogprobs, Logprobs bool
 }
 
-// ResponsesSamplingStrip is the sampling decision ToOpenAIResponsesRequest makes
-// for an attempt on base (the resolved base provider) to capModel at effort, the
-// reasoning effort the request sends ("" for none). An embedder forwarding a
-// client's raw Responses body applies the same decision to it.
-func ResponsesSamplingStrip(caps schemas.ModelCaps, base schemas.ModelProvider, capModel, effort string) SamplingStrip {
-	s := SamplingStrip{TopP: samplingParamUnsupported(caps, schemas.FieldTopP, capModel, effort)}
-	// Only OpenAI hosts gate these; third-party gpt-oss hosts accept them.
-	if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(capModel)) {
-		s.Temperature = samplingParamUnsupported(caps, schemas.FieldTemperature, capModel, effort)
-		s.TopLogprobs = samplingParamUnsupported(caps, schemas.FieldTopLogprobs, capModel, effort)
-		s.Logprobs = samplingParamUnsupported(caps, schemas.FieldLogprobs, capModel, effort)
+// samplingStrip is the model's sampling decision at effort, the reasoning effort
+// the request sends ("" for none), before any host gate. Both builders start from it.
+func samplingStrip(caps schemas.ModelCaps, model, effort string) SamplingStrip {
+	return SamplingStrip{
+		TopP:        samplingParamUnsupported(caps, schemas.FieldTopP, model, effort),
+		Temperature: samplingParamUnsupported(caps, schemas.FieldTemperature, model, effort),
+		TopLogprobs: samplingParamUnsupported(caps, schemas.FieldTopLogprobs, model, effort),
+		Logprobs:    samplingParamUnsupported(caps, schemas.FieldLogprobs, model, effort),
 	}
-	return s
+}
+
+// ResponsesSamplingStrip is the sampling decision ToOpenAIResponsesRequest makes
+// for an attempt on base (the resolved base provider) to capModel at effort. It is
+// exported for an embedder that forwards a client's raw Responses body, which no
+// builder sees: the embedder applies the same decision to the bytes.
+//
+// Responses strips top_p on every host. The name rule for the other three holds
+// only on OpenAI hosts (third-party gpt-oss hosts accept them); a false
+// supports_sampling_params is a fact about the model, so it holds on every host.
+func ResponsesSamplingStrip(caps schemas.ModelCaps, base schemas.ModelProvider, capModel, effort string) SamplingStrip {
+	s := samplingStrip(caps, capModel, effort)
+	if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(capModel)) {
+		return s
+	}
+	return SamplingStrip{TopP: s.TopP, Temperature: samplingFactRejects(caps, schemas.FieldTemperature)}
 }
 
 // stripResponsesSampling drops the fields s names from p and reports whether p
 // set one of them.
 func stripResponsesSampling(p *schemas.ResponsesParameters, s SamplingStrip) bool {
-	logprobs := s.Logprobs && slices.Contains(p.Include, schemas.ResponsesIncludeOutputTextLogProbs)
-	stripped := s.TopP && p.TopP != nil || s.Temperature && p.Temperature != nil || s.TopLogprobs && p.TopLogProbs != nil || logprobs
-	if s.TopP {
-		p.TopP = nil
+	stripped := false
+	if s.TopP && p.TopP != nil {
+		p.TopP, stripped = nil, true
 	}
-	if s.Temperature {
-		p.Temperature = nil
+	if s.Temperature && p.Temperature != nil {
+		p.Temperature, stripped = nil, true
 	}
-	if s.TopLogprobs {
-		p.TopLogProbs = nil
+	if s.TopLogprobs && p.TopLogProbs != nil {
+		p.TopLogProbs, stripped = nil, true
 	}
-	if logprobs {
+	if s.Logprobs && slices.Contains(p.Include, schemas.ResponsesIncludeOutputTextLogProbs) {
 		// Clone: Include shares its backing array with bifrostReq.Params.
 		p.Include = slices.DeleteFunc(slices.Clone(p.Include), func(s string) bool {
 			return s == schemas.ResponsesIncludeOutputTextLogProbs
 		})
+		stripped = true
 	}
 	return stripped
+}
+
+// samplingFactRejects reports whether a false supports_sampling_params rejects
+// field: temperature and top_p, at any effort, unless the row names the field in
+// unsupported_fields, which outranks it either way.
+func samplingFactRejects(caps schemas.ModelCaps, field string) bool {
+	if field != schemas.FieldTemperature && field != schemas.FieldTopP || caps.SupportsSamplingParams(true) {
+		return false
+	}
+	if rec := caps.Record(); rec != nil {
+		if _, explicit := rec.UnsupportedFields[field]; explicit {
+			return false
+		}
+	}
+	return true
 }
 
 // samplingParamUnsupported reports whether the model rejects a sampling field
@@ -1386,10 +1413,7 @@ func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort strin
 	if caps.FieldUnsupported(field, false) {
 		return true
 	}
-	// A false supports_sampling_params is a measured fact about the model, so it
-	// holds at any effort; only an explicit unsupported_fields entry outranks it.
-	if (field == schemas.FieldTemperature || field == schemas.FieldTopP) && !caps.SupportsSamplingParams(true) &&
-		caps.FieldUnsupported(field, true) {
+	if samplingFactRejects(caps, field) {
 		return true
 	}
 	if caps.FieldCondition(field) == schemas.ConditionWhenEffortNone {
