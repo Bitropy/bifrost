@@ -562,7 +562,9 @@ func GetVertexEndpoint(ctx *BifrostContext) *VertexEndpoint {
 // Returns an empty ModelFamily if nothing matches.
 func ResolveFamily(ctx *BifrostContext, fallbackModel string) ModelFamily {
 	ra := GetResolvedAlias(ctx)
-	var candidates []string
+	// A stack array: a family lookup is on the request path and allocates nothing.
+	var buf [3]string
+	candidates := buf[:0]
 	if ra != nil && ra.Config != nil {
 		if ra.Config.ModelFamily != nil && *ra.Config.ModelFamily != "" {
 			return *ra.Config.ModelFamily

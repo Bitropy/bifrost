@@ -245,7 +245,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 // Models available on Perplexity's /v1/responses endpoint are routed there via the
 // OpenAI-compatible handler; sonar-* models not supported on responses fall back to /chat/completions.
 func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	if !isPerplexityResponsesSupported(schemas.ResolveCanonicalModel(ctx, request.Model)) {
+	if !schemas.PerplexityServesResponses(schemas.ResolveCanonicalModel(ctx, request.Model)) {
 		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 		if err != nil {
 			return nil, err
@@ -274,7 +274,7 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 // Models available on Perplexity's /v1/responses endpoint are streamed from there via the
 // OpenAI-compatible handler; sonar-* models not supported on responses fall back to /chat/completions.
 func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	if !isPerplexityResponsesSupported(schemas.ResolveCanonicalModel(ctx, request.Model)) {
+	if !schemas.PerplexityServesResponses(schemas.ResolveCanonicalModel(ctx, request.Model)) {
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 		return provider.ChatCompletionStream(
 			ctx,
