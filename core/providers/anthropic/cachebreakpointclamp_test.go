@@ -1,9 +1,13 @@
 package anthropic
 
 import (
+	"bytes"
+	"fmt"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Anthropic, Bedrock, and Vertex all reject a request carrying more than 4 blocks with
@@ -178,5 +182,47 @@ func TestClampAnthropicCacheBreakpoints_NilSafe(t *testing.T) {
 	}
 	if dropped := clampAnthropicCacheBreakpoints(&AnthropicMessageRequest{}); dropped != 0 {
 		t.Errorf("empty request: dropped = %d, want 0", dropped)
+	}
+}
+
+// TestClampAnthropicCacheBreakpoints_ReportsUnmapped: a marker the clamp clears is client intent
+// that never reaches the wire, so both converters report it (ADR 0087); a request at the cap is
+// not. Vertex and Azure Foundry build their Claude bodies through the same converters.
+func TestClampAnthropicCacheBreakpoints_ReportsUnmapped(t *testing.T) {
+	cc := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	user := schemas.ResponsesInputMessageRoleUser
+	for _, provider := range refusalTestProviders {
+		for _, n := range []int{AnthropicMaxCacheBreakpoints, AnthropicMaxCacheBreakpoints + 2} {
+			want := schemas.Adaptation(0)
+			if n > AnthropicMaxCacheBreakpoints {
+				want = schemas.AdaptationUnmapped
+			}
+			t.Run(fmt.Sprintf("%s/%d markers", provider, n), func(t *testing.T) {
+				chat := refusalChatRequest(t, provider, "", nil)
+				chat.Input = nil
+				var input []schemas.ResponsesMessage
+				for i := 0; i < n; i++ {
+					text := fmt.Sprintf("m%d", i)
+					chat.Input = append(chat.Input, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{
+						ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(text), CacheControl: cc}}}})
+					input = append(input, schemas.ResponsesMessage{Role: &user, Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr(text), CacheControl: cc}}}})
+				}
+				cfg := AnthropicRequestBuildConfig{Provider: provider, Model: refusalTestModel}
+
+				ctx := refusalCtx(nil)
+				body, bifrostErr := BuildAnthropicChatRequestBody(ctx, chat, cfg)
+				require.Nil(t, bifrostErr)
+				assert.Equal(t, min(n, AnthropicMaxCacheBreakpoints), bytes.Count(body, []byte(`"cache_control"`)), "chat body: %s", body)
+				assert.Equal(t, want, schemas.AdaptationsFromContext(ctx), "chat")
+
+				ctx = refusalCtx(nil)
+				body, bifrostErr = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: refusalTestModel,
+					Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(1024)}, Input: input}, cfg)
+				require.Nil(t, bifrostErr)
+				assert.Equal(t, min(n, AnthropicMaxCacheBreakpoints), bytes.Count(body, []byte(`"cache_control"`)), "responses body: %s", body)
+				assert.Equal(t, want, schemas.AdaptationsFromContext(ctx), "responses")
+			})
+		}
 	}
 }

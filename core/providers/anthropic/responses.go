@@ -5598,8 +5598,10 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	}
 
 	// See the same call in ToAnthropicChatRequest: over the cap the provider rejects the request
-	// outright, so trim the earliest markers instead of failing.
-	clampAnthropicCacheBreakpoints(anthropicReq)
+	// outright, so trim the earliest markers instead of failing, and report the loss.
+	if clampAnthropicCacheBreakpoints(anthropicReq) > 0 {
+		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
+	}
 
 	return anthropicReq, nil
 }

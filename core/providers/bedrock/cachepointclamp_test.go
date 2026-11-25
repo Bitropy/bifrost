@@ -1,6 +1,8 @@
 package bedrock
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -235,5 +237,43 @@ func TestClampBedrockCachePoints_CountsNestedToolResultMarkers(t *testing.T) {
 			}
 			assert.True(t, hasText, "clamping must not delete tool-result text, only markers")
 		}
+	}
+}
+
+// TestClampBedrockCachePoints_ReportsUnmapped: a cachePoint the clamp drops is client intent that
+// never reaches the wire, so both converters report it (ADR 0087); a request at the cap is not.
+func TestClampBedrockCachePoints_ReportsUnmapped(t *testing.T) {
+	const model = "anthropic.claude-sonnet-4-6"
+	cc := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	user := schemas.ResponsesInputMessageRoleUser
+	for _, n := range []int{BedrockMaxCachePoints, BedrockMaxCachePoints + 2} {
+		want := schemas.Adaptation(0)
+		if n > BedrockMaxCachePoints {
+			want = schemas.AdaptationUnmapped
+		}
+		var chat []schemas.ChatMessage
+		var input []schemas.ResponsesMessage
+		for i := 0; i < n; i++ {
+			text := fmt.Sprintf("m%d", i)
+			chat = append(chat, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{
+				ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(text), CacheControl: cc}}}})
+			input = append(input, schemas.ResponsesMessage{Role: &user, Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr(text), CacheControl: cc}}}})
+		}
+		t.Run(fmt.Sprintf("%d markers", n), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req, err := ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: model, Input: chat})
+			require.NoError(t, err)
+			_, _, _, total := countCachePointsInRequest(req)
+			assert.Equal(t, min(n, BedrockMaxCachePoints), total, "chat")
+			assert.Equal(t, want, schemas.AdaptationsFromContext(ctx), "chat")
+
+			ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req, err = ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: model, Input: input})
+			require.NoError(t, err)
+			_, _, _, total = countCachePointsInRequest(req)
+			assert.Equal(t, min(n, BedrockMaxCachePoints), total, "responses")
+			assert.Equal(t, want, schemas.AdaptationsFromContext(ctx), "responses")
+		})
 	}
 }

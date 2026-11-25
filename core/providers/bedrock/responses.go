@@ -3093,8 +3093,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 		// Bedrock rejects a request carrying more than BedrockMaxCachePoints markers outright,
 		// so trim the earliest rather than let the whole call fail. Runs last, after every
-		// converter branch has contributed its markers.
-		clampBedrockCachePoints(bedrockReq)
+		// converter branch has contributed its markers. A cleared marker is reported (ADR 0087).
+		if clampBedrockCachePoints(bedrockReq) > 0 {
+			schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
+		}
 	}
 
 	return bedrockReq, nil
