@@ -135,9 +135,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 	}
 
-	// OpenRouter forwards cache_control verbatim to Claude, which rejects more than four
-	// markers outright, so clamp the same way the direct Anthropic path does.
-	clamped := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter && schemas.IsAnthropicModel(capModel) &&
+	// The markers MarshalJSON keeps for OpenRouter reach Claude verbatim, which rejects more
+	// than four outright, so clamp the same way the direct Anthropic path does. A marker
+	// clamped away or stripped by MarshalJSON is reported (unmapped).
+	clamped := openaiReq.keepsCacheControl() && schemas.IsAnthropicModel(capModel) &&
 		clampOpenRouterCacheControl(openaiReq, maxResponsesCacheBreakpoints)
 	if clamped || chatCacheControlLost(openaiReq) {
 		schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
@@ -794,44 +795,6 @@ func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) bool {
 		}
 	}
 	return true
-}
-
-// chatCacheControlLost reports a cache_control marker req will not carry to the wire.
-// MarshalJSON strips every marker off a request not keyed openrouter unless the
-// breakpoint translation turned it into prompt_cache_breakpoint; a TextJoinOnWire
-// content marshals as a string without its markers; a tool result's marker has no
-// chat field at all.
-func chatCacheControlLost(req *OpenAIChatRequest) bool {
-	keep := req.Provider == schemas.OpenRouter
-	for i := range req.Messages {
-		m := &req.Messages[i]
-		if m.ChatToolMessage != nil && m.ChatToolMessage.CacheControl != nil {
-			return true
-		}
-		if c := m.Content; c != nil {
-			for j := range c.ContentBlocks {
-				b := &c.ContentBlocks[j]
-				if b.CacheControl != nil && (c.TextJoinOnWire || !keep && b.PromptCacheBreakpoint == nil) {
-					return true
-				}
-			}
-		}
-		if a := m.OpenAIChatAssistantMessage; a != nil && !keep {
-			for j := range a.ToolCalls {
-				if a.ToolCalls[j].CacheControl != nil {
-					return true
-				}
-			}
-		}
-	}
-	if !keep {
-		for i := range req.ChatParameters.Tools {
-			if req.ChatParameters.Tools[i].CacheControl != nil {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // stripChatCacheBreakpointTTL drops breakpoint ttl, which Chat Completions rejects (Responses-only).

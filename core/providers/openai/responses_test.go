@@ -6003,3 +6003,34 @@ func TestStripResponsesSampling_LogprobsOnACopy(t *testing.T) {
 	assert.True(t, schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationSampling))
 	assert.Contains(t, include, schemas.ResponsesIncludeOutputTextLogProbs, "the caller's params are untouched")
 }
+
+// TestCacheControlAdaptation_Responses: the chat→Responses translation and the
+// Responses serializer report a marker they lose, never one turned into a breakpoint.
+func TestCacheControlAdaptation_Responses(t *testing.T) {
+	marked := `[{"role":"system","content":"x",` + ccEph + `},{"role":"user","content":"hi"}]`
+	toolResult := `[{"role":"user","content":"q"},{"role":"assistant","tool_calls":[{"id":"t1","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"t1","content":"ok",` + ccEph + `}]`
+	rows := []struct {
+		name, msgs, model  string
+		wantHas, wantLacks []string
+		wantUnmapped       bool
+	}{
+		{name: "gpt-4o drops in translation", msgs: marked, model: "gpt-4o", wantLacks: []string{"cache_control", "prompt_cache_breakpoint"}, wantUnmapped: true},
+		{name: "breakpoint model drops in translation", msgs: marked, model: "gpt-6.2-sol", wantLacks: []string{"cache_control", "prompt_cache_breakpoint"}, wantUnmapped: true},
+		{name: "claude on an OpenAI base strips", msgs: marked, model: "claude-haiku-4.5", wantLacks: []string{"cache_control", "prompt_cache_breakpoint"}, wantUnmapped: true},
+		{name: "tool result becomes a breakpoint", msgs: toolResult, model: "gpt-6.2-sol", wantHas: []string{"prompt_cache_breakpoint"}, wantLacks: []string{"cache_control"}},
+		{name: "null marker", msgs: `[{"role":"user","content":"x","cache_control":null}]`, model: "gpt-4o"},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			chat := &schemas.BifrostChatRequest{Provider: "my-openai", Model: row.model, Input: decodeChatMessages(t, row.msgs)}
+			wire, a := openAIResponsesBody(t, chat)
+			for _, s := range row.wantHas {
+				assert.Contains(t, wire, s)
+			}
+			for _, s := range row.wantLacks {
+				assert.NotContains(t, wire, s)
+			}
+			assert.Equal(t, row.wantUnmapped, a.Has(schemas.AdaptationUnmapped), wire)
+		})
+	}
+}
