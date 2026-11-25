@@ -1292,7 +1292,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// Exceeding the provider's cache-checkpoint cap is a hard rejection, not a degradation, so
 	// trim the earliest markers rather than let the whole request fail. Runs last, after every
 	// converter branch (including the mid-conversation inline fallback) has contributed markers.
-	clampAnthropicCacheBreakpoints(anthropicReq)
+	clampAnthropicCacheBreakpoints(ctx, anthropicReq)
 
 	return anthropicReq, nil
 }

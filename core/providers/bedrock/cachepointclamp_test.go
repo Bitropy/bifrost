@@ -1,6 +1,8 @@
 package bedrock
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -100,7 +102,7 @@ func TestClampBedrockCachePoints_UnderCapUntouched(t *testing.T) {
 			{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{textBlock("x"), cachePointBlock()}},
 		},
 	}
-	dropped := clampBedrockCachePoints(req)
+	dropped := clampBedrockCachePoints(nil, req)
 	assert.Equal(t, 0, dropped, "a request under the cap must not be trimmed")
 	_, _, _, total := countCachePointsInRequest(req)
 	assert.Equal(t, 2, total, "all markers must survive")
@@ -114,7 +116,7 @@ func TestClampBedrockCachePoints_DropsEarliestKeepsAnchor(t *testing.T) {
 	_, _, _, before := countCachePointsInRequest(req)
 	require.Equal(t, 5, before, "fixture should start one over the cap")
 
-	dropped := clampBedrockCachePoints(req)
+	dropped := clampBedrockCachePoints(nil, req)
 	assert.Equal(t, 1, dropped)
 
 	tools, system, messages, total := countCachePointsInRequest(req)
@@ -146,7 +148,7 @@ func TestClampBedrockCachePoints_DropsCachePointOnlyEntries(t *testing.T) {
 	req := buildOverMarkedRequest()
 	beforeSystem := len(req.System)
 
-	clampBedrockCachePoints(req)
+	clampBedrockCachePoints(nil, req)
 
 	assert.Equal(t, beforeSystem-1, len(req.System),
 		"a marker-only system entry must be removed outright, not left as an empty object")
@@ -158,8 +160,8 @@ func TestClampBedrockCachePoints_DropsCachePointOnlyEntries(t *testing.T) {
 
 // TestClampBedrockCachePoints_NilSafe guards trivial inputs.
 func TestClampBedrockCachePoints_NilSafe(t *testing.T) {
-	assert.Equal(t, 0, clampBedrockCachePoints(nil))
-	assert.Equal(t, 0, clampBedrockCachePoints(&BedrockConverseRequest{}))
+	assert.Equal(t, 0, clampBedrockCachePoints(nil, nil))
+	assert.Equal(t, 0, clampBedrockCachePoints(nil, &BedrockConverseRequest{}))
 }
 
 // TestClampBedrockCachePoints_CountsNestedToolResultMarkers covers the case flagged in review on
@@ -207,7 +209,7 @@ func TestClampBedrockCachePoints_CountsNestedToolResultMarkers(t *testing.T) {
 	require.Equal(t, 3, messagesBefore, "2 direct + 1 nested tool-result marker")
 	require.Equal(t, 5, totalBefore, "fixture should start one over the cap")
 
-	dropped := clampBedrockCachePoints(req)
+	dropped := clampBedrockCachePoints(nil, req)
 	assert.Equal(t, 1, dropped, "the nested marker must be counted, so exactly one must be dropped")
 
 	_, systemAfter, messagesAfter, totalAfter := countCachePointsInRequest(req)
@@ -235,5 +237,43 @@ func TestClampBedrockCachePoints_CountsNestedToolResultMarkers(t *testing.T) {
 			}
 			assert.True(t, hasText, "clamping must not delete tool-result text, only markers")
 		}
+	}
+}
+
+// TestClampBedrockCachePoints_ReportsUnmapped: a cachePoint the clamp drops is client intent that
+// never reaches the wire, so both converters report it (ADR 0087); a request at the cap is not.
+func TestClampBedrockCachePoints_ReportsUnmapped(t *testing.T) {
+	const model = "anthropic.claude-sonnet-4-6"
+	cc := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	user := schemas.ResponsesInputMessageRoleUser
+	for _, n := range []int{BedrockMaxCachePoints, BedrockMaxCachePoints + 2} {
+		want := schemas.Adaptation(0)
+		if n > BedrockMaxCachePoints {
+			want = schemas.AdaptationUnmapped
+		}
+		var chat []schemas.ChatMessage
+		var input []schemas.ResponsesMessage
+		for i := 0; i < n; i++ {
+			text := fmt.Sprintf("m%d", i)
+			chat = append(chat, schemas.ChatMessage{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{
+				ContentBlocks: []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(text), CacheControl: cc}}}})
+			input = append(input, schemas.ResponsesMessage{Role: &user, Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr(text), CacheControl: cc}}}})
+		}
+		t.Run(fmt.Sprintf("%d markers", n), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req, err := ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: model, Input: chat})
+			require.NoError(t, err)
+			_, _, _, total := countCachePointsInRequest(req)
+			assert.Equal(t, min(n, BedrockMaxCachePoints), total, "chat")
+			assert.Equal(t, want, schemas.AdaptationsFromContext(ctx), "chat")
+
+			ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req, err = ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: model, Input: input})
+			require.NoError(t, err)
+			_, _, _, total = countCachePointsInRequest(req)
+			assert.Equal(t, min(n, BedrockMaxCachePoints), total, "responses")
+			assert.Equal(t, want, schemas.AdaptationsFromContext(ctx), "responses")
+		})
 	}
 }

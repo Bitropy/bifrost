@@ -1973,7 +1973,9 @@ func appendToSystemContent(existing *AnthropicContent, newContent AnthropicConte
 const AnthropicMaxCacheBreakpoints = 4
 
 // clampAnthropicCacheBreakpoints clears the EARLIEST cache_control markers when a request carries
-// more than the API accepts, and returns how many it cleared.
+// more than the API accepts, and returns how many it cleared. A cleared marker is client intent
+// that never reaches the wire, so it is recorded as AdaptationUnmapped (ADR 0087); callers run it
+// only when core builds the body, so a raw-bytes send never reports.
 //
 // Which end to drop matters. Caching is cumulative up to each breakpoint, so a marker later in
 // render order (tools -> system -> messages) anchors a strictly longer prefix. Dropping the
@@ -1984,7 +1986,7 @@ const AnthropicMaxCacheBreakpoints = 4
 // content blocks) so the two stay consistent. Like that walk, it does not descend into nested
 // tool_result content; a breakpoint there is counted by the API but not by this function, so the
 // clamp is conservative rather than exhaustive.
-func clampAnthropicCacheBreakpoints(req *AnthropicMessageRequest) int {
+func clampAnthropicCacheBreakpoints(ctx *schemas.BifrostContext, req *AnthropicMessageRequest) int {
 	if req == nil {
 		return 0
 	}
@@ -2024,6 +2026,7 @@ func clampAnthropicCacheBreakpoints(req *AnthropicMessageRequest) int {
 	for i := 0; i < excess; i++ {
 		*refs[i] = nil
 	}
+	schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
 	return excess
 }
 

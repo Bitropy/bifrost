@@ -4589,7 +4589,8 @@ func jsonHasEmptyObjectKey(data []byte) bool {
 const BedrockMaxCachePoints = 4
 
 // clampBedrockCachePoints drops the EARLIEST cachePoint elements when a request carries more than
-// Bedrock accepts, and returns how many it dropped.
+// Bedrock accepts, and returns how many it dropped. A dropped marker is client intent that never
+// reaches the wire, so it is recorded as AdaptationUnmapped (ADR 0087).
 //
 // Which end to drop matters. Converse caches cumulatively up to each cachePoint, so a marker
 // later in render order (toolConfig -> system -> messages) anchors a strictly longer prefix than
@@ -4602,7 +4603,7 @@ const BedrockMaxCachePoints = 4
 // mid-conversation reminder. Two system + one tool result + one reminder is already exactly 4.
 // Without this clamp the next marker turns a request that merely cached poorly into one that
 // fails outright.
-func clampBedrockCachePoints(req *BedrockConverseRequest) int {
+func clampBedrockCachePoints(ctx *schemas.BifrostContext, req *BedrockConverseRequest) int {
 	if req == nil {
 		return 0
 	}
@@ -4713,6 +4714,7 @@ func clampBedrockCachePoints(req *BedrockConverseRequest) int {
 		req.Messages[i].Content = content[:nc]
 	}
 
+	schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
 	return dropped
 }
 
