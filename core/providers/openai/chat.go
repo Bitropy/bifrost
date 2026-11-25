@@ -150,7 +150,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	switch familyProvider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(caps)
-		openaiReq.stripUnsupportedSamplingParams(caps)
+		openaiReq.stripUnsupportedSamplingParams(ctx, caps)
 		// URL-sourced documents are NOT inlined here. Chat Completions rejects file_url, so they
 		// still have to be resolved before the request goes out - but that is a network fetch that
 		// can fail, and this function has no way to report a failure. Callers invoke
@@ -159,7 +159,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	case schemas.BedrockMantle, schemas.Bedrock:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		if !isGPTOSS(capModel) {
-			openaiReq.stripUnsupportedSamplingParams(caps)
+			openaiReq.stripUnsupportedSamplingParams(ctx, caps)
 		}
 		return openaiReq
 	case schemas.DeepSeek:
@@ -361,24 +361,30 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 	}
 }
 
-// stripUnsupportedSamplingParams drops sampling fields OpenAI rejects at the request's reasoning effort.
-func (req *OpenAIChatRequest) stripUnsupportedSamplingParams(caps schemas.ModelCaps) {
+// stripUnsupportedSamplingParams drops sampling fields OpenAI rejects at the
+// request's reasoning effort, recording AdaptationSampling when the request set one.
+func (req *OpenAIChatRequest) stripUnsupportedSamplingParams(ctx *schemas.BifrostContext, caps schemas.ModelCaps) {
 	effort := ""
 	if req.ChatParameters.Reasoning != nil && req.ChatParameters.Reasoning.Effort != nil {
 		effort = *req.ChatParameters.Reasoning.Effort
 	}
-	model := caps.Model()
-	if samplingParamUnsupported(caps, schemas.FieldTopP, model, effort) {
-		req.ChatParameters.TopP = nil
+	s := samplingStrip(caps, caps.Model(), effort)
+	p := &req.ChatParameters
+	stripped := false
+	if s.TopP && p.TopP != nil {
+		p.TopP, stripped = nil, true
 	}
-	if samplingParamUnsupported(caps, schemas.FieldTemperature, model, effort) {
-		req.ChatParameters.Temperature = nil
+	if s.Temperature && p.Temperature != nil {
+		p.Temperature, stripped = nil, true
 	}
-	if samplingParamUnsupported(caps, schemas.FieldTopLogprobs, model, effort) {
-		req.ChatParameters.TopLogProbs = nil
+	if s.TopLogprobs && p.TopLogProbs != nil {
+		p.TopLogProbs, stripped = nil, true
 	}
-	if samplingParamUnsupported(caps, schemas.FieldLogprobs, model, effort) {
-		req.ChatParameters.LogProbs = nil
+	if s.Logprobs && p.LogProbs != nil {
+		p.LogProbs, stripped = nil, true
+	}
+	if stripped {
+		schemas.AddAdaptation(ctx, schemas.AdaptationSampling)
 	}
 }
 
