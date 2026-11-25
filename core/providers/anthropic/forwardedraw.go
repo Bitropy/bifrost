@@ -2,18 +2,16 @@ package anthropic
 
 import "github.com/maximhq/bifrost/core/schemas"
 
-// AllExtraKeys is ConsumedExtraKeys' one entry for a conversion that sends every ExtraParams key
-// upstream whether or not passthrough is on: no key is dropped.
-const AllExtraKeys = "*"
-
 // conversion is what one request conversion does with explicit Anthropic members and ExtraParams:
 // the features it sends upstream raw without and with BifrostContextKeyPassthroughExtraParams,
-// and the top-level ExtraParams keys it reads with passthrough off. The values are read off the
+// and the top-level ExtraParams keys it reads with passthrough off, or consumesAll when it sends
+// every key upstream whether or not passthrough is on, so no key is dropped. The values are read off the
 // converters by TestForwardedRaw_AgreesWithConverters and TestConsumedExtraKeys_AgreesWithConverters
 // (core package), which drive each one into a recording upstream.
 type conversion struct {
 	forwarded, forwardedPassthrough Feature
 	consumed                        []string
+	consumesAll                     bool
 }
 
 // Feature groups the conversions forward together.
@@ -46,8 +44,7 @@ var (
 		"safeguards", "speed", "thinking", "top_k"}
 	hostedClaudeRespKeys = []string{"container", "context_management", "diagnostics", "fallback_credit_token",
 		"inference_geo", "safeguards", "speed", "task_budget", "top_k"}
-	allExtraKeys = []string{AllExtraKeys}
-	topKOnly     = []string{"top_k"}
+	topKOnly = []string{"top_k"}
 )
 
 var (
@@ -61,15 +58,15 @@ var (
 	openAIChat = conversion{forwarded: typedChatMembers | FeatureCacheControlScope, forwardedPassthrough: typedChatMembers | FeatureCacheControlScope | extraOnlyMembers}
 	// An OpenAI-shaped chat conversion that merges every ExtraParams key.
 	mergingChat = conversion{forwarded: typedChatMembers | FeatureCacheControlScope | extraOnlyMembers,
-		forwardedPassthrough: typedChatMembers | FeatureCacheControlScope | extraOnlyMembers, consumed: allExtraKeys}
+		forwardedPassthrough: typedChatMembers | FeatureCacheControlScope | extraOnlyMembers, consumesAll: true}
 	// openai.ToOpenAIResponsesRequest: tools as sent, ExtraParams under passthrough.
 	openAIResponses  = conversion{forwarded: FeatureAllowedCallers, forwardedPassthrough: extraMembers | FeatureAllowedCallers}
 	mergingResponses = conversion{forwarded: extraMembers | FeatureAllowedCallers, forwardedPassthrough: extraMembers | FeatureAllowedCallers,
-		consumed: allExtraKeys}
+		consumesAll: true}
 	// A Responses request served through the provider's OpenAI chat conversion (ToChatRequest).
 	responsesViaChat        = conversion{forwarded: replayBlocks, forwardedPassthrough: extraMembers | replayBlocks}
 	responsesViaMergingChat = conversion{forwarded: extraMembers | replayBlocks, forwardedPassthrough: extraMembers | replayBlocks,
-		consumed: allExtraKeys}
+		consumesAll: true}
 
 	geminiChat  = conversion{forwardedPassthrough: extraOnlyMembers, consumed: geminiChatKeys}
 	geminiResp  = conversion{forwardedPassthrough: extraMembers, consumed: geminiRespKeys}
@@ -78,13 +75,13 @@ var (
 	cohereChat  = conversion{forwarded: FeatureServerTool | FeatureToolVersion, forwardedPassthrough: extraOnlyMembers | FeatureServerTool | FeatureToolVersion,
 		consumed: []string{"log_probs", "safety_mode", "strict_tool_choice", "thinking"}}
 	cohereResp     = conversion{forwardedPassthrough: extraMembers, consumed: []string{"thinking", "top_k"}}
-	replicateChat  = conversion{forwarded: extraOnlyMembers, forwardedPassthrough: extraOnlyMembers, consumed: allExtraKeys}
-	replicateResp  = conversion{forwarded: extraMembers, forwardedPassthrough: extraMembers, consumed: allExtraKeys}
+	replicateChat  = conversion{forwarded: extraOnlyMembers, forwardedPassthrough: extraOnlyMembers, consumesAll: true}
+	replicateResp  = conversion{forwarded: extraMembers, forwardedPassthrough: extraMembers, consumesAll: true}
 	perplexityChat = conversion{forwarded: toolMembers | replayBlocks | FeatureToolChangeBlock,
 		forwardedPassthrough: extraOnlyMembers | toolMembers | replayBlocks | FeatureToolChangeBlock, consumed: topKOnly}
 	perplexityRespViaChat = conversion{forwarded: replayBlocks, forwardedPassthrough: extraMembers | replayBlocks, consumed: topKOnly}
 	huggingFaceChat       = conversion{forwarded: toolMembers, forwardedPassthrough: extraOnlyMembers | toolMembers}
-	basetenChat           = conversion{forwarded: extraOnlyMembers, forwardedPassthrough: extraOnlyMembers, consumed: allExtraKeys}
+	basetenChat           = conversion{forwarded: extraOnlyMembers, forwardedPassthrough: extraOnlyMembers, consumesAll: true}
 )
 
 // conversionFor is the conversion core runs for a chat or Responses request to provider and
@@ -181,11 +178,19 @@ func ForwardedRaw(provider schemas.ModelProvider, model string, kind schemas.Req
 
 // ConsumedExtraKeys are the top-level ExtraParams keys the conversion for provider and model
 // (canonical) reads whether or not passthrough is on; any other key is dropped unless passthrough
-// merges it. A conversion that sends every key returns []string{AllExtraKeys}. nil for a provider
-// with no row. The slice is shared: callers must not modify it.
+// merges it. nil for a provider with no row and for a conversion that sends every key
+// (ConsumesAllExtras). The slice is shared: callers must not modify it.
 func ConsumedExtraKeys(provider schemas.ModelProvider, model string, kind schemas.RequestType) []string {
 	if c := conversionFor(provider, model, kind); c != nil {
 		return c.consumed
 	}
 	return nil
+}
+
+// ConsumesAllExtras reports whether the conversion for provider and model (canonical) sends every
+// top-level ExtraParams key upstream whether or not passthrough is on, so none is dropped.
+// Allocation-free.
+func ConsumesAllExtras(provider schemas.ModelProvider, model string, kind schemas.RequestType) bool {
+	c := conversionFor(provider, model, kind)
+	return c != nil && c.consumesAll
 }

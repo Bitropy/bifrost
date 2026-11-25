@@ -351,7 +351,7 @@ func TestConsumedExtraKeys_AgreesWithConverters(t *testing.T) {
 				chat, resp := build("")
 				baseline, _ := send(t, client, u, converterRequestCtx(false, nil), chat, resp)
 				table := anthropic.ConsumedExtraKeys(tg.provider, tg.model, kind)
-				all := slices.Equal(table, []string{anthropic.AllExtraKeys})
+				all := anthropic.ConsumesAllExtras(tg.provider, tg.model, kind)
 				var got []string
 				for key := range extraKeyValues {
 					chat, resp := build(key)
