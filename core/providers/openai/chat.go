@@ -76,11 +76,13 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
-		// Fable 5.1+ rejects forced tool use outright. Drop the choice so the model
-		// answers under the default "auto" rather than the provider returning a 400.
+		// A model that rejects forced tool use (Fable 5.1+, or supports_forced_tool_choice
+		// false) gets the choice dropped, so it answers under the default "auto" rather
+		// than the provider returning a 400; the attempt reports the drop.
 		if openaiReq.ChatParameters.ToolChoice.IsForced() &&
 			!caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(capModel)) {
 			openaiReq.ChatParameters.ToolChoice = nil
+			schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
 		}
 		// The Anthropic integration emits the provider-generic forced tool choice "any".
 		// OpenAI accepts only "none", "auto" and "required" as string tool choices and

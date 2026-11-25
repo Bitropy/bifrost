@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"github.com/stretchr/testify/assert"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -381,4 +382,33 @@ func TestForcedToolChoiceDroppedForFable51(t *testing.T) {
 			t.Fatalf("tool_choice on the wire = %s, want \"required\"", got)
 		}
 	})
+}
+
+// TestForcedToolChoiceDrop_RecordsAdaptation: a forced choice dropped for a
+// model whose datasheet says supports_forced_tool_choice=false (DeepSeek V4 in
+// thinking mode, BIT-3279) is reported as AdaptationToolChoice by both
+// builders; a kept choice reports nothing.
+func TestForcedToolChoiceDrop_RecordsAdaptation(t *testing.T) {
+	no := false
+	setToolChoiceCaps(t, schemas.DeepSeek, "deepseek-v4-pro", schemas.ModelCapabilities{SupportsForcedToolChoice: &no})
+	for _, tt := range []struct {
+		name    string
+		choice  string
+		dropped bool
+	}{
+		{"required dropped", "required", true},
+		{"auto kept", "auto", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := samplingCtx(t)
+			chat := ToOpenAIChatRequest(ctx, chatToolChoiceRequest(schemas.DeepSeek, "deepseek-v4-pro", &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(tt.choice)}))
+			assert.Equal(t, tt.dropped, chat.ToolChoice == nil, "chat wire")
+			assert.Equal(t, tt.dropped, schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationToolChoice), "chat bit")
+
+			ctx = samplingCtx(t)
+			resp := ToOpenAIResponsesRequest(ctx, responsesToolChoiceRequest(schemas.DeepSeek, "deepseek-v4-pro", &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr(tt.choice)}))
+			assert.Equal(t, tt.dropped, resp.ToolChoice == nil, "responses wire")
+			assert.Equal(t, tt.dropped, schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationToolChoice), "responses bit")
+		})
+	}
 }
