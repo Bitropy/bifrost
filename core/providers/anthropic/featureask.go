@@ -270,6 +270,42 @@ func MessagesAsk(body []byte, betas []string) FeatureAsk {
 	return ask
 }
 
+// ResponsesBodyPromises is the promise bits (inference_geo, allowed_callers, compaction_block) that
+// ResponsesAsk finds in the request a raw Responses body decodes to, read without decoding it, for
+// a route that forwards the body as sent. Allocation-free.
+func ResponsesBodyPromises(body []byte) Feature {
+	geo, callers, compaction := bytes.Contains(body, inferenceGeoKeyToken), bytes.Contains(body, allowedCallersKeyToken), bytes.Contains(body, compactionBlockTypeToken)
+	if !geo && !callers && !compaction {
+		return 0
+	}
+	doc := bytesAsString(body)
+	var out Feature
+	if geo {
+		out |= when(rawMeaningful(gjson.Get(doc, "inference_geo")), FeatureInferenceGeo)
+	}
+	if callers {
+		gjson.Get(doc, "tools").ForEach(func(_, tool gjson.Result) bool {
+			out |= when(rawMeaningful(tool.Get("allowed_callers")), FeatureAllowedCallers)
+			return true
+		})
+	}
+	if compaction {
+		gjson.Get(doc, "input").ForEach(func(_, item gjson.Result) bool {
+			item.Get("content").ForEach(func(_, block gjson.Result) bool {
+				out |= when(block.Get("type").Str == string(schemas.ResponsesOutputMessageContentTypeCompaction), FeatureCompactionBlock)
+				return true
+			})
+			return true
+		})
+	}
+	return out
+}
+
+var (
+	inferenceGeoKeyToken   = []byte(`"inference_geo"`)
+	allowedCallersKeyToken = []byte(`"allowed_callers"`)
+)
+
 // rawMemberFeatures are the top-level member paths the raw strip gates one feature at, other than
 // container and context_management, whose bit depends on the value.
 var rawMemberFeatures = [...]struct {

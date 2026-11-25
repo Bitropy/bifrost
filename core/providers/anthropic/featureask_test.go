@@ -502,3 +502,57 @@ func TestAsk_DecodedExtraMatchesRaw(t *testing.T) {
 		})
 	}
 }
+
+// responsesPromises are the explicit features a raw Responses forward must refuse.
+const responsesPromises = FeatureInferenceGeo | FeatureAllowedCallers | FeatureCompactionBlock
+
+// responsesWireBody is the client body a Responses request decodes from: its parameters, its
+// input and its ExtraParams as top-level keys.
+func responsesWireBody(t *testing.T, req *schemas.BifrostResponsesRequest) []byte {
+	t.Helper()
+	params, err := json.Marshal(req.Params)
+	require.NoError(t, err)
+	top := map[string]any{}
+	require.NoError(t, json.Unmarshal(params, &top))
+	for k, v := range req.Params.ExtraParams {
+		top[k] = v
+	}
+	top["model"], top["input"] = "m", req.Input
+	body, err := json.Marshal(top)
+	require.NoError(t, err)
+	return body
+}
+
+// The raw-body promise detector agrees with ResponsesAsk on every feature row: a promise row
+// yields its bit, every other row none.
+func TestResponsesBodyPromises_AgreesWithResponsesAsk(t *testing.T) {
+	for _, row := range featureRows() {
+		for _, raw := range []bool{false, true} {
+			if (raw && len(row.raw) == 0) || (!raw && row.responses == nil) {
+				continue
+			}
+			t.Run(row.feature.First()+map[bool]string{false: "/typed", true: "/raw"}[raw], func(t *testing.T) {
+				req := featureResponsesRequest(row, schemas.OpenAI, "gpt-4.1", raw)
+				want := ResponsesAsk(req, nil).Features & responsesPromises
+				assert.Equal(t, row.feature&responsesPromises, want, "the row asks its own promise")
+				assert.Equal(t, want, ResponsesBodyPromises(responsesWireBody(t, req)))
+			})
+		}
+	}
+	for _, empty := range []string{`null`, `""`, `[]`, `{}`} {
+		assert.Zero(t, ResponsesBodyPromises([]byte(`{"inference_geo":`+empty+`,"tools":[{"type":"function","name":"f","allowed_callers":`+empty+`}]}`)), empty)
+	}
+	assert.Zero(t, ResponsesBodyPromises([]byte(`{"input":"compaction \"compaction\""}`)), "a string input holds no block")
+}
+
+// The raw-body promise detector allocates nothing, with and without a promise.
+func TestResponsesBodyPromises_AllocBudget(t *testing.T) {
+	plain := []byte(`{"model":"m","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"function","name":"f"}]}`)
+	asking := []byte(`{"model":"m","inference_geo":"us","input":[{"role":"assistant","content":[{"type":"compaction","summary":"s"}]}],"tools":[{"type":"function","name":"f","allowed_callers":["direct"]}]}`)
+	allocs := testing.AllocsPerRun(100, func() {
+		_ = ResponsesBodyPromises(plain)
+		_ = ResponsesBodyPromises(asking)
+	})
+	assert.Zero(t, allocs)
+	assert.Equal(t, responsesPromises, ResponsesBodyPromises(asking))
+}
