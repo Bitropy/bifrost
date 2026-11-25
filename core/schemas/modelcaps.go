@@ -379,6 +379,18 @@ func (c ModelCaps) SupportsForcedToolChoice(fallback bool) bool {
 	return fallback
 }
 
+// DropForcedToolChoice reports whether a converter must drop the request's
+// tool choice: it is forced and the model rejects forced tool use
+// (SupportsForcedToolChoice, by name when the datasheet is silent). A drop is
+// recorded on ctx as AdaptationToolChoice, so it is never silent.
+func (c ModelCaps) DropForcedToolChoice(ctx *BifrostContext, forced bool) bool {
+	if !forced || c.SupportsForcedToolChoice(DefaultSupportsForcedToolChoice(c.model)) {
+		return false
+	}
+	AddAdaptation(ctx, AdaptationToolChoice)
+	return true
+}
+
 // SupportsDecisions reports whether the model is served on its provider's
 // native decisions endpoint, such as OpenAI's POST /v1/decisions. A model
 // without it answers decision requests through emulation on its chat API. A

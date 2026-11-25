@@ -1,12 +1,12 @@
 package openai
 
 import (
-	"github.com/stretchr/testify/assert"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 )
 
 // The Anthropic integration maps tool_choice {"type": "any"} to the
@@ -344,15 +344,18 @@ func TestForcedToolChoiceDroppedForFable51(t *testing.T) {
 
 	for _, tt := range forced {
 		t.Run("fable-5-1 drops "+tt.name, func(t *testing.T) {
-			chat := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline),
-				chatToolChoiceRequest(schemas.Databricks, "claude-fable-5-1", tt.chat))
+			ctx := samplingCtx(t)
+			chat := ToOpenAIChatRequest(ctx, chatToolChoiceRequest(schemas.Databricks, "claude-fable-5-1", tt.chat))
 			if chat.ToolChoice != nil {
 				t.Errorf("chat tool_choice = %s, want it dropped", marshalToolChoice(t, chat.ToolChoice))
 			}
-			resp := ToOpenAIResponsesRequest(nil, responsesToolChoiceRequest(schemas.Databricks, "claude-fable-5-1", tt.resp))
+			assert.True(t, schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationToolChoice), "chat drop reported")
+			ctx = samplingCtx(t)
+			resp := ToOpenAIResponsesRequest(ctx, responsesToolChoiceRequest(schemas.Databricks, "claude-fable-5-1", tt.resp))
 			if resp.ToolChoice != nil {
 				t.Errorf("responses tool_choice = %s, want it dropped", marshalToolChoice(t, resp.ToolChoice))
 			}
+			assert.True(t, schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationToolChoice), "responses drop reported")
 		})
 
 		t.Run("fable-5 keeps "+tt.name, func(t *testing.T) {
@@ -384,11 +387,11 @@ func TestForcedToolChoiceDroppedForFable51(t *testing.T) {
 	})
 }
 
-// TestForcedToolChoiceDrop_RecordsAdaptation: a forced choice dropped for a
-// model whose datasheet says supports_forced_tool_choice=false (DeepSeek V4 in
-// thinking mode, BIT-3279) is reported as AdaptationToolChoice by both
-// builders; a kept choice reports nothing.
-func TestForcedToolChoiceDrop_RecordsAdaptation(t *testing.T) {
+// TestForcedToolChoiceDrop_Datasheet: a datasheet
+// supports_forced_tool_choice=false (DeepSeek V4 in thinking mode, BIT-3279)
+// drops a forced choice on a model no name rule covers, and reports it; a kept
+// choice reports nothing.
+func TestForcedToolChoiceDrop_Datasheet(t *testing.T) {
 	no := false
 	setToolChoiceCaps(t, schemas.DeepSeek, "deepseek-v4-pro", schemas.ModelCapabilities{SupportsForcedToolChoice: &no})
 	for _, tt := range []struct {
