@@ -1346,7 +1346,8 @@ func samplingStrip(caps schemas.ModelCaps, model, effort string) SamplingStrip {
 //
 // Responses strips top_p on every host. The name rule for the other three holds
 // only on OpenAI hosts (third-party gpt-oss hosts accept them); a false
-// supports_sampling_params is a fact about the model, so it holds on every host.
+// supports_sampling_params is a fact about the model, so it holds on every
+// Responses host. The chat builder applies sampling rules on OpenAI hosts only.
 func ResponsesSamplingStrip(caps schemas.ModelCaps, base schemas.ModelProvider, capModel, effort string) SamplingStrip {
 	s := samplingStrip(caps, capModel, effort)
 	if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(capModel)) {
@@ -1382,7 +1383,10 @@ func stripResponsesSampling(p *schemas.ResponsesParameters, s SamplingStrip) boo
 // field: temperature and top_p, at any effort, unless the row names the field in
 // unsupported_fields, which outranks it either way.
 func samplingFactRejects(caps schemas.ModelCaps, field string) bool {
-	if field != schemas.FieldTemperature && field != schemas.FieldTopP || caps.SupportsSamplingParams(true) {
+	if field != schemas.FieldTemperature && field != schemas.FieldTopP {
+		return false
+	}
+	if caps.SupportsSamplingParams(true) {
 		return false
 	}
 	if rec := caps.Record(); rec != nil {

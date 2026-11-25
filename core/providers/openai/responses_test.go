@@ -5951,9 +5951,8 @@ func TestSamplingStrip_EveryBuilder(t *testing.T) {
 			assert.Equal(t, row.stripped, schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationSampling), "responses bit")
 
 			s := ResponsesSamplingStrip(schemas.ResolveModelCaps(row.provider, row.model), row.provider, row.model, row.effort)
-			if !row.unset {
-				assert.Equal(t, row.stripped, s.Temperature && s.TopP, "exported decision")
-			}
+			assert.Equal(t, row.stripped || row.unset && s.Temperature, s.Temperature, "exported decision: temperature")
+			assert.Equal(t, row.stripped || row.unset && s.TopP, s.TopP, "exported decision: top_p")
 		})
 	}
 }
@@ -5976,4 +5975,29 @@ func responsesReasoning(effort *string) *schemas.ResponsesParametersReasoning {
 		return nil
 	}
 	return &schemas.ResponsesParametersReasoning{Effort: effort}
+}
+
+// TestStripResponsesSampling_LogprobsOnACopy: top_logprobs and the logprobs
+// include go, the other include entries stay, and the caller's Include slice
+// is not edited through the shared backing array.
+func TestStripResponsesSampling_LogprobsOnACopy(t *testing.T) {
+	include := []string{"reasoning.encrypted_content", schemas.ResponsesIncludeOutputTextLogProbs}
+	p := schemas.ResponsesParameters{TopLogProbs: schemas.Ptr(2), Include: include}
+	all := SamplingStrip{TopP: true, Temperature: true, TopLogprobs: true, Logprobs: true}
+	require.True(t, stripResponsesSampling(&p, all))
+	assert.Nil(t, p.TopLogProbs)
+	assert.Equal(t, []string{"reasoning.encrypted_content"}, p.Include)
+	assert.Equal(t, []string{"reasoning.encrypted_content", schemas.ResponsesIncludeOutputTextLogProbs}, include, "the caller's slice is untouched")
+
+	ctx := samplingCtx(t)
+	resp := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: "gpt-5-mini",
+		Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Params: &schemas.ResponsesParameters{TopLogProbs: schemas.Ptr(2), Include: include},
+	})
+	require.NotNil(t, resp)
+	assert.Nil(t, resp.TopLogProbs)
+	assert.NotContains(t, resp.Include, schemas.ResponsesIncludeOutputTextLogProbs)
+	assert.True(t, schemas.AdaptationsFromContext(ctx).Has(schemas.AdaptationSampling))
+	assert.Contains(t, include, schemas.ResponsesIncludeOutputTextLogProbs, "the caller's params are untouched")
 }
