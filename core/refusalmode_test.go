@@ -60,9 +60,15 @@ func refusalClient(t *testing.T, account *MockAccount) *Bifrost {
 	return client
 }
 
-func refusalModeContext(refuse bool) *schemas.BifrostContext {
+// refuseAll is a refuse mask holding every feature bit.
+const refuseAll = ^schemas.AnthropicFeature(0)
+
+// refusePromises is the mask the router installs on every attempt: the three promises.
+const refusePromises = anthropic.FeatureInferenceGeo | anthropic.FeatureAllowedCallers | anthropic.FeatureCompactionBlock
+
+func refusalModeContext(mask schemas.AnthropicFeature) *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyRequestBodyRewriter, &schemas.RequestBodyRewriteHook{RefuseFeatures: refuse})
+	ctx.SetValue(schemas.BifrostContextKeyRequestBodyRewriter, &schemas.RequestBodyRewriteHook{RefuseMask: mask})
 	return ctx
 }
 
@@ -84,7 +90,7 @@ func TestRefusalMode_RefusalReachesCallerWithoutUpstreamCall(t *testing.T) {
 	client := refusalClient(t, account)
 
 	params := &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(64), InferenceGeo: schemas.Ptr("us")}
-	_, bifrostErr := client.ChatCompletionRequest(refusalModeContext(true), refusalChat(schemas.Azure, "claude-sonnet-4-5", params))
+	_, bifrostErr := client.ChatCompletionRequest(refusalModeContext(refuseAll), refusalChat(schemas.Azure, "claude-sonnet-4-5", params))
 	require.NotNil(t, bifrostErr)
 	require.NotNil(t, bifrostErr.Error)
 	var refusal *schemas.UnsupportedOnTargetError
@@ -94,13 +100,13 @@ func TestRefusalMode_RefusalReachesCallerWithoutUpstreamCall(t *testing.T) {
 	assert.Equal(t, 400, *bifrostErr.StatusCode)
 	assert.Zero(t, hits.Load(), "no upstream call")
 
-	_, bifrostErr = client.ChatCompletionStreamRequest(refusalModeContext(true), refusalChat(schemas.Azure, "claude-sonnet-4-5", params))
+	_, bifrostErr = client.ChatCompletionStreamRequest(refusalModeContext(refuseAll), refusalChat(schemas.Azure, "claude-sonnet-4-5", params))
 	require.NotNil(t, bifrostErr)
 	require.True(t, errors.As(bifrostErr.Error.Error, &refusal))
 	assert.Zero(t, hits.Load(), "no upstream call on the stream path")
 
-	// Refusal mode off: the same request is served with the field stripped, as today.
-	resp, bifrostErr := client.ChatCompletionRequest(refusalModeContext(false), refusalChat(schemas.Azure, "claude-sonnet-4-5", params))
+	// Zero mask: the same request is served with the field stripped, as today.
+	resp, bifrostErr := client.ChatCompletionRequest(refusalModeContext(0), refusalChat(schemas.Azure, "claude-sonnet-4-5", params))
 	require.Nil(t, bifrostErr)
 	require.NotNil(t, resp)
 	assert.Equal(t, int32(1), hits.Load())
@@ -120,7 +126,7 @@ func TestRefusalMode_AdaptationsOnResponseAndEveryChunk(t *testing.T) {
 	newCtx := func() *schemas.BifrostContext {
 		parent := context.WithValue(context.Background(), schemas.BifrostContextKeyAdaptations, schemas.AdaptationReasoning)
 		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyRequestBodyRewriter, &schemas.RequestBodyRewriteHook{RefuseFeatures: true})
+		ctx.SetValue(schemas.BifrostContextKeyRequestBodyRewriter, &schemas.RequestBodyRewriteHook{RefuseMask: refuseAll})
 		return ctx
 	}
 
@@ -162,7 +168,7 @@ func TestRefusalMode_FallbackAttemptStartsWithEmptySets(t *testing.T) {
 		MaxCompletionTokens: schemas.Ptr(64), Temperature: schemas.Ptr(0.5), InferenceGeo: schemas.Ptr("us"),
 	})
 	req.Fallbacks = []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5"}}
-	ctx := refusalModeContext(false)
+	ctx := refusalModeContext(0)
 	resp, bifrostErr := client.ChatCompletionRequest(ctx, req)
 	require.Nil(t, bifrostErr)
 	require.Equal(t, int32(1), failingHits.Load(), "the first attempt reached its upstream")
@@ -197,9 +203,9 @@ func TestRefusalMode_FallbackAttemptKeepsEmbedderAdaptations(t *testing.T) {
 // D-6: a hook with a nil Rewrite rewrites nothing; a bare rewriter still works.
 func TestRequestBodyRewriteHook_NilRewriteSkipped(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyRequestBodyRewriter, &schemas.RequestBodyRewriteHook{RefuseFeatures: true})
+	ctx.SetValue(schemas.BifrostContextKeyRequestBodyRewriter, &schemas.RequestBodyRewriteHook{RefuseMask: refuseAll})
 	assert.Nil(t, providerUtils.RequestBodyRewriterFromContext(ctx))
-	assert.True(t, schemas.FeatureRefusal(ctx))
+	assert.Equal(t, refuseAll, schemas.RefuseMaskFromContext(ctx))
 
 	called := false
 	ctx.SetValue(schemas.BifrostContextKeyRequestBodyRewriter, &schemas.RequestBodyRewriteHook{Rewrite: func([]byte) (io.Reader, int64, error) {
@@ -210,18 +216,61 @@ func TestRequestBodyRewriteHook_NilRewriteSkipped(t *testing.T) {
 	require.NotNil(t, rw)
 	_, _, _ = rw(nil)
 	assert.True(t, called)
-	assert.False(t, schemas.FeatureRefusal(ctx))
+	assert.Zero(t, schemas.RefuseMaskFromContext(ctx))
 
 	ctx.SetValue(schemas.BifrostContextKeyRequestBodyRewriter, providerUtils.RequestBodyRewriter(func([]byte) (io.Reader, int64, error) { return nil, 0, nil }))
 	assert.NotNil(t, providerUtils.RequestBodyRewriterFromContext(ctx))
-	assert.False(t, schemas.FeatureRefusal(ctx))
+	assert.Zero(t, schemas.RefuseMaskFromContext(ctx))
 
 	// A nil-Rewrite hook is served end to end: the request is sent as built.
 	srv, hits := refusalUpstream(t, 0)
 	account := NewMockAccount()
 	configureUpstream(account, schemas.Anthropic, "key-anthropic", srv.URL, 0)
 	client := refusalClient(t, account)
-	_, bifrostErr := client.ChatCompletionRequest(refusalModeContext(true), refusalChat(schemas.Anthropic, "claude-sonnet-4-5", &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(64)}))
+	_, bifrostErr := client.ChatCompletionRequest(refusalModeContext(refuseAll), refusalChat(schemas.Anthropic, "claude-sonnet-4-5", &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(64)}))
 	require.Nil(t, bifrostErr)
 	assert.Equal(t, int32(1), hits.Load())
+}
+
+// AC-2: under the promise mask, the feature an attempt stripped is stamped on the unary response
+// and on every stream chunk; a core fallback attempt starts from 0. Azure Claude carries no speed.
+func TestStampAdaptations_AdaptedFeatures(t *testing.T) {
+	srv, _ := refusalUpstream(t, 0)
+	failing, failingHits := refusalUpstream(t, http.StatusInternalServerError)
+	account := NewMockAccount()
+	configureUpstream(account, schemas.Azure, "key-azure", srv.URL, 0)
+	client := refusalClient(t, account)
+	params := &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(64), Speed: schemas.Ptr("fast")}
+
+	resp, bifrostErr := client.ChatCompletionRequest(refusalModeContext(refusePromises), refusalChat(schemas.Azure, "claude-sonnet-4-5", params))
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, anthropic.FeatureSpeed, resp.ExtraFields.AdaptedFeatures)
+
+	stream, bifrostErr := client.ChatCompletionStreamRequest(refusalModeContext(refusePromises), refusalChat(schemas.Azure, "claude-sonnet-4-5", params))
+	require.Nil(t, bifrostErr)
+	chunks := 0
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		require.NotNil(t, chunk.BifrostChatResponse)
+		assert.Equal(t, anthropic.FeatureSpeed, chunk.BifrostChatResponse.ExtraFields.AdaptedFeatures, "chunk %d", chunks)
+		chunks++
+	}
+	assert.Greater(t, chunks, 1)
+
+	// A refused promise is never stamped: it is in the mask.
+	resp, bifrostErr = client.ChatCompletionRequest(refusalModeContext(refusePromises|anthropic.FeatureSpeed), refusalChat(schemas.Azure, "claude-sonnet-4-5", params))
+	require.NotNil(t, bifrostErr)
+	assert.Nil(t, resp)
+
+	// The failed Azure attempt stripped speed; the served Anthropic fallback stripped nothing.
+	fallbackAccount := NewMockAccount()
+	configureUpstream(fallbackAccount, schemas.Azure, "key-azure", failing.URL, 0)
+	configureUpstream(fallbackAccount, schemas.Anthropic, "key-anthropic", srv.URL, 0)
+	fallbackClient := refusalClient(t, fallbackAccount)
+	req := refusalChat(schemas.Azure, "claude-sonnet-4-5", params)
+	req.Fallbacks = []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-opus-4-6"}}
+	resp, bifrostErr = fallbackClient.ChatCompletionRequest(refusalModeContext(refusePromises), req)
+	require.Nil(t, bifrostErr)
+	require.Equal(t, int32(1), failingHits.Load(), "the Azure attempt reached its upstream")
+	assert.Zero(t, resp.ExtraFields.AdaptedFeatures, "the failed attempt's stripped features do not reach the served one")
 }

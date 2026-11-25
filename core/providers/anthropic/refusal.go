@@ -11,12 +11,12 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// Feature is a set of explicit Anthropic parameters the target provider and model cannot carry:
-// one bit per parameter of a closed vocabulary. The strips OR the bits they remove into
+// Feature is a set of explicit Anthropic parameters the target provider and model cannot carry
+// (schemas.AnthropicFeature). The strips OR the bits they remove into
 // schemas.BifrostContextKeyRemovedFeatures; compaction_block is reported and still forwarded, so
-// only refusal mode changes what is sent for it. In refusal mode
-// (schemas.FeatureRefusal) RefuseRemovedFeatures turns a non-empty set into a refusal.
-type Feature uint32
+// only the refuse mask changes what is sent for it. RefuseRemovedFeatures refuses a removed bit in
+// the refuse mask (schemas.RefuseMaskFromContext).
+type Feature = schemas.AnthropicFeature
 
 // The feature bits, in the order First picks them.
 const (
@@ -42,23 +42,6 @@ const (
 	FeatureCompactionBlock
 	FeatureToolChangeBlock
 )
-
-var featureNames = [...]string{
-	"container", "container_skills", "mcp_servers", "speed", "task_budget", "inference_geo",
-	"diagnostics", "safeguards", "cache_control_scope", "fallback_credit_token", "context_management",
-	"defer_loading", "allowed_callers", "input_examples", "eager_input_streaming", "server_tool",
-	"tool_version", "anthropic_beta", "fallback_block", "compaction_block", "tool_change_block",
-}
-
-// First returns the name of the lowest set bit, or "" for none.
-func (f Feature) First() string {
-	for i, name := range featureNames {
-		if f&(1<<i) != 0 {
-			return name
-		}
-	}
-	return ""
-}
 
 // addRemoved ORs f into the request's removed-feature set.
 func addRemoved(ctx *schemas.BifrostContext, f Feature) {
@@ -119,15 +102,13 @@ func RemovedFeatures(ctx context.Context) Feature {
 	return f
 }
 
-// RefuseRemovedFeatures is the one refusal check: in refusal mode it returns the refusal for the
-// first feature a strip removed from the request on ctx, and nil otherwise. Callers run it once the
+// RefuseRemovedFeatures is the one refusal check: it returns the refusal for the first feature a
+// strip removed from the request on ctx that is in the refuse mask, and nil otherwise. A removed
+// feature outside the mask is not refused: the strip already removed it. Callers run it once the
 // request is built, before any network I/O.
 func RefuseRemovedFeatures(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.UnsupportedOnTargetError {
-	if !schemas.FeatureRefusal(ctx) {
-		return nil
-	}
-	if removed := RemovedFeatures(ctx); removed != 0 {
-		return &schemas.UnsupportedOnTargetError{Feature: removed.First(), Provider: provider}
+	if refused := RemovedFeatures(ctx) & schemas.RefuseMaskFromContext(ctx); refused != 0 {
+		return &schemas.UnsupportedOnTargetError{Feature: refused.First(), Provider: provider}
 	}
 	return nil
 }
@@ -140,11 +121,11 @@ func refusalError(ctx *schemas.BifrostContext, provider schemas.ModelProvider) e
 	return nil
 }
 
-// reportClientBetas records anthropic_beta, in refusal mode, when a client-sourced anthropic-beta value
+// reportClientBetas records anthropic_beta, under a non-zero refuse mask, when a client-sourced anthropic-beta value
 // (schemas.BifrostContextKeyClientAnthropicBeta) is one FilterBetaHeadersForProvider drops for
 // provider. Betas from the provider's configuration are the operator's and are not reported.
 func reportClientBetas(ctx *schemas.BifrostContext, provider schemas.ModelProvider, overrides map[string]bool) {
-	if !schemas.FeatureRefusal(ctx) {
+	if schemas.RefuseMaskFromContext(ctx) == 0 {
 		return
 	}
 	values, _ := ctx.Value(schemas.BifrostContextKeyClientAnthropicBeta).([]string)
@@ -157,7 +138,7 @@ func reportClientBetas(ctx *schemas.BifrostContext, provider schemas.ModelProvid
 	}
 }
 
-// stripMergedBody runs in refusal mode on a typed build's body after the passthrough merge, so a
+// stripMergedBody runs under a non-zero refuse mask on a typed build's body after the passthrough merge, so a
 // raw key the merge added is gated like a typed one: the raw strip (reporting what it removes and
 // adapts), then the raw model gate for top_k on an adaptive-only model.
 func stripMergedBody(ctx *schemas.BifrostContext, jsonBody []byte, provider schemas.ModelProvider, model string) ([]byte, error) {

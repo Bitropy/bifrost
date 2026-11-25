@@ -105,10 +105,24 @@ func withFeatures(t *testing.T, provider schemas.ModelProvider, edit func(*Provi
 	})
 }
 
+// refusalCtx installs a hook whose refuse mask is every bit (mode true) or zero (mode false); nil
+// installs no hook.
 func refusalCtx(mode *bool) *schemas.BifrostContext {
+	if mode == nil {
+		return maskCtx(nil)
+	}
+	mask := Feature(0)
+	if *mode {
+		mask = ^Feature(0)
+	}
+	return maskCtx(&mask)
+}
+
+// maskCtx installs a hook with *mask as its refuse mask; nil installs no hook.
+func maskCtx(mask *Feature) *schemas.BifrostContext {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	if mode != nil {
-		ctx.SetValue(schemas.BifrostContextKeyRequestBodyRewriter, &schemas.RequestBodyRewriteHook{RefuseFeatures: *mode})
+	if mask != nil {
+		ctx.SetValue(schemas.BifrostContextKeyRequestBodyRewriter, &schemas.RequestBodyRewriteHook{RefuseMask: *mask})
 	}
 	return ctx
 }
