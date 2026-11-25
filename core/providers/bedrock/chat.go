@@ -107,10 +107,8 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 			stripNonTextCachePoints(bedrockReq)
 		}
 		// See the same call in ToBedrockResponsesRequest: exceeding the cap is a hard rejection,
-		// so trim the earliest markers rather than let the request fail, and report the loss.
-		if clampBedrockCachePoints(bedrockReq) > 0 {
-			schemas.AddAdaptation(ctx, schemas.AdaptationUnmapped)
-		}
+		// so trim the earliest markers rather than let the request fail.
+		clampBedrockCachePoints(ctx, bedrockReq)
 	}
 
 	return bedrockReq, nil

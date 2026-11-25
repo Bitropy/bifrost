@@ -83,7 +83,7 @@ func TestClampAnthropicCacheBreakpoints_UnderCapUntouched(t *testing.T) {
 			})
 			want = append(want, text)
 		}
-		if dropped := clampAnthropicCacheBreakpoints(req); dropped != 0 {
+		if dropped := clampAnthropicCacheBreakpoints(nil, req); dropped != 0 {
 			t.Errorf("n=%d: dropped %d, want 0", n, dropped)
 		}
 		if got := markerTexts(req); !eq(got, want) {
@@ -110,7 +110,7 @@ func TestClampAnthropicCacheBreakpoints_DropsEarliest(t *testing.T) {
 		},
 	}
 
-	dropped := clampAnthropicCacheBreakpoints(req)
+	dropped := clampAnthropicCacheBreakpoints(nil, req)
 	if want := 6 - AnthropicMaxCacheBreakpoints; dropped != want {
 		t.Fatalf("dropped = %d, want %d", dropped, want)
 	}
@@ -139,7 +139,7 @@ func TestClampAnthropicCacheBreakpoints_KeepsConversationAnchor(t *testing.T) {
 		},
 	}
 
-	if dropped := clampAnthropicCacheBreakpoints(req); dropped != 1 {
+	if dropped := clampAnthropicCacheBreakpoints(nil, req); dropped != 1 {
 		t.Fatalf("dropped = %d, want 1", dropped)
 	}
 	got := markerTexts(req)
@@ -163,7 +163,7 @@ func TestClampAnthropicCacheBreakpoints_TopLevelMarkerSurvives(t *testing.T) {
 		}},
 	}
 
-	if dropped := clampAnthropicCacheBreakpoints(req); dropped != 1 {
+	if dropped := clampAnthropicCacheBreakpoints(nil, req); dropped != 1 {
 		t.Fatalf("dropped = %d, want 1", dropped)
 	}
 	if req.CacheControl == nil {
@@ -177,10 +177,10 @@ func TestClampAnthropicCacheBreakpoints_TopLevelMarkerSurvives(t *testing.T) {
 
 // TestClampAnthropicCacheBreakpoints_NilSafe guards the trivial inputs.
 func TestClampAnthropicCacheBreakpoints_NilSafe(t *testing.T) {
-	if dropped := clampAnthropicCacheBreakpoints(nil); dropped != 0 {
+	if dropped := clampAnthropicCacheBreakpoints(nil, nil); dropped != 0 {
 		t.Errorf("nil request: dropped = %d, want 0", dropped)
 	}
-	if dropped := clampAnthropicCacheBreakpoints(&AnthropicMessageRequest{}); dropped != 0 {
+	if dropped := clampAnthropicCacheBreakpoints(nil, &AnthropicMessageRequest{}); dropped != 0 {
 		t.Errorf("empty request: dropped = %d, want 0", dropped)
 	}
 }

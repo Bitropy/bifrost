@@ -102,7 +102,7 @@ func TestClampBedrockCachePoints_UnderCapUntouched(t *testing.T) {
 			{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{textBlock("x"), cachePointBlock()}},
 		},
 	}
-	dropped := clampBedrockCachePoints(req)
+	dropped := clampBedrockCachePoints(nil, req)
 	assert.Equal(t, 0, dropped, "a request under the cap must not be trimmed")
 	_, _, _, total := countCachePointsInRequest(req)
 	assert.Equal(t, 2, total, "all markers must survive")
@@ -116,7 +116,7 @@ func TestClampBedrockCachePoints_DropsEarliestKeepsAnchor(t *testing.T) {
 	_, _, _, before := countCachePointsInRequest(req)
 	require.Equal(t, 5, before, "fixture should start one over the cap")
 
-	dropped := clampBedrockCachePoints(req)
+	dropped := clampBedrockCachePoints(nil, req)
 	assert.Equal(t, 1, dropped)
 
 	tools, system, messages, total := countCachePointsInRequest(req)
@@ -148,7 +148,7 @@ func TestClampBedrockCachePoints_DropsCachePointOnlyEntries(t *testing.T) {
 	req := buildOverMarkedRequest()
 	beforeSystem := len(req.System)
 
-	clampBedrockCachePoints(req)
+	clampBedrockCachePoints(nil, req)
 
 	assert.Equal(t, beforeSystem-1, len(req.System),
 		"a marker-only system entry must be removed outright, not left as an empty object")
@@ -160,8 +160,8 @@ func TestClampBedrockCachePoints_DropsCachePointOnlyEntries(t *testing.T) {
 
 // TestClampBedrockCachePoints_NilSafe guards trivial inputs.
 func TestClampBedrockCachePoints_NilSafe(t *testing.T) {
-	assert.Equal(t, 0, clampBedrockCachePoints(nil))
-	assert.Equal(t, 0, clampBedrockCachePoints(&BedrockConverseRequest{}))
+	assert.Equal(t, 0, clampBedrockCachePoints(nil, nil))
+	assert.Equal(t, 0, clampBedrockCachePoints(nil, &BedrockConverseRequest{}))
 }
 
 // TestClampBedrockCachePoints_CountsNestedToolResultMarkers covers the case flagged in review on
@@ -209,7 +209,7 @@ func TestClampBedrockCachePoints_CountsNestedToolResultMarkers(t *testing.T) {
 	require.Equal(t, 3, messagesBefore, "2 direct + 1 nested tool-result marker")
 	require.Equal(t, 5, totalBefore, "fixture should start one over the cap")
 
-	dropped := clampBedrockCachePoints(req)
+	dropped := clampBedrockCachePoints(nil, req)
 	assert.Equal(t, 1, dropped, "the nested marker must be counted, so exactly one must be dropped")
 
 	_, systemAfter, messagesAfter, totalAfter := countCachePointsInRequest(req)
