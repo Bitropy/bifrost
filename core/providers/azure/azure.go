@@ -584,7 +584,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	// route caps output at 4096 tokens regardless of max_output_tokens (#6782).
 	// A silent or missing row keeps the Responses route, like Bedrock Mantle.
 	canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-	if !schemas.ResolveModelCaps(provider.GetProviderKey(), canonicalModel).SupportsResponsesEndpoint(true) {
+	if !schemas.AzureServesResponses(provider.GetProviderKey(), canonicalModel) {
 		chatResponse, bifrostErr := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -669,7 +669,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		// Same datasheet gate as Responses; the shared chat streaming handler
 		// re-assembles Responses events from the chat chunks when this flag is set.
 		canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-		if !schemas.ResolveModelCaps(provider.GetProviderKey(), canonicalModel).SupportsResponsesEndpoint(true) {
+		if !schemas.AzureServesResponses(provider.GetProviderKey(), canonicalModel) {
 			ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 			return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 		}

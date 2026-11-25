@@ -110,7 +110,7 @@ func conversionFor(provider schemas.ModelProvider, model string, kind schemas.Re
 		if schemas.IsAnthropicModelFamily(nil, model) {
 			return pick(&hostedClaudeChat, &hostedClaudeResp)
 		}
-		if !chat && !schemas.ResolveModelCaps(schemas.Azure, model).SupportsResponsesEndpoint(true) {
+		if !chat && !schemas.AzureServesResponses(schemas.Azure, model) {
 			return &responsesViaChat
 		}
 		return pick(&openAIChat, &openAIResponses)
@@ -126,7 +126,7 @@ func conversionFor(provider schemas.ModelProvider, model string, kind schemas.Re
 		if schemas.IsAnthropicModelFamily(nil, model) {
 			return nil
 		}
-		if !chat && !schemas.ResolveModelCaps(schemas.GithubCopilot, model).SupportsResponsesEndpoint(schemas.IsOpenAIModelFamily(nil, model)) {
+		if !chat && !schemas.GithubCopilotServesResponses(nil, schemas.GithubCopilot, model) {
 			return &responsesViaChat
 		}
 		return pick(&openAIChat, &openAIResponses)

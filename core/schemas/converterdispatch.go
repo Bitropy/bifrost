@@ -15,3 +15,18 @@ func PerplexityServesResponses(model string) bool {
 	bare := strings.ToLower(strings.TrimPrefix(model, "perplexity/"))
 	return bare != "sonar" && !strings.HasPrefix(bare, "sonar-")
 }
+
+// AzureServesResponses reports whether Azure (provider, which may be a custom provider over it)
+// serves model's (canonical) Responses requests on /v1/responses. A datasheet row listing
+// supported_endpoints without it routes them through chat completions; a silent or missing row
+// keeps the Responses route.
+func AzureServesResponses(provider ModelProvider, model string) bool {
+	return ResolveModelCaps(provider, model).SupportsResponsesEndpoint(true)
+}
+
+// GithubCopilotServesResponses reports whether GitHub Copilot (provider, which may be a custom
+// provider over it) serves model's (canonical) Responses requests on /responses; without a
+// datasheet answer only OpenAI-family models are served there, the rest through chat completions.
+func GithubCopilotServesResponses(ctx *BifrostContext, provider ModelProvider, model string) bool {
+	return ResolveModelCaps(provider, model).SupportsResponsesEndpoint(IsOpenAIModelFamily(ctx, model))
+}
