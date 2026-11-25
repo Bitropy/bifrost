@@ -113,6 +113,23 @@ func RefuseRemovedFeatures(ctx *schemas.BifrostContext, provider schemas.ModelPr
 	return nil
 }
 
+// HostPostBuild is the pass a host that rewrites a built Claude body runs before sending it: the
+// host's tool-version remap and raw strip, then the refusal check. A refusal is returned as a
+// *schemas.UnsupportedOnTargetError.
+func HostPostBuild(ctx *schemas.BifrostContext, body []byte, provider schemas.ModelProvider, model string) ([]byte, error) {
+	body, err := RemapRawToolVersionsForProviderReport(ctx, body, provider, model)
+	if err != nil {
+		return nil, err
+	}
+	if body, err = StripUnsupportedFieldsFromRawBodyReport(ctx, body, provider, model); err != nil {
+		return nil, err
+	}
+	if err := refusalError(ctx, provider); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
 // refusalError is RefuseRemovedFeatures as the error a request builder returns.
 func refusalError(ctx *schemas.BifrostContext, provider schemas.ModelProvider) error {
 	if refusal := RefuseRemovedFeatures(ctx, provider); refusal != nil {

@@ -715,6 +715,31 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 	return nil
 }
 
+// vertexAnthropicPostBuild runs anthropic.HostPostBuild for Vertex over a built Claude chat body
+// (structured or raw passthrough) inside the request-marshal span, as the matching BifrostError.
+func vertexAnthropicPostBuild(ctx *schemas.BifrostContext, body []byte, model string) ([]byte, *schemas.BifrostError) {
+	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
+	body, err := anthropic.HostPostBuild(ctx, body, schemas.Vertex, schemas.ResolveCanonicalModel(ctx, model))
+	var refusal *schemas.UnsupportedOnTargetError
+	switch {
+	case errors.As(err, &refusal):
+		// The refusal is decided after the body is built, so the span itself succeeded.
+		if mt != nil {
+			mt.EndSpan(mh, schemas.SpanStatusOk, "")
+		}
+		return nil, providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
+	case err != nil:
+		if mt != nil {
+			mt.EndSpan(mh, schemas.SpanStatusError, err.Error())
+		}
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
+	}
+	if mt != nil {
+		mt.EndSpan(mh, schemas.SpanStatusOk, "")
+	}
+	return body, nil
+}
+
 // ChatCompletion performs a chat completion request to the Vertex API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
@@ -817,31 +842,8 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	// Remap unsupported tool versions for Vertex (handles raw passthrough bodies)
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) && jsonBody != nil {
-		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
-		capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProviderReport(ctx, jsonBody, schemas.Vertex, capModel)
-		if remapErr != nil {
-			if mt != nil {
-				mt.EndSpan(mh, schemas.SpanStatusError, remapErr.Error())
-			}
-			return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
-		}
-		jsonBody = remappedBody
-
-		// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
-		var stripErr error
-		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBodyReport(ctx, jsonBody, schemas.Vertex, capModel)
-		if stripErr != nil {
-			if mt != nil {
-				mt.EndSpan(mh, schemas.SpanStatusError, stripErr.Error())
-			}
-			return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
-		}
-		if mt != nil {
-			mt.EndSpan(mh, schemas.SpanStatusOk, "")
-		}
-		if refusal := anthropic.RefuseRemovedFeatures(ctx, schemas.Vertex); refusal != nil {
-			return nil, providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
+		if jsonBody, bifrostErr = vertexAnthropicPostBuild(ctx, jsonBody, request.Model); bifrostErr != nil {
+			return nil, bifrostErr
 		}
 	}
 
@@ -974,12 +976,9 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		anthropicResponse.SetRawBody(responseBody)
 		response := anthropicResponse.ToBifrostChatResponse(ctx)
 
-		response.ExtraFields = schemas.BifrostResponseExtraFields{
-			Latency:                 latency.Milliseconds(),
-			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
-		}
-		// The model that served the tokens prices them, as on the stream path.
-		response.ExtraFields.RoutingInfo.ServerSideFallbackModel = anthropicResponse.Usage.ServerSideFallbackModel()
+		// Only the fields Vertex owns are set: the converter's (the served fallback model) stay.
+		response.ExtraFields.Latency = latency.Milliseconds()
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1082,31 +1081,8 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 		// Remap unsupported tool versions for Vertex streaming (handles raw passthrough bodies)
 		if jsonData != nil {
-			mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
-			capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-			var remapErr error
-			jsonData, remapErr = anthropic.RemapRawToolVersionsForProviderReport(ctx, jsonData, schemas.Vertex, capModel)
-			if remapErr != nil {
-				if mt != nil {
-					mt.EndSpan(mh, schemas.SpanStatusError, remapErr.Error())
-				}
-				return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
-			}
-
-			// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
-			var stripErr error
-			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBodyReport(ctx, jsonData, schemas.Vertex, capModel)
-			if stripErr != nil {
-				if mt != nil {
-					mt.EndSpan(mh, schemas.SpanStatusError, stripErr.Error())
-				}
-				return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
-			}
-			if mt != nil {
-				mt.EndSpan(mh, schemas.SpanStatusOk, "")
-			}
-			if refusal := anthropic.RefuseRemovedFeatures(ctx, schemas.Vertex); refusal != nil {
-				return nil, providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
+			if jsonData, bifrostErr = vertexAnthropicPostBuild(ctx, jsonData, request.Model); bifrostErr != nil {
+				return nil, bifrostErr
 			}
 		}
 
@@ -1429,13 +1405,8 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		// Create final response
 		response := anthropicResponse.ToBifrostResponsesResponse(ctx)
 
-		served := response.ExtraFields.RoutingInfo.ServerSideFallbackModel
-		response.ExtraFields = schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
-		}
-		// The model that served the tokens prices them, as on the stream path.
-		response.ExtraFields.RoutingInfo.ServerSideFallbackModel = served
-
+		// Only the fields Vertex owns are set: the converter's (the served fallback model) stay.
+		response.ExtraFields.Latency = latency.Milliseconds()
 		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {

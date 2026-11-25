@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -194,20 +195,16 @@ func featureRows() []featureRow {
 	}
 }
 
-// vertexChatPostBuild is VertexProvider.ChatCompletion's pass over a built Claude chat body: the
-// host's tool-version remap and raw strip, then the refusal check.
+// vertexChatPostBuild is VertexProvider.ChatCompletion's pass over a built Claude chat body
+// (HostPostBuild), with a refusal answered the way the provider answers it.
 func vertexChatPostBuild(t *testing.T, ctx *schemas.BifrostContext, body []byte, model string) ([]byte, *schemas.BifrostError) {
 	t.Helper()
-	body, err := RemapRawToolVersionsForProviderReport(ctx, body, schemas.Vertex, model)
-	require.NoError(t, err)
-	body, err = StripUnsupportedFieldsFromRawBodyReport(ctx, body, schemas.Vertex, model)
-	require.NoError(t, err)
-	if refusal := RefuseRemovedFeatures(ctx, schemas.Vertex); refusal != nil {
-		code, status := schemas.ErrorCodeUnsupportedOnTarget, 400
-		return nil, &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{
-			Error: refusal, Code: &code, Param: refusal.Feature, Type: schemas.Ptr("invalid_request_error"),
-		}}
+	body, err := HostPostBuild(ctx, body, schemas.Vertex, model)
+	var refusal *schemas.UnsupportedOnTargetError
+	if errors.As(err, &refusal) {
+		return nil, providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
 	}
+	require.NoError(t, err)
 	return body, nil
 }
 
