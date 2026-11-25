@@ -978,6 +978,8 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 		}
+		// The model that served the tokens prices them, as on the stream path.
+		response.ExtraFields.RoutingInfo.ServerSideFallbackModel = anthropicResponse.Usage.ServerSideFallbackModel()
 
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1427,9 +1429,12 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		// Create final response
 		response := anthropicResponse.ToBifrostResponsesResponse(ctx)
 
+		served := response.ExtraFields.RoutingInfo.ServerSideFallbackModel
 		response.ExtraFields = schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),
 		}
+		// The model that served the tokens prices them, as on the stream path.
+		response.ExtraFields.RoutingInfo.ServerSideFallbackModel = served
 
 		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 		// Set raw request if enabled
