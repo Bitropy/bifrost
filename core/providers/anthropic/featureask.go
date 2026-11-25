@@ -236,15 +236,15 @@ func MessagesAsk(body []byte, betas []string) FeatureAsk {
 	doc := bytesAsString(body)
 	ask.addRawContainer(gjson.Get(doc, "container"))
 	for _, m := range rawMemberFeatures {
-		ask.Features |= when(rawMeaningful(gjson.Get(doc, m.path)), m.feature)
+		ask.Features |= when(RawMeaningful(gjson.Get(doc, m.path)), m.feature)
 	}
-	if cm := gjson.Get(doc, "context_management"); rawMeaningful(cm) {
+	if cm := gjson.Get(doc, "context_management"); RawMeaningful(cm) {
 		ask.Features |= FeatureContextManagement
 		ask.ContextEdits |= rawContextEdits(cm)
 	}
 	gjson.Get(doc, "tools").ForEach(func(_, tool gjson.Result) bool {
-		ask.Features |= toolFlags(rawPresent(tool.Get("defer_loading")), rawMeaningful(tool.Get("allowed_callers")),
-			rawMeaningful(tool.Get("input_examples")), rawPresent(tool.Get("eager_input_streaming")), rawMeaningful(tool.Get("cache_control.scope")))
+		ask.Features |= toolFlags(rawPresent(tool.Get("defer_loading")), RawMeaningful(tool.Get("allowed_callers")),
+			RawMeaningful(tool.Get("input_examples")), rawPresent(tool.Get("eager_input_streaming")), RawMeaningful(tool.Get("cache_control.scope")))
 		if t := tool.Get("type").Str; t != "" && t != "custom" {
 			ask.Features |= FeatureServerTool
 			ask.ServerTools = append(ask.ServerTools, t)
@@ -253,7 +253,7 @@ func MessagesAsk(body []byte, betas []string) FeatureAsk {
 	})
 	if bytes.Contains(body, cacheControlScopeKeyToken) {
 		gjson.Get(doc, "system").ForEach(func(_, block gjson.Result) bool {
-			ask.Features |= when(rawMeaningful(block.Get("cache_control.scope")), FeatureCacheControlScope)
+			ask.Features |= when(RawMeaningful(block.Get("cache_control.scope")), FeatureCacheControlScope)
 			return true
 		})
 	}
@@ -261,7 +261,7 @@ func MessagesAsk(body []byte, betas []string) FeatureAsk {
 		bytes.Contains(body, compactionBlockTypeToken) || mayCarryToolChangeBlocks(body) {
 		gjson.Get(doc, "messages").ForEach(func(_, msg gjson.Result) bool {
 			msg.Get("content").ForEach(func(_, block gjson.Result) bool {
-				ask.Features |= replayBlockFeatures(block) | when(rawMeaningful(block.Get("cache_control.scope")), FeatureCacheControlScope)
+				ask.Features |= replayBlockFeatures(block) | when(RawMeaningful(block.Get("cache_control.scope")), FeatureCacheControlScope)
 				return true
 			})
 			return true
@@ -281,11 +281,11 @@ func ResponsesBodyPromises(body []byte) Feature {
 	doc := bytesAsString(body)
 	var out Feature
 	if geo {
-		out |= when(rawMeaningful(gjson.Get(doc, "inference_geo")), FeatureInferenceGeo)
+		out |= when(RawMeaningful(gjson.Get(doc, "inference_geo")), FeatureInferenceGeo)
 	}
 	if callers {
 		gjson.Get(doc, "tools").ForEach(func(_, tool gjson.Result) bool {
-			out |= when(rawMeaningful(tool.Get("allowed_callers")), FeatureAllowedCallers)
+			out |= when(RawMeaningful(tool.Get("allowed_callers")), FeatureAllowedCallers)
 			return true
 		})
 	}
@@ -413,9 +413,9 @@ func (ask *FeatureAsk) addTypedContainer(c AnthropicContainer) {
 
 func (ask *FeatureAsk) addRawContainer(c gjson.Result) {
 	switch {
-	case c.IsObject() && rawMeaningful(c.Get("skills")):
+	case c.IsObject() && RawMeaningful(c.Get("skills")):
 		ask.Features |= FeatureContainerSkills
-	case rawMeaningful(c):
+	case RawMeaningful(c):
 		ask.Features |= FeatureContainer
 	}
 }
@@ -460,16 +460,34 @@ func rawContextEdits(cm gjson.Result) ContextEditKinds {
 // addExtra reads the feature members an embedder left in ExtraParams: values the converters
 // promote, and raw keys merged onto the body under passthrough.
 func (ask *FeatureAsk) addExtra(extra map[string]any) {
-	if len(extra) == 0 {
-		return
+	for k, v := range extra {
+		ask.addExtraKey(k, v)
 	}
-	if c, ok := extra["container"]; ok {
-		ask.addExtraContainer(c)
+}
+
+// ExtraKeyFeature is the feature set the ExtraParams key k with value v asks, as ChatAsk and
+// ResponsesAsk read it. Allocation-free.
+func ExtraKeyFeature(k string, v any) Feature {
+	var ask FeatureAsk
+	ask.addExtraKey(k, v)
+	return ask.Features
+}
+
+func (ask *FeatureAsk) addExtraKey(k string, v any) {
+	switch k {
+	case "container":
+		ask.addExtraContainer(v)
+		return
+	case "task_budget": // the Responses converter reads a top-level task_budget key
+		ask.Features |= when(meaningful(v), FeatureTaskBudget)
+		return
+	case "context_management":
+		ask.addContextManagement(v)
+		return
 	}
 	for _, m := range rawMemberFeatures {
 		top, rest, nested := strings.Cut(m.path, ".")
-		v, ok := extra[top]
-		if !ok {
+		if top != k {
 			continue
 		}
 		if !nested {
@@ -478,13 +496,6 @@ func (ask *FeatureAsk) addExtra(extra map[string]any) {
 		}
 		ask.Features |= when(extraMemberMeaningful(v, rest), m.feature)
 	}
-	// The Responses converter reads a top-level task_budget key.
-	if v, ok := extra["task_budget"]; ok && meaningful(v) {
-		ask.Features |= FeatureTaskBudget
-	}
-	if v, ok := extra["context_management"]; ok {
-		ask.addContextManagement(v)
-	}
 }
 
 // extraMemberMeaningful reports whether member key of an ExtraParams object, raw JSON or decoded,
@@ -492,14 +503,14 @@ func (ask *FeatureAsk) addExtra(extra map[string]any) {
 func extraMemberMeaningful(v any, key string) bool {
 	switch v := v.(type) {
 	case json.RawMessage:
-		return rawMeaningful(gjson.Get(bytesAsString(v), key))
+		return RawMeaningful(gjson.Get(bytesAsString(v), key))
 	case map[string]any:
 		return decodedMeaningful(v[key])
 	}
 	return false
 }
 
-// decodedMeaningful is rawMeaningful for a value decoded from JSON: nil, "" and an empty array or
+// decodedMeaningful is RawMeaningful for a value decoded from JSON: nil, "" and an empty array or
 // object carry nothing.
 func decodedMeaningful(v any) bool {
 	switch v := v.(type) {

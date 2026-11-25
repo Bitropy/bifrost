@@ -58,13 +58,14 @@ func addRemoved(ctx *schemas.BifrostContext, f Feature) {
 // there carries nothing (null, "", [] or {}): deleting an empty value removes nothing the client
 // asked for, as the typed strip, which only sees non-empty values, agrees.
 func reportRawRemoved(ctx *schemas.BifrostContext, jsonBody []byte, path string, f Feature) {
-	if ctx != nil && rawMeaningful(providerUtils.GetJSONField(jsonBody, path)) {
+	if ctx != nil && RawMeaningful(providerUtils.GetJSONField(jsonBody, path)) {
 		addRemoved(ctx, f)
 	}
 }
 
-// rawMeaningful reports whether v exists and is not null, "", [] or {}.
-func rawMeaningful(v gjson.Result) bool {
+// RawMeaningful reports whether v exists and is not null, "", [] or {}: the rule a raw strip
+// records a removal by, so an embedder deleting a member itself reports by the same rule.
+func RawMeaningful(v gjson.Result) bool {
 	switch {
 	case !v.Exists() || v.Type == gjson.Null:
 		return false
@@ -81,14 +82,14 @@ func rawMeaningful(v gjson.Result) bool {
 	return true
 }
 
-// meaningful is rawMeaningful for a converter input: a json.RawMessage the embedder captured, or a
+// meaningful is RawMeaningful for a converter input: a json.RawMessage the embedder captured, or a
 // value it decoded, which carries something unless nil.
 func meaningful(v any) bool {
 	switch v := v.(type) {
 	case nil:
 		return false
 	case json.RawMessage:
-		return rawMeaningful(gjson.ParseBytes(v))
+		return RawMeaningful(gjson.Parse(bytesAsString(v)))
 	}
 	return true
 }

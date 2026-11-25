@@ -556,3 +556,22 @@ func TestResponsesBodyPromises_AllocBudget(t *testing.T) {
 	assert.Zero(t, allocs)
 	assert.Equal(t, responsesPromises, ResponsesBodyPromises(asking))
 }
+
+// ExtraKeyFeature asks what ChatAsk asks of the same single ExtraParams key, on every feature
+// row's raw key, and allocates nothing.
+func TestExtraKeyFeature_AgreesWithChatAsk(t *testing.T) {
+	for _, row := range featureRows() {
+		for k, v := range rawExtra(row.raw) {
+			req := &schemas.BifrostChatRequest{Params: &schemas.ChatParameters{ExtraParams: map[string]any{k: v}}}
+			assert.Equal(t, ChatAsk(req, nil).Features, ExtraKeyFeature(k, v), k)
+			assert.NotZero(t, ExtraKeyFeature(k, v), k)
+		}
+	}
+	assert.Zero(t, ExtraKeyFeature("top_k", 5))
+	var geo any = json.RawMessage(`"us"`)
+	allocs := testing.AllocsPerRun(100, func() {
+		_ = ExtraKeyFeature("inference_geo", geo)
+		_ = ExtraKeyFeature("top_k", 5)
+	})
+	assert.Zero(t, allocs)
+}

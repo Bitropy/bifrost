@@ -1000,7 +1000,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 		if drop {
 			if hasNonEmptySkills {
 				addRemoved(ctx, FeatureContainerSkills)
-			} else if rawMeaningful(containerResult) {
+			} else if RawMeaningful(containerResult) {
 				addRemoved(ctx, FeatureContainer)
 			}
 			jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "container")
@@ -1173,7 +1173,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 	// thinking.type rewrites above, so it sees the type that is actually sent.
 	if providerUtils.JSONFieldExists(jsonBody, "thinking.block_binding") &&
 		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(providerUtils.GetJSONField(jsonBody, "thinking.type").String())) {
-		if rawMeaningful(providerUtils.GetJSONField(jsonBody, "thinking.block_binding")) {
+		if RawMeaningful(providerUtils.GetJSONField(jsonBody, "thinking.block_binding")) {
 			schemas.AddAdaptation(ctx, schemas.AdaptationReasoning)
 		}
 		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.block_binding")
@@ -1332,7 +1332,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 				}
 				rebuilt[i] = stripped
 				changed = changed || didStrip
-				scoped = scoped || (didStrip && rawMeaningful(block.Get("cache_control.scope")))
+				scoped = scoped || (didStrip && RawMeaningful(block.Get("cache_control.scope")))
 			}
 			if changed {
 				jsonBody, err = providerUtils.SetRawJSONField(jsonBody, "system", rawJSONArrayOf(rebuilt))
@@ -1366,7 +1366,7 @@ func StripUnsupportedFieldsFromRawBodyReport(ctx *schemas.BifrostContext, jsonBo
 					}
 					rebuiltBlocks[ci] = stripped
 					messageChanged = messageChanged || didStrip
-					scoped = scoped || (didStrip && rawMeaningful(block.Get("cache_control.scope")))
+					scoped = scoped || (didStrip && RawMeaningful(block.Get("cache_control.scope")))
 				}
 				if messageChanged {
 					rebuiltMessages[mi], err = providerUtils.SetRawJSONField(rebuiltMessages[mi], "content", rawJSONArrayOf(rebuiltBlocks))
