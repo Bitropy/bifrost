@@ -188,38 +188,53 @@ func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, caps schem
 	return keep, dropped
 }
 
-// responsesToolSupported reports whether a Responses tool of type t may be sent to the host and
-// model; known is false for a type the gate does not cover (function, custom, unknown), which is
+// responsesServerToolGates is the set of Responses server-tool types the validator gates, each with
+// whether the host and model may be sent it. A type outside the set (function, custom, unknown) is
 // always kept.
+var responsesServerToolGates = map[schemas.ResponsesToolType]func(ProviderFeatureSupport, schemas.ModelCaps) bool{
+	schemas.ResponsesToolTypeWebSearch:        hostServesWebSearch,
+	schemas.ResponsesToolTypeWebSearchPreview: hostServesWebSearch,
+	schemas.ResponsesToolTypeWebFetch: func(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+		return caps.SupportsWebFetch(f.WebFetch)
+	},
+	schemas.ResponsesToolTypeCodeInterpreter: hostServesCodeExecution,
+	schemas.ResponsesToolTypeComputerUsePreview: func(f ProviderFeatureSupport, _ schemas.ModelCaps) bool {
+		return f.ComputerUse
+	},
+	schemas.ResponsesToolTypeComputer: func(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+		return f.ComputerUse && (ComputerUseGeneration(caps) == ComputerUseGenToolset20260801 || AcceptsComputerToolset(caps))
+	},
+	schemas.ResponsesToolTypeMCP: func(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+		return caps.SupportsMCP(f.MCP)
+	},
+	schemas.ResponsesToolTypeLocalShell: func(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+		return caps.SupportsBashTool(f.Bash)
+	},
+	schemas.ResponsesToolTypeMemory: func(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+		return caps.SupportsMemoryTool(f.Memory)
+	},
+	schemas.ResponsesToolTypeToolSearch: func(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+		return caps.SupportsToolSearch(f.ToolSearch)
+	},
+	schemas.ResponsesToolTypeFileSearch: func(f ProviderFeatureSupport, _ schemas.ModelCaps) bool {
+		return f.FileSearch
+	},
+	schemas.ResponsesToolTypeImageGeneration: func(f ProviderFeatureSupport, _ schemas.ModelCaps) bool {
+		return f.ImageGeneration
+	},
+	schemas.ResponsesToolTypeAdvisor: func(f ProviderFeatureSupport, caps schemas.ModelCaps) bool {
+		return caps.SupportsAdvisorTool(f.AdvisorTool)
+	},
+}
+
+// responsesToolSupported reports whether a Responses tool of type t may be sent to the host and
+// model; known is false for a type outside responsesServerToolGates, which is always kept.
 func responsesToolSupported(t schemas.ResponsesToolType, features ProviderFeatureSupport, caps schemas.ModelCaps) (supported, known bool) {
-	switch t {
-	case schemas.ResponsesToolTypeWebSearch, schemas.ResponsesToolTypeWebSearchPreview:
-		return hostServesWebSearch(features, caps), true
-	case schemas.ResponsesToolTypeWebFetch:
-		return caps.SupportsWebFetch(features.WebFetch), true
-	case schemas.ResponsesToolTypeCodeInterpreter:
-		return hostServesCodeExecution(features, caps), true
-	case schemas.ResponsesToolTypeComputerUsePreview:
-		return features.ComputerUse, true
-	case schemas.ResponsesToolTypeComputer:
-		return features.ComputerUse &&
-			(ComputerUseGeneration(caps) == ComputerUseGenToolset20260801 || AcceptsComputerToolset(caps)), true
-	case schemas.ResponsesToolTypeMCP:
-		return caps.SupportsMCP(features.MCP), true
-	case schemas.ResponsesToolTypeLocalShell:
-		return caps.SupportsBashTool(features.Bash), true
-	case schemas.ResponsesToolTypeMemory:
-		return caps.SupportsMemoryTool(features.Memory), true
-	case schemas.ResponsesToolTypeToolSearch:
-		return caps.SupportsToolSearch(features.ToolSearch), true
-	case schemas.ResponsesToolTypeFileSearch:
-		return features.FileSearch, true
-	case schemas.ResponsesToolTypeImageGeneration:
-		return features.ImageGeneration, true
-	case schemas.ResponsesToolTypeAdvisor:
-		return caps.SupportsAdvisorTool(features.AdvisorTool), true
+	gate, known := responsesServerToolGates[t]
+	if !known {
+		return true, false
 	}
-	return true, false
+	return gate(features, caps), true
 }
 
 var (
@@ -2378,6 +2393,21 @@ func computerUseBaseTool(toolType string) string {
 		return "bash"
 	}
 	return ""
+}
+
+// normalizedComputerUseSpec is the canonical {type, name} pair a computer-use family tool
+// (computer / text_editor / bash) is sent as for the model's generation; wantType is "" for a
+// type outside the family or a generation without a spec.
+func normalizedComputerUseSpec(caps schemas.ModelCaps, toolType string) (wantType, wantName string) {
+	base := computerUseBaseTool(toolType)
+	if base == "" {
+		return "", ""
+	}
+	generation := ComputerUseGeneration(caps)
+	if base == "text_editor" {
+		generation = TextEditorGeneration(caps)
+	}
+	return NormalizedToolSpec(generation, base)
 }
 
 // MapBifrostEffortToAnthropic maps a Bifrost effort level to an Anthropic effort level.

@@ -185,10 +185,9 @@ func ResponsesAsk(req *schemas.BifrostResponsesRequest, betas []string) FeatureA
 	return ask
 }
 
-// isResponsesServerTool reports whether a Responses tool type is one the validator gates; the
-// gate's answer is not needed, so it is asked with an empty target.
+// isResponsesServerTool reports whether a Responses tool type is one the validator gates.
 func isResponsesServerTool(t schemas.ResponsesToolType) bool {
-	_, known := responsesToolSupported(t, ProviderFeatureSupport{}, schemas.ModelCaps{})
+	_, known := responsesServerToolGates[t]
 	return known
 }
 
@@ -356,8 +355,15 @@ func (ask *FeatureAsk) addExtraContainer(v any) {
 		ask.addTypedContainer(c)
 	case string:
 		ask.addContainer(&c, false, 0)
-	default:
-		ask.addRawContainer(extraResult(v))
+	case json.RawMessage:
+		ask.addRawContainer(gjson.Parse(bytesAsString(c)))
+	case map[string]any:
+		switch {
+		case decodedMeaningful(c["skills"]):
+			ask.Features |= FeatureContainerSkills
+		case len(c) > 0:
+			ask.Features |= FeatureContainer
+		}
 	}
 }
 
@@ -382,6 +388,9 @@ func (ask *FeatureAsk) addContextManagement(v any) {
 	if !meaningful(v) {
 		return
 	}
+	if m, decoded := v.(map[string]any); decoded && len(m) == 0 {
+		return
+	}
 	ask.Features |= FeatureContextManagement
 	switch v := v.(type) {
 	case json.RawMessage:
@@ -392,6 +401,14 @@ func (ask *FeatureAsk) addContextManagement(v any) {
 		}
 	case string:
 		ask.ContextEdits |= rawContextEdits(gjson.Parse(v))
+	case map[string]any:
+		edits, _ := v["edits"].([]any)
+		for _, e := range edits {
+			if edit, ok := e.(map[string]any); ok {
+				t, _ := edit["type"].(string)
+				ask.ContextEdits |= contextEditKind(t)
+			}
+		}
 	}
 }
 
@@ -423,34 +440,41 @@ func (ask *FeatureAsk) addExtra(extra map[string]any) {
 			ask.Features |= when(meaningful(v), m.feature)
 			continue
 		}
-		ask.Features |= when(rawMeaningful(extraResult(v).Get(rest)), m.feature)
+		ask.Features |= when(extraMemberMeaningful(v, rest), m.feature)
 	}
 	// The Responses converter reads a top-level task_budget key.
 	if v, ok := extra["task_budget"]; ok && meaningful(v) {
 		ask.Features |= FeatureTaskBudget
 	}
 	if v, ok := extra["context_management"]; ok {
-		if r := extraResult(v); r.Exists() {
-			ask.addContextManagement(json.RawMessage(r.Raw))
-		} else {
-			ask.addContextManagement(v)
-		}
+		ask.addContextManagement(v)
 	}
 }
 
-// extraResult views an ExtraParams value as JSON without copying when it already is JSON (raw
-// bytes) and re-encodes a decoded object; any other value yields an empty result.
-func extraResult(v any) gjson.Result {
+// extraMemberMeaningful reports whether member key of an ExtraParams object, raw JSON or decoded,
+// carries something; any other value carries no member.
+func extraMemberMeaningful(v any, key string) bool {
 	switch v := v.(type) {
 	case json.RawMessage:
-		return gjson.Parse(bytesAsString(v))
+		return rawMeaningful(gjson.Get(bytesAsString(v), key))
 	case map[string]any:
-		// A decoded object: re-encode once; only on a request that sends one of these keys.
-		if b, err := json.Marshal(v); err == nil {
-			return gjson.ParseBytes(b)
-		}
+		return decodedMeaningful(v[key])
 	}
-	return gjson.Result{}
+	return false
+}
+
+// decodedMeaningful is rawMeaningful for a value decoded from JSON: nil, "" and an empty array or
+// object carry nothing.
+func decodedMeaningful(v any) bool {
+	switch v := v.(type) {
+	case string:
+		return v != ""
+	case map[string]any:
+		return len(v) > 0
+	case []any:
+		return len(v) > 0
+	}
+	return meaningful(v)
 }
 
 // Uncarried is the carry predicate: the bits of ask the Anthropic-family builders would record in
@@ -500,15 +524,10 @@ func (g featureGate) carriesServerTool(t string) bool {
 // sentToolType is the type the chat raw path sends for an Anthropic tool type before the host
 // remap: the computer-use family is normalized to the model's generation first.
 func (g featureGate) sentToolType(t string) string {
-	base := computerUseBaseTool(t)
-	if base == "" || (t == string(AnthropicToolTypeComputerToolset20260801) && AcceptsComputerToolset(g.caps)) {
+	if t == string(AnthropicToolTypeComputerToolset20260801) && AcceptsComputerToolset(g.caps) {
 		return t
 	}
-	generation := ComputerUseGeneration(g.caps)
-	if base == "text_editor" {
-		generation = TextEditorGeneration(g.caps)
-	}
-	if want, _ := NormalizedToolSpec(generation, base); want != "" {
+	if want, _ := normalizedComputerUseSpec(g.caps, t); want != "" {
 		return want
 	}
 	return t

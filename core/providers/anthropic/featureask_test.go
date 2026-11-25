@@ -544,6 +544,9 @@ func TestResponsesAsk_ContainerForms(t *testing.T) {
 		{"bare string", "c1", FeatureContainer},
 		{"empty string", "", 0},
 		{"map skills", map[string]any{"id": "c1", "skills": []any{map[string]any{"type": "anthropic"}}}, FeatureContainerSkills},
+		{"map id, empty skills", map[string]any{"id": "c1", "skills": []any{}}, FeatureContainer},
+		{"empty map", map[string]any{}, 0},
+		{"raw skills", json.RawMessage(`{"id":"c1","skills":[{"type":"anthropic"}]}`), FeatureContainerSkills},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -552,6 +555,36 @@ func TestResponsesAsk_ContainerForms(t *testing.T) {
 			got := ResponsesAsk(req, nil).Features & (FeatureContainer | FeatureContainerSkills)
 			if got != tc.want {
 				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A decoded ExtraParams object is read in place and asks what its raw JSON form asks.
+func TestAsk_DecodedExtraMatchesRaw(t *testing.T) {
+	cases := []struct {
+		key     string
+		decoded any
+		raw     string
+		want    Feature
+		edits   ContextEditKinds
+	}{
+		{"output_config", map[string]any{"task_budget": map[string]any{"type": "tokens", "total": 1000}}, `{"task_budget":{"type":"tokens","total":1000}}`, FeatureTaskBudget, 0},
+		{"output_config", map[string]any{"task_budget": map[string]any{}}, `{"task_budget":{}}`, 0, 0},
+		{"cache_control", map[string]any{"type": "ephemeral", "scope": "global"}, `{"type":"ephemeral","scope":"global"}`, FeatureCacheControlScope, 0},
+		{"cache_control", map[string]any{"type": "ephemeral", "scope": ""}, `{"type":"ephemeral","scope":""}`, 0, 0},
+		{"context_management", map[string]any{"edits": []any{map[string]any{"type": "compact_20260112"}}}, `{"edits":[{"type":"compact_20260112"}]}`, FeatureContextManagement, ContextEditCompact},
+		{"context_management", map[string]any{}, `{}`, 0, 0},
+	}
+	mask := FeatureTaskBudget | FeatureCacheControlScope | FeatureContextManagement
+	for _, tc := range cases {
+		t.Run(tc.key+" "+tc.raw, func(t *testing.T) {
+			for _, v := range []any{tc.decoded, json.RawMessage(tc.raw)} {
+				req := &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{}}
+				respExtra(tc.key, v)(req)
+				ask := ResponsesAsk(req, nil)
+				assert.Equal(t, tc.want, ask.Features&mask, "%T", v)
+				assert.Equal(t, tc.edits, ask.ContextEdits, "%T", v)
 			}
 		})
 	}
