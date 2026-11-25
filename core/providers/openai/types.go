@@ -463,6 +463,10 @@ type OpenAIChatRequest struct {
 	// (e.g. preserving cache_control for OpenRouter). Not serialized to wire.
 	Provider schemas.ModelProvider `json:"-"`
 
+	// reasoningObject is the client's reasoning object, sent as "reasoning" in
+	// place of reasoning_effort (carryReasoningObject).
+	reasoningObject *schemas.ChatReasoning
+
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks   []string               `json:"fallbacks,omitempty"`
 	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
@@ -717,7 +721,9 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 
 	// DO NOT set aux.Reasoning → it stays nil and is omitted via omitempty, and also due to double reference to the same json field.
 
-	if req.Reasoning != nil && req.Reasoning.Effort != nil {
+	if req.reasoningObject != nil {
+		aux.Reasoning = req.reasoningObject
+	} else if req.Reasoning != nil && req.Reasoning.Effort != nil {
 		aux.ReasoningEffort = req.Reasoning.Effort
 	}
 
@@ -1310,6 +1316,38 @@ func isAnthropicOnlyResponsesToolType(t schemas.ResponsesTool) bool {
 // underlying model, so MarshalJSON keeps the block, tool-call and tool markers for it.
 func (req *OpenAIChatRequest) keepsCacheControl() bool {
 	return req.Provider == schemas.OpenRouter
+}
+
+// keepsReasoningObject: OpenRouter's unified reasoning parameter is an object of
+// enabled, effort and max_tokens, which it maps onto the underlying model.
+func (req *OpenAIChatRequest) keepsReasoningObject() bool {
+	return req.keepsCacheControl()
+}
+
+// carryReasoningObject sends the client's enabled, effort and max_tokens as the
+// reasoning object when it asked for more than an effort; an effort alone stays
+// reasoning_effort, which OpenRouter reads the same way.
+func (req *OpenAIChatRequest) carryReasoningObject(in *schemas.ChatReasoning) {
+	if in.Enabled == nil && in.MaxTokens == nil {
+		return
+	}
+	req.reasoningObject = &schemas.ChatReasoning{Enabled: in.Enabled, Effort: in.Effort, MaxTokens: in.MaxTokens}
+}
+
+// chatReasoningLost reports a member of the client's reasoning object req does
+// not send: display and type (Anthropic thinking fields) on every OpenAI wire;
+// off OpenRouter, max_tokens unless it became the effort, and enabled when no
+// effort is sent.
+func chatReasoningLost(in *schemas.ChatReasoning, req *OpenAIChatRequest) bool {
+	if in.Display != nil || in.Type != nil {
+		return true
+	}
+	if req.reasoningObject != nil || req.keepsReasoningObject() {
+		return false
+	}
+	sentEffort := req.Reasoning != nil && req.Reasoning.Effort != nil
+	return in.MaxTokens != nil && (in.Effort != nil || !sentEffort) ||
+		in.Enabled != nil && !sentEffort
 }
 
 // keepsReasoningDetails: OpenRouter takes replayed reasoning_details on an assistant
