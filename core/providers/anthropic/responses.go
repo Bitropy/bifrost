@@ -1482,789 +1482,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 	case AnthropicStreamEventTypeContentBlockStart:
 		// Content block start - emit output_item.added (OpenAI-style)
 		if chunk.ContentBlock != nil && chunk.Index != nil {
-			// A data-less redacted_thinking block contributes nothing; skip it
-			// before reserving an output index so later items keep their
-			// positions in response.completed output.
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeRedactedThinking &&
-				(chunk.ContentBlock.Data == nil || *chunk.ContentBlock.Data == "") {
-				state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeRedactedThinking
-				return nil, nil, false
-			}
-
-			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
-
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeToolUse &&
-				chunk.ContentBlock.Name != nil &&
-				*chunk.ContentBlock.Name == string(AnthropicToolNameComputer) &&
-				chunk.ContentBlock.ID != nil {
-
-				state.SeenRealToolCall = true
-				// Start accumulating computer tool
-				state.ComputerToolID = chunk.ContentBlock.ID
-				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferComputer)
-
-				// Emit output_item.added for computer_call
-				item := &schemas.ResponsesMessage{
-					ID:   chunk.ContentBlock.ID,
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall),
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID: chunk.ContentBlock.ID,
-					},
-				}
-
-				return []*schemas.BifrostResponsesStreamResponse{{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				}}, nil, false
-			}
-
-			// Handle web_search server_tool_use (query block)
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
-				chunk.ContentBlock.Name != nil &&
-				*chunk.ContentBlock.Name == string(AnthropicToolNameWebSearch) &&
-				chunk.ContentBlock.ID != nil {
-
-				state.SeenRealToolCall = true
-				// web_search server_tool_use usually arrives pre-populated (query in
-				// input, not streamed). Keep a buffer anyway so unusual input_json_delta
-				// events are swallowed and can be used as a fallback on block stop.
-				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferWebSearch)
-				state.WebSearchToolID = chunk.ContentBlock.ID
-				state.WebSearchOutputIndex = schemas.Ptr(outputIndex)
-				state.WebSearchQuery = nil
-				if q := providerUtils.GetJSONField(chunk.ContentBlock.Input, "query"); q.Exists() && q.Type == gjson.String {
-					state.WebSearchQuery = schemas.Ptr(q.Str)
-				}
-				state.WebSearchCaller = chunk.ContentBlock.Caller
-
-				// Store item ID
-				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
-
-				wsAction := &schemas.ResponsesWebSearchToolCallAction{Type: "search"}
-				if state.WebSearchQuery != nil {
-					wsAction.Query = state.WebSearchQuery
-					wsAction.Queries = []string{*state.WebSearchQuery}
-				}
-				toolMsg := &schemas.ResponsesToolMessage{
-					CallID: chunk.ContentBlock.ID,
-					Action: &schemas.ResponsesToolMessageActionStruct{ResponsesWebSearchToolCallAction: wsAction},
-				}
-				if state.WebSearchCaller != nil {
-					toolMsg.Caller = &schemas.ResponsesToolCaller{
-						Type:   string(state.WebSearchCaller.Type),
-						ToolID: state.WebSearchCaller.ToolID,
-					}
-				}
-
-				// Emit output_item.added for web_search_call
-				item := &schemas.ResponsesMessage{
-					ID:                   chunk.ContentBlock.ID,
-					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
-					Status:               schemas.Ptr("in_progress"),
-					ResponsesToolMessage: toolMsg,
-				}
-
-				var responses []*schemas.BifrostResponsesStreamResponse
-
-				// Emit output_item.added
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				})
-
-				// Emit web_search_call.in_progress
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ItemID:         chunk.ContentBlock.ID,
-				})
-
-				// Emit web_search_call.searching
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ItemID:         chunk.ContentBlock.ID,
-				})
-
-				return responses, nil, false
-			}
-
-			// Handle web_search_tool_result block (results arrive)
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeWebSearchToolResult &&
-				chunk.ContentBlock.ToolUseID != nil {
-
-				// Track that this content index is a web search result block
-				if chunk.Index != nil {
-					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeWebSearchToolResult
-				}
-
-				// Check if this matches our active web search
-				if state.WebSearchToolID != nil && *state.WebSearchToolID == *chunk.ContentBlock.ToolUseID {
-
-					// Store the result block (arrives complete with all sources)
-					state.WebSearchResult = chunk.ContentBlock
-
-					if chunk.Index != nil {
-						delete(state.ContentIndexToBlockType, *chunk.Index)
-					}
-
-					// Emit web_search_call.completed
-					return []*schemas.BifrostResponsesStreamResponse{{
-						Type:           schemas.ResponsesStreamResponseTypeWebSearchCallCompleted,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    state.WebSearchOutputIndex,
-						ItemID:         chunk.ContentBlock.ToolUseID,
-					}}, nil, false
-				}
-
-				// No search open in this message: the result of a search Anthropic deferred in
-				// the previous assistant message. Emit it as a result-only web_search_call
-				// (isWebSearchResultOnlyCall) so clients can replay it; the shared
-				// web_search_tool_result stop path below emits its output_item.done.
-				if state.WebSearchToolID == nil {
-					return state.startLateWebSearchResult(chunk, outputIndex, sequenceNumber), nil, false
-				}
-
-				// A result for a different search than the open one: skip (shouldn't happen)
-				return nil, nil, false
-			}
-
-			// Handle tool_search server_tool_use (server-side tool_search query block).
-			// Anthropic runs the search server-side and returns a tool_search_tool_result
-			// carrying tool_references to the discovered (deferred) tools; the model then
-			// emits a normal tool_use to call one. Mirrors the web_search query path.
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
-				chunk.ContentBlock.Name != nil &&
-				isAnthropicToolSearchToolName(*chunk.ContentBlock.Name) &&
-				chunk.ContentBlock.ID != nil {
-
-				state.SeenRealToolCall = true
-				// Suppress the query input_json deltas via the shared input-buffer path;
-				// the search is run server-side, so we only care about the result block.
-				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferToolSearch)
-				state.ToolSearchToolID = chunk.ContentBlock.ID
-				state.ToolSearchToolName = chunk.ContentBlock.Name
-				state.ToolSearchOutputIndex = schemas.Ptr(outputIndex)
-				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
-				// Mark block type so content_block_stop doesn't emit a generic message done
-				if chunk.Index != nil {
-					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeServerToolUse
-					state.TextContentIndices[*chunk.Index] = false
-				}
-
-				// Emit output_item.added for the tool_search_call (completed at result block-stop)
-				item := &schemas.ResponsesMessage{
-					ID:     chunk.ContentBlock.ID,
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
-					Status: schemas.Ptr("in_progress"),
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID: chunk.ContentBlock.ID,
-						Name:   chunk.ContentBlock.Name,
-					},
-				}
-				return []*schemas.BifrostResponsesStreamResponse{{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				}}, nil, false
-			}
-
-			// Handle tool_search_tool_result block (the discovered tool_references arrive).
-			// Store it; the tool_search_call output_item.done (carrying tool_references) is
-			// emitted on this block's content_block_stop. Mirrors web_search_tool_result.
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeToolSearchToolResult &&
-				chunk.ContentBlock.ToolUseID != nil {
-
-				if chunk.Index != nil {
-					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeToolSearchToolResult
-				}
-
-				if state.ToolSearchToolID != nil && *state.ToolSearchToolID == *chunk.ContentBlock.ToolUseID {
-					// Store the result block (arrives complete with all tool_references)
-					state.ToolSearchResult = chunk.ContentBlock
-				}
-
-				// Defer the done to content_block_stop (don't drop the block)
-				return nil, nil, false
-			}
-
-			// Handle web_fetch server_tool_use (fetch block)
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
-				chunk.ContentBlock.Name != nil &&
-				*chunk.ContentBlock.Name == string(AnthropicToolNameWebFetch) &&
-				chunk.ContentBlock.ID != nil {
-
-				state.SeenRealToolCall = true
-				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferWebFetch)
-				state.WebFetchToolID = chunk.ContentBlock.ID
-				state.WebFetchOutputIndex = schemas.Ptr(outputIndex)
-				state.WebFetchURL = nil
-				if u := providerUtils.GetJSONField(chunk.ContentBlock.Input, "url"); u.Exists() && u.Type == gjson.String {
-					state.WebFetchURL = schemas.Ptr(u.Str)
-				}
-
-				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
-
-				toolMsg := &schemas.ResponsesToolMessage{
-					CallID: chunk.ContentBlock.ID,
-				}
-				if state.WebFetchURL != nil {
-					toolMsg.Action = &schemas.ResponsesToolMessageActionStruct{
-						ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
-							Type: "fetch",
-							URL:  *state.WebFetchURL,
-						},
-					}
-				}
-				// Preserve the programmatic-tool-calling caller (set when this fetch was
-				// spawned from inside the code-execution sandbox), mirroring web_search.
-				if chunk.ContentBlock.Caller != nil {
-					toolMsg.Caller = &schemas.ResponsesToolCaller{
-						Type:   string(chunk.ContentBlock.Caller.Type),
-						ToolID: chunk.ContentBlock.Caller.ToolID,
-					}
-				}
-				item := &schemas.ResponsesMessage{
-					ID:                   chunk.ContentBlock.ID,
-					Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
-					Status:               schemas.Ptr("in_progress"),
-					ResponsesToolMessage: toolMsg,
-				}
-
-				var responses []*schemas.BifrostResponsesStreamResponse
-
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				})
-
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeWebFetchCallInProgress,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ItemID:         chunk.ContentBlock.ID,
-				})
-
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeWebFetchCallFetching,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ItemID:         chunk.ContentBlock.ID,
-				})
-
-				return responses, nil, false
-			}
-
-			// Handle web_fetch_tool_result block
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeWebFetchToolResult &&
-				chunk.ContentBlock.ToolUseID != nil {
-
-				if chunk.Index != nil {
-					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeWebFetchToolResult
-				}
-
-				if state.WebFetchToolID != nil && *state.WebFetchToolID == *chunk.ContentBlock.ToolUseID {
-					if chunk.Index != nil {
-						delete(state.ContentIndexToBlockType, *chunk.Index)
-					}
-
-					// Remember that the result block arrived; its content is not
-					// represented in the Responses model (handled server-side), but its
-					// presence drives the web_fetch_call output_item.done at the result
-					// block's content_block_stop (mirrors web_search).
-					state.WebFetchResult = chunk.ContentBlock
-
-					return []*schemas.BifrostResponsesStreamResponse{{
-						Type:           schemas.ResponsesStreamResponseTypeWebFetchCallCompleted,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    state.WebFetchOutputIndex,
-						ItemID:         chunk.ContentBlock.ToolUseID,
-					}}, nil, false
-				}
-
-				return nil, nil, false
-			}
-
-			// Handle advisor server_tool_use (the call; input is always empty).
-			// The paired advisor_tool_result is emitted as output_item.done when
-			// the result block's content_block_stop arrives (mirrors web_search).
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
-				chunk.ContentBlock.Name != nil &&
-				*chunk.ContentBlock.Name == string(AnthropicToolNameAdvisor) &&
-				chunk.ContentBlock.ID != nil {
-
-				state.SeenRealToolCall = true
-				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferAdvisor) // absorbs the empty advisor input_json_delta
-				state.AdvisorToolID = chunk.ContentBlock.ID
-				state.AdvisorOutputIndex = schemas.Ptr(outputIndex)
-				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
-
-				item := &schemas.ResponsesMessage{
-					ID:     chunk.ContentBlock.ID,
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeAdvisorCall),
-					Status: schemas.Ptr("in_progress"),
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID: chunk.ContentBlock.ID,
-						Name:   schemas.Ptr(string(AnthropicToolNameAdvisor)),
-					},
-				}
-
-				return []*schemas.BifrostResponsesStreamResponse{{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				}}, nil, false
-			}
-
-			// Handle advisor_tool_result block (arrives complete in one event).
-			// Store it; the output_item.done is emitted on its content_block_stop.
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeAdvisorToolResult &&
-				chunk.ContentBlock.ToolUseID != nil {
-
-				if chunk.Index != nil {
-					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeAdvisorToolResult
-				}
-				if state.AdvisorToolID != nil && *state.AdvisorToolID == *chunk.ContentBlock.ToolUseID {
-					state.AdvisorResult = chunk.ContentBlock
-				}
-				return nil, nil, false
-			}
-
-			// Handle code-execution server_tool_use (bash / text_editor / python).
-			// The input JSON is accumulated; the decoded code is emitted on
-			// content_block_stop (Anthropic streams JSON, OpenAI streams raw code).
-			if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
-				chunk.ContentBlock.Name != nil &&
-				isAnthropicCodeExecutionToolName(*chunk.ContentBlock.Name) &&
-				chunk.ContentBlock.ID != nil {
-
-				state.SeenRealToolCall = true
-				state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferCodeExec)
-				state.CodeExecToolID = chunk.ContentBlock.ID
-				state.CodeExecToolName = chunk.ContentBlock.Name
-				state.CodeExecOutputIndex = schemas.Ptr(outputIndex)
-				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
-
-				item := &schemas.ResponsesMessage{
-					ID:     chunk.ContentBlock.ID,
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
-					Status: schemas.Ptr("in_progress"),
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID:                           chunk.ContentBlock.ID,
-						ResponsesCodeInterpreterToolCall: &schemas.ResponsesCodeInterpreterToolCall{},
-						// Carry the sub-tool name so the reverse converter can
-						// reconstruct the correct server_tool_use name at this start.
-						ResponsesCodeExecutionCall: &schemas.ResponsesCodeExecutionCall{ToolName: *chunk.ContentBlock.Name},
-					},
-				}
-
-				return []*schemas.BifrostResponsesStreamResponse{
-					{
-						Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(outputIndex),
-						ContentIndex:   chunk.Index,
-						Item:           item,
-					},
-					{
-						Type:           schemas.ResponsesStreamResponseTypeCodeInterpreterCallInProgress,
-						SequenceNumber: sequenceNumber + 1,
-						OutputIndex:    schemas.Ptr(outputIndex),
-						ItemID:         chunk.ContentBlock.ID,
-					},
-				}, nil, false
-			}
-
-			// Handle code-execution result block (arrives complete in one event).
-			// Store it; the output_item.done is emitted on its content_block_stop.
-			if (chunk.ContentBlock.Type == AnthropicContentBlockTypeCodeExecutionToolResult ||
-				chunk.ContentBlock.Type == AnthropicContentBlockTypeBashCodeExecutionToolResult ||
-				chunk.ContentBlock.Type == AnthropicContentBlockTypeTextEditorCodeExecutionToolResult) &&
-				chunk.ContentBlock.ToolUseID != nil {
-
-				if chunk.Index != nil {
-					state.ContentIndexToBlockType[*chunk.Index] = chunk.ContentBlock.Type
-				}
-				if state.CodeExecToolID != nil && *state.CodeExecToolID == *chunk.ContentBlock.ToolUseID {
-					state.CodeExecResult = chunk.ContentBlock
-				}
-				return nil, nil, false
-			}
-
-			switch chunk.ContentBlock.Type {
-			case AnthropicContentBlockTypeCompaction:
-				// Compaction block - track it but don't emit yet (summary arrives in delta)
-				itemID := fmt.Sprintf("cmp_%d", outputIndex)
-				state.ItemIDs[outputIndex] = itemID
-
-				// Store cache control and tool_changes for later use when delta arrives
-				state.CompactionContentIndices[outputIndex] = chunk.ContentBlock.CacheControl
-				if changes := convertAnthropicToolChangesToBifrost(chunk.ContentBlock.ToolChanges); len(changes) > 0 {
-					if state.CompactionToolChanges == nil {
-						state.CompactionToolChanges = make(map[int][]schemas.ResponsesMessageContentBlock)
-					}
-					state.CompactionToolChanges[outputIndex] = changes
-				}
-
-				// Track in ContentIndexToBlockType so content_block_stop skips generic done
-				if chunk.Index != nil {
-					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeCompaction
-				}
-
-				// Don't emit output_item.added yet - wait for the delta with actual summary
-				return nil, nil, false
-			case AnthropicContentBlockTypeFallback:
-				// Fallback boundary marker - no deltas follow, so emit the complete
-				// item (added + done) here from the start event's from/to models.
-				itemID := fmt.Sprintf("fb_%d", outputIndex)
-				state.ItemIDs[outputIndex] = itemID
-				if chunk.Index != nil {
-					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeFallback
-				}
-				messageType := schemas.ResponsesMessageTypeMessage
-				fbRole := schemas.ResponsesInputMessageRoleAssistant
-				fallback := &schemas.ResponsesOutputMessageContentFallback{}
-				if chunk.ContentBlock.From != nil {
-					fallback.FromModel = chunk.ContentBlock.From.Model
-				}
-				if chunk.ContentBlock.To != nil {
-					fallback.ToModel = chunk.ContentBlock.To.Model
-				}
-				if chunk.ContentBlock.Trigger != nil {
-					fallback.TriggerType = chunk.ContentBlock.Trigger.Type
-					fallback.TriggerCategory = chunk.ContentBlock.Trigger.Category
-				}
-				item := &schemas.ResponsesMessage{
-					ID:     schemas.Ptr(itemID),
-					Status: schemas.Ptr("completed"),
-					Type:   &messageType,
-					Role:   &fbRole,
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{{
-							Type:                                  schemas.ResponsesOutputMessageContentTypeFallback,
-							ResponsesOutputMessageContentFallback: fallback,
-						}},
-					},
-				}
-				return []*schemas.BifrostResponsesStreamResponse{
-					{
-						Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-						SequenceNumber: sequenceNumber,
-						OutputIndex:    schemas.Ptr(outputIndex),
-						ContentIndex:   chunk.Index,
-						Item:           item,
-					},
-					{
-						Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-						SequenceNumber: sequenceNumber + 1,
-						OutputIndex:    schemas.Ptr(outputIndex),
-						ContentIndex:   chunk.Index,
-						Item:           item,
-					},
-				}, nil, false
-			case AnthropicContentBlockTypeText:
-				// Text block - emit output_item.added with type "message"
-				messageType := schemas.ResponsesMessageTypeMessage
-				role := schemas.ResponsesInputMessageRoleAssistant
-
-				// Generate stable ID for text item
-				var itemID string
-				if state.MessageID == nil {
-					itemID = fmt.Sprintf("item_%d", outputIndex)
-				} else {
-					itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
-				}
-				state.ItemIDs[outputIndex] = itemID
-
-				item := &schemas.ResponsesMessage{
-					ID:     schemas.Ptr(itemID),
-					Status: schemas.Ptr("in_progress"),
-					Type:   &messageType,
-					Role:   &role,
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{}, // Empty blocks slice for mutation support
-					},
-				}
-
-				// Track that this content index is a text block
-				if chunk.Index != nil {
-					state.TextContentIndices[*chunk.Index] = true
-				}
-
-				var responses []*schemas.BifrostResponsesStreamResponse
-
-				// Emit output_item.added
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				})
-
-				// Emit content_part.added with empty output_text part
-				emptyText := ""
-				part := &schemas.ResponsesMessageContentBlock{
-					Type: schemas.ResponsesOutputMessageContentTypeText,
-					Text: &emptyText,
-					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-					},
-				}
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					ItemID:         &itemID,
-					Part:           part,
-				})
-
-				return responses, nil, false
-			case AnthropicContentBlockTypeToolUse:
-				// Check if this is the structured output tool - if so, skip emitting tool call
-				if state.StructuredOutputToolName != "" && chunk.ContentBlock.Name != nil && *chunk.ContentBlock.Name == state.StructuredOutputToolName {
-					// Mark this output index for structured output handling
-					state.StructuredOutputIndex = &outputIndex
-
-					// Initialize argument buffer for accumulating the JSON
-					state.ToolArgumentBuffers[outputIndex] = ""
-
-					// Mark tool use blocks to prevent synthetic content_part.added events
-					if chunk.Index != nil {
-						state.TextContentIndices[*chunk.Index] = false
-					}
-
-					// Store item ID for this structured output
-					if chunk.ContentBlock.ID != nil {
-						state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
-					}
-
-					return nil, nil, false
-				}
-
-				state.SeenRealToolCall = true
-				// Function call starting - emit output_item.added with type "function_call" and status "in_progress"
-				statusInProgress := "in_progress"
-				itemID := ""
-				if chunk.ContentBlock.ID != nil {
-					itemID = *chunk.ContentBlock.ID
-					state.ItemIDs[outputIndex] = itemID
-				}
-				item := &schemas.ResponsesMessage{
-					ID:     chunk.ContentBlock.ID,
-					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-					Status: &statusInProgress,
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						CallID:      chunk.ContentBlock.ID,
-						Name:        chunk.ContentBlock.Name,
-						ToolsetName: chunk.ContentBlock.ToolsetName,
-						Arguments:   schemas.Ptr(""), // Arguments will be filled by deltas
-					},
-				}
-
-				// Claude calling a client-run tool_search goes back as the caller's
-				// tool_search_call; its arguments arrive whole on output_item.done.
-				if restoreClientToolSearchCall(item, clientToolSearchFrom(ctx)) {
-					item.Status = &statusInProgress
-					item.Arguments = nil
-				}
-
-				// Initialize argument buffer for this tool call
-				state.ToolArgumentBuffers[outputIndex] = ""
-
-				// Store a cloned copy so later mutations (e.g. setting Arguments/Status
-				// to "completed") don't affect the already-emitted output_item.added event.
-				clonedItem := *item
-				clonedToolMsg := *item.ResponsesToolMessage
-				clonedItem.ResponsesToolMessage = &clonedToolMsg
-				state.OutputItems[outputIndex] = &clonedItem
-
-				// Mark tool use blocks to prevent synthetic content_part.added events
-				// This prevents extra content_block_stop events for tools like web_search
-				if chunk.Index != nil {
-					state.TextContentIndices[*chunk.Index] = false
-				}
-
-				return []*schemas.BifrostResponsesStreamResponse{{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				}}, nil, false
-			case AnthropicContentBlockTypeMCPToolUse:
-				state.SeenRealToolCall = true
-				// MCP tool call starting - emit output_item.added
-				itemID := ""
-				if chunk.ContentBlock.ID != nil {
-					itemID = *chunk.ContentBlock.ID
-					state.ItemIDs[outputIndex] = itemID
-				}
-				item := &schemas.ResponsesMessage{
-					ID:   chunk.ContentBlock.ID,
-					Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
-					ResponsesToolMessage: &schemas.ResponsesToolMessage{
-						Name:      chunk.ContentBlock.Name,
-						Arguments: schemas.Ptr(""), // Arguments will be filled by deltas
-					},
-				}
-
-				// Set server name if present
-				if chunk.ContentBlock.ServerName != nil {
-					item.ResponsesToolMessage.ServerLabel = schemas.Ptr(*chunk.ContentBlock.ServerName)
-				}
-
-				// Initialize argument buffer for this MCP call and mark as MCP
-				state.ToolArgumentBuffers[outputIndex] = ""
-				state.MCPCallOutputIndices[outputIndex] = true
-
-				// Mark MCP tool use blocks to prevent synthetic content_part.added events
-				if chunk.Index != nil {
-					state.TextContentIndices[*chunk.Index] = false
-				}
-
-				return []*schemas.BifrostResponsesStreamResponse{{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				}}, nil, false
-			case AnthropicContentBlockTypeThinking:
-				// Thinking/reasoning block - emit output_item.added with type "reasoning"
-				messageType := schemas.ResponsesMessageTypeReasoning
-				role := schemas.ResponsesInputMessageRoleAssistant
-
-				// Generate stable ID for reasoning item
-				var itemID string
-				if state.MessageID == nil {
-					itemID = fmt.Sprintf("reasoning_%d", outputIndex)
-				} else {
-					itemID = fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
-				}
-				state.ItemIDs[outputIndex] = itemID
-
-				// Initialize reasoning structure
-				item := &schemas.ResponsesMessage{
-					ID:   &itemID,
-					Type: &messageType,
-					Role: &role,
-					ResponsesReasoning: &schemas.ResponsesReasoning{
-						Summary: []schemas.ResponsesReasoningSummary{},
-					},
-				}
-
-				// Track that this content index is a reasoning block
-				if chunk.Index != nil {
-					state.ReasoningContentIndices[*chunk.Index] = true
-				}
-
-				// Persist into OutputItems so content_block_stop can fold the
-				// accumulated text and signature into the matching output_item.done
-				// and response.completed carries the completed reasoning item.
-				itemCopy := *item
-				state.OutputItems[outputIndex] = &itemCopy
-
-				var responses []*schemas.BifrostResponsesStreamResponse
-
-				// Emit output_item.added
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				})
-
-				// Emit content_part.added with empty reasoning_text part
-				emptyText := ""
-				part := &schemas.ResponsesMessageContentBlock{
-					Type: schemas.ResponsesOutputMessageContentTypeReasoning,
-					Text: &emptyText,
-				}
-				// Preserve signature in the content part if present
-				if chunk.ContentBlock.Signature != nil {
-					part.Signature = chunk.ContentBlock.Signature
-				}
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					ItemID:         &itemID,
-					Part:           part,
-				})
-
-				return responses, nil, false
-			case AnthropicContentBlockTypeRedactedThinking:
-				// Redacted thinking blocks arrive complete in content_block_start (no
-				// deltas follow; data-less blocks were already skipped above, before
-				// an output index was reserved). Surface the encrypted payload as a
-				// reasoning item with encrypted_content, mirroring the non-streaming
-				// converter, so streaming clients can replay it on the next turn;
-				// Anthropic rejects tool-use follow-ups whose latest assistant
-				// message dropped it.
-				messageType := schemas.ResponsesMessageTypeReasoning
-				role := schemas.ResponsesInputMessageRoleAssistant
-
-				// Generate stable ID for the reasoning item
-				var itemID string
-				if state.MessageID == nil {
-					itemID = fmt.Sprintf("reasoning_%d", outputIndex)
-				} else {
-					itemID = fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
-				}
-				state.ItemIDs[outputIndex] = itemID
-
-				item := &schemas.ResponsesMessage{
-					ID:   &itemID,
-					Type: &messageType,
-					Role: &role,
-					ResponsesReasoning: &schemas.ResponsesReasoning{
-						Summary:          []schemas.ResponsesReasoningSummary{},
-						EncryptedContent: chunk.ContentBlock.Data,
-					},
-				}
-
-				// Persist into OutputItems so the block's content_block_stop emits the
-				// matching output_item.done and response.completed carries the item.
-				itemCopy := *item
-				state.OutputItems[outputIndex] = &itemCopy
-
-				return []*schemas.BifrostResponsesStreamResponse{{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-					SequenceNumber: sequenceNumber,
-					OutputIndex:    schemas.Ptr(outputIndex),
-					ContentIndex:   chunk.Index,
-					Item:           item,
-				}}, nil, false
-			default:
-				// Send down an empty response only when integration type is anthropic
-				if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
-					return []*schemas.BifrostResponsesStreamResponse{{
-						Type:           "",
-						SequenceNumber: sequenceNumber,
-					}}, nil, false
-				}
-				return nil, nil, false
-			}
+			return chunk.responsesBlockStart(ctx, sequenceNumber, state), nil, false
 		}
 
 	case AnthropicStreamEventTypeContentBlockDelta:
@@ -3479,6 +2697,793 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 	}
 
 	return nil, nil, false
+}
+
+// responsesBlockStart converts a content_block_start into its Responses events.
+func (chunk *AnthropicStreamEvent) responsesBlockStart(ctx context.Context, sequenceNumber int, state *AnthropicResponsesStreamState) []*schemas.BifrostResponsesStreamResponse {
+	// A data-less redacted_thinking block contributes nothing; skip it
+	// before reserving an output index so later items keep their
+	// positions in response.completed output.
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeRedactedThinking &&
+		(chunk.ContentBlock.Data == nil || *chunk.ContentBlock.Data == "") {
+		state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeRedactedThinking
+		return nil
+	}
+
+	outputIndex := state.getOrCreateOutputIndex(chunk.Index)
+
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeToolUse &&
+		chunk.ContentBlock.Name != nil &&
+		*chunk.ContentBlock.Name == string(AnthropicToolNameComputer) &&
+		chunk.ContentBlock.ID != nil {
+
+		state.SeenRealToolCall = true
+		// Start accumulating computer tool
+		state.ComputerToolID = chunk.ContentBlock.ID
+		state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferComputer)
+
+		// Emit output_item.added for computer_call
+		item := &schemas.ResponsesMessage{
+			ID:   chunk.ContentBlock.ID,
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeComputerCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: chunk.ContentBlock.ID,
+			},
+		}
+
+		return []*schemas.BifrostResponsesStreamResponse{{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			Item:           item,
+		}}
+	}
+
+	// Handle web_search server_tool_use (query block)
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
+		chunk.ContentBlock.Name != nil &&
+		*chunk.ContentBlock.Name == string(AnthropicToolNameWebSearch) &&
+		chunk.ContentBlock.ID != nil {
+
+		state.SeenRealToolCall = true
+		// web_search server_tool_use usually arrives pre-populated (query in
+		// input, not streamed). Keep a buffer anyway so unusual input_json_delta
+		// events are swallowed and can be used as a fallback on block stop.
+		state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferWebSearch)
+		state.WebSearchToolID = chunk.ContentBlock.ID
+		state.WebSearchOutputIndex = schemas.Ptr(outputIndex)
+		state.WebSearchQuery = nil
+		if q := providerUtils.GetJSONField(chunk.ContentBlock.Input, "query"); q.Exists() && q.Type == gjson.String {
+			state.WebSearchQuery = schemas.Ptr(q.Str)
+		}
+		state.WebSearchCaller = chunk.ContentBlock.Caller
+
+		// Store item ID
+		state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
+
+		wsAction := &schemas.ResponsesWebSearchToolCallAction{Type: "search"}
+		if state.WebSearchQuery != nil {
+			wsAction.Query = state.WebSearchQuery
+			wsAction.Queries = []string{*state.WebSearchQuery}
+		}
+		toolMsg := &schemas.ResponsesToolMessage{
+			CallID: chunk.ContentBlock.ID,
+			Action: &schemas.ResponsesToolMessageActionStruct{ResponsesWebSearchToolCallAction: wsAction},
+		}
+		if state.WebSearchCaller != nil {
+			toolMsg.Caller = &schemas.ResponsesToolCaller{
+				Type:   string(state.WebSearchCaller.Type),
+				ToolID: state.WebSearchCaller.ToolID,
+			}
+		}
+
+		// Emit output_item.added for web_search_call
+		item := &schemas.ResponsesMessage{
+			ID:                   chunk.ContentBlock.ID,
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+			Status:               schemas.Ptr("in_progress"),
+			ResponsesToolMessage: toolMsg,
+		}
+
+		var responses []*schemas.BifrostResponsesStreamResponse
+
+		// Emit output_item.added
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			Item:           item,
+		})
+
+		// Emit web_search_call.in_progress
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeWebSearchCallInProgress,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ItemID:         chunk.ContentBlock.ID,
+		})
+
+		// Emit web_search_call.searching
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeWebSearchCallSearching,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ItemID:         chunk.ContentBlock.ID,
+		})
+
+		return responses
+	}
+
+	// Handle web_search_tool_result block (results arrive)
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeWebSearchToolResult &&
+		chunk.ContentBlock.ToolUseID != nil {
+
+		// Track that this content index is a web search result block
+		if chunk.Index != nil {
+			state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeWebSearchToolResult
+		}
+
+		// Check if this matches our active web search
+		if state.WebSearchToolID != nil && *state.WebSearchToolID == *chunk.ContentBlock.ToolUseID {
+
+			// Store the result block (arrives complete with all sources)
+			state.WebSearchResult = chunk.ContentBlock
+
+			if chunk.Index != nil {
+				delete(state.ContentIndexToBlockType, *chunk.Index)
+			}
+
+			// Emit web_search_call.completed
+			return []*schemas.BifrostResponsesStreamResponse{{
+				Type:           schemas.ResponsesStreamResponseTypeWebSearchCallCompleted,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    state.WebSearchOutputIndex,
+				ItemID:         chunk.ContentBlock.ToolUseID,
+			}}
+		}
+
+		// No search open in this message: the result of a search Anthropic deferred in
+		// the previous assistant message. Emit it as a result-only web_search_call
+		// (isWebSearchResultOnlyCall) so clients can replay it; the shared
+		// web_search_tool_result stop path below emits its output_item.done.
+		if state.WebSearchToolID == nil {
+			return state.startLateWebSearchResult(chunk, outputIndex, sequenceNumber)
+		}
+
+		// A result for a different search than the open one: skip (shouldn't happen)
+		return nil
+	}
+
+	// Handle tool_search server_tool_use (server-side tool_search query block).
+	// Anthropic runs the search server-side and returns a tool_search_tool_result
+	// carrying tool_references to the discovered (deferred) tools; the model then
+	// emits a normal tool_use to call one. Mirrors the web_search query path.
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
+		chunk.ContentBlock.Name != nil &&
+		isAnthropicToolSearchToolName(*chunk.ContentBlock.Name) &&
+		chunk.ContentBlock.ID != nil {
+
+		state.SeenRealToolCall = true
+		// Suppress the query input_json deltas via the shared input-buffer path;
+		// the search is run server-side, so we only care about the result block.
+		state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferToolSearch)
+		state.ToolSearchToolID = chunk.ContentBlock.ID
+		state.ToolSearchToolName = chunk.ContentBlock.Name
+		state.ToolSearchOutputIndex = schemas.Ptr(outputIndex)
+		state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
+		// Mark block type so content_block_stop doesn't emit a generic message done
+		if chunk.Index != nil {
+			state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeServerToolUse
+			state.TextContentIndices[*chunk.Index] = false
+		}
+
+		// Emit output_item.added for the tool_search_call (completed at result block-stop)
+		item := &schemas.ResponsesMessage{
+			ID:     chunk.ContentBlock.ID,
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+			Status: schemas.Ptr("in_progress"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: chunk.ContentBlock.ID,
+				Name:   chunk.ContentBlock.Name,
+			},
+		}
+		return []*schemas.BifrostResponsesStreamResponse{{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			Item:           item,
+		}}
+	}
+
+	// Handle tool_search_tool_result block (the discovered tool_references arrive).
+	// Store it; the tool_search_call output_item.done (carrying tool_references) is
+	// emitted on this block's content_block_stop. Mirrors web_search_tool_result.
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeToolSearchToolResult &&
+		chunk.ContentBlock.ToolUseID != nil {
+
+		if chunk.Index != nil {
+			state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeToolSearchToolResult
+		}
+
+		if state.ToolSearchToolID != nil && *state.ToolSearchToolID == *chunk.ContentBlock.ToolUseID {
+			// Store the result block (arrives complete with all tool_references)
+			state.ToolSearchResult = chunk.ContentBlock
+		}
+
+		// Defer the done to content_block_stop (don't drop the block)
+		return nil
+	}
+
+	// Handle web_fetch server_tool_use (fetch block)
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
+		chunk.ContentBlock.Name != nil &&
+		*chunk.ContentBlock.Name == string(AnthropicToolNameWebFetch) &&
+		chunk.ContentBlock.ID != nil {
+
+		state.SeenRealToolCall = true
+		state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferWebFetch)
+		state.WebFetchToolID = chunk.ContentBlock.ID
+		state.WebFetchOutputIndex = schemas.Ptr(outputIndex)
+		state.WebFetchURL = nil
+		if u := providerUtils.GetJSONField(chunk.ContentBlock.Input, "url"); u.Exists() && u.Type == gjson.String {
+			state.WebFetchURL = schemas.Ptr(u.Str)
+		}
+
+		state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
+
+		toolMsg := &schemas.ResponsesToolMessage{
+			CallID: chunk.ContentBlock.ID,
+		}
+		if state.WebFetchURL != nil {
+			toolMsg.Action = &schemas.ResponsesToolMessageActionStruct{
+				ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+					Type: "fetch",
+					URL:  *state.WebFetchURL,
+				},
+			}
+		}
+		// Preserve the programmatic-tool-calling caller (set when this fetch was
+		// spawned from inside the code-execution sandbox), mirroring web_search.
+		if chunk.ContentBlock.Caller != nil {
+			toolMsg.Caller = &schemas.ResponsesToolCaller{
+				Type:   string(chunk.ContentBlock.Caller.Type),
+				ToolID: chunk.ContentBlock.Caller.ToolID,
+			}
+		}
+		item := &schemas.ResponsesMessage{
+			ID:                   chunk.ContentBlock.ID,
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall),
+			Status:               schemas.Ptr("in_progress"),
+			ResponsesToolMessage: toolMsg,
+		}
+
+		var responses []*schemas.BifrostResponsesStreamResponse
+
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			Item:           item,
+		})
+
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeWebFetchCallInProgress,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ItemID:         chunk.ContentBlock.ID,
+		})
+
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeWebFetchCallFetching,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ItemID:         chunk.ContentBlock.ID,
+		})
+
+		return responses
+	}
+
+	// Handle web_fetch_tool_result block
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeWebFetchToolResult &&
+		chunk.ContentBlock.ToolUseID != nil {
+
+		if chunk.Index != nil {
+			state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeWebFetchToolResult
+		}
+
+		if state.WebFetchToolID != nil && *state.WebFetchToolID == *chunk.ContentBlock.ToolUseID {
+			if chunk.Index != nil {
+				delete(state.ContentIndexToBlockType, *chunk.Index)
+			}
+
+			// Remember that the result block arrived; its content is not
+			// represented in the Responses model (handled server-side), but its
+			// presence drives the web_fetch_call output_item.done at the result
+			// block's content_block_stop (mirrors web_search).
+			state.WebFetchResult = chunk.ContentBlock
+
+			return []*schemas.BifrostResponsesStreamResponse{{
+				Type:           schemas.ResponsesStreamResponseTypeWebFetchCallCompleted,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    state.WebFetchOutputIndex,
+				ItemID:         chunk.ContentBlock.ToolUseID,
+			}}
+		}
+
+		return nil
+	}
+
+	// Handle advisor server_tool_use (the call; input is always empty).
+	// The paired advisor_tool_result is emitted as output_item.done when
+	// the result block's content_block_stop arrives (mirrors web_search).
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
+		chunk.ContentBlock.Name != nil &&
+		*chunk.ContentBlock.Name == string(AnthropicToolNameAdvisor) &&
+		chunk.ContentBlock.ID != nil {
+
+		state.SeenRealToolCall = true
+		state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferAdvisor) // absorbs the empty advisor input_json_delta
+		state.AdvisorToolID = chunk.ContentBlock.ID
+		state.AdvisorOutputIndex = schemas.Ptr(outputIndex)
+		state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
+
+		item := &schemas.ResponsesMessage{
+			ID:     chunk.ContentBlock.ID,
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeAdvisorCall),
+			Status: schemas.Ptr("in_progress"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: chunk.ContentBlock.ID,
+				Name:   schemas.Ptr(string(AnthropicToolNameAdvisor)),
+			},
+		}
+
+		return []*schemas.BifrostResponsesStreamResponse{{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			Item:           item,
+		}}
+	}
+
+	// Handle advisor_tool_result block (arrives complete in one event).
+	// Store it; the output_item.done is emitted on its content_block_stop.
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeAdvisorToolResult &&
+		chunk.ContentBlock.ToolUseID != nil {
+
+		if chunk.Index != nil {
+			state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeAdvisorToolResult
+		}
+		if state.AdvisorToolID != nil && *state.AdvisorToolID == *chunk.ContentBlock.ToolUseID {
+			state.AdvisorResult = chunk.ContentBlock
+		}
+		return nil
+	}
+
+	// Handle code-execution server_tool_use (bash / text_editor / python).
+	// The input JSON is accumulated; the decoded code is emitted on
+	// content_block_stop (Anthropic streams JSON, OpenAI streams raw code).
+	if chunk.ContentBlock.Type == AnthropicContentBlockTypeServerToolUse &&
+		chunk.ContentBlock.Name != nil &&
+		isAnthropicCodeExecutionToolName(*chunk.ContentBlock.Name) &&
+		chunk.ContentBlock.ID != nil {
+
+		state.SeenRealToolCall = true
+		state.beginInputJSONBuffer(chunk.Index, anthropicInputJSONBufferCodeExec)
+		state.CodeExecToolID = chunk.ContentBlock.ID
+		state.CodeExecToolName = chunk.ContentBlock.Name
+		state.CodeExecOutputIndex = schemas.Ptr(outputIndex)
+		state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
+
+		item := &schemas.ResponsesMessage{
+			ID:     chunk.ContentBlock.ID,
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeCodeInterpreterCall),
+			Status: schemas.Ptr("in_progress"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                           chunk.ContentBlock.ID,
+				ResponsesCodeInterpreterToolCall: &schemas.ResponsesCodeInterpreterToolCall{},
+				// Carry the sub-tool name so the reverse converter can
+				// reconstruct the correct server_tool_use name at this start.
+				ResponsesCodeExecutionCall: &schemas.ResponsesCodeExecutionCall{ToolName: *chunk.ContentBlock.Name},
+			},
+		}
+
+		return []*schemas.BifrostResponsesStreamResponse{
+			{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   chunk.Index,
+				Item:           item,
+			},
+			{
+				Type:           schemas.ResponsesStreamResponseTypeCodeInterpreterCallInProgress,
+				SequenceNumber: sequenceNumber + 1,
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ItemID:         chunk.ContentBlock.ID,
+			},
+		}
+	}
+
+	// Handle code-execution result block (arrives complete in one event).
+	// Store it; the output_item.done is emitted on its content_block_stop.
+	if (chunk.ContentBlock.Type == AnthropicContentBlockTypeCodeExecutionToolResult ||
+		chunk.ContentBlock.Type == AnthropicContentBlockTypeBashCodeExecutionToolResult ||
+		chunk.ContentBlock.Type == AnthropicContentBlockTypeTextEditorCodeExecutionToolResult) &&
+		chunk.ContentBlock.ToolUseID != nil {
+
+		if chunk.Index != nil {
+			state.ContentIndexToBlockType[*chunk.Index] = chunk.ContentBlock.Type
+		}
+		if state.CodeExecToolID != nil && *state.CodeExecToolID == *chunk.ContentBlock.ToolUseID {
+			state.CodeExecResult = chunk.ContentBlock
+		}
+		return nil
+	}
+
+	switch chunk.ContentBlock.Type {
+	case AnthropicContentBlockTypeCompaction:
+		// Compaction block - track it but don't emit yet (summary arrives in delta)
+		itemID := fmt.Sprintf("cmp_%d", outputIndex)
+		state.ItemIDs[outputIndex] = itemID
+
+		// Store cache control and tool_changes for later use when delta arrives
+		state.CompactionContentIndices[outputIndex] = chunk.ContentBlock.CacheControl
+		if changes := convertAnthropicToolChangesToBifrost(chunk.ContentBlock.ToolChanges); len(changes) > 0 {
+			if state.CompactionToolChanges == nil {
+				state.CompactionToolChanges = make(map[int][]schemas.ResponsesMessageContentBlock)
+			}
+			state.CompactionToolChanges[outputIndex] = changes
+		}
+
+		// Track in ContentIndexToBlockType so content_block_stop skips generic done
+		if chunk.Index != nil {
+			state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeCompaction
+		}
+
+		// Don't emit output_item.added yet - wait for the delta with actual summary
+		return nil
+	case AnthropicContentBlockTypeFallback:
+		// Fallback boundary marker - no deltas follow, so emit the complete
+		// item (added + done) here from the start event's from/to models.
+		itemID := fmt.Sprintf("fb_%d", outputIndex)
+		state.ItemIDs[outputIndex] = itemID
+		if chunk.Index != nil {
+			state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeFallback
+		}
+		messageType := schemas.ResponsesMessageTypeMessage
+		fbRole := schemas.ResponsesInputMessageRoleAssistant
+		fallback := &schemas.ResponsesOutputMessageContentFallback{}
+		if chunk.ContentBlock.From != nil {
+			fallback.FromModel = chunk.ContentBlock.From.Model
+		}
+		if chunk.ContentBlock.To != nil {
+			fallback.ToModel = chunk.ContentBlock.To.Model
+		}
+		if chunk.ContentBlock.Trigger != nil {
+			fallback.TriggerType = chunk.ContentBlock.Trigger.Type
+			fallback.TriggerCategory = chunk.ContentBlock.Trigger.Category
+		}
+		item := &schemas.ResponsesMessage{
+			ID:     schemas.Ptr(itemID),
+			Status: schemas.Ptr("completed"),
+			Type:   &messageType,
+			Role:   &fbRole,
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:                                  schemas.ResponsesOutputMessageContentTypeFallback,
+					ResponsesOutputMessageContentFallback: fallback,
+				}},
+			},
+		}
+		return []*schemas.BifrostResponsesStreamResponse{
+			{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: sequenceNumber,
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   chunk.Index,
+				Item:           item,
+			},
+			{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: sequenceNumber + 1,
+				OutputIndex:    schemas.Ptr(outputIndex),
+				ContentIndex:   chunk.Index,
+				Item:           item,
+			},
+		}
+	case AnthropicContentBlockTypeText:
+		// Text block - emit output_item.added with type "message"
+		messageType := schemas.ResponsesMessageTypeMessage
+		role := schemas.ResponsesInputMessageRoleAssistant
+
+		// Generate stable ID for text item
+		var itemID string
+		if state.MessageID == nil {
+			itemID = fmt.Sprintf("item_%d", outputIndex)
+		} else {
+			itemID = fmt.Sprintf("msg_%s_item_%d", *state.MessageID, outputIndex)
+		}
+		state.ItemIDs[outputIndex] = itemID
+
+		item := &schemas.ResponsesMessage{
+			ID:     schemas.Ptr(itemID),
+			Status: schemas.Ptr("in_progress"),
+			Type:   &messageType,
+			Role:   &role,
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{}, // Empty blocks slice for mutation support
+			},
+		}
+
+		// Track that this content index is a text block
+		if chunk.Index != nil {
+			state.TextContentIndices[*chunk.Index] = true
+		}
+
+		var responses []*schemas.BifrostResponsesStreamResponse
+
+		// Emit output_item.added
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			Item:           item,
+		})
+
+		// Emit content_part.added with empty output_text part
+		emptyText := ""
+		part := &schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesOutputMessageContentTypeText,
+			Text: &emptyText,
+			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+				LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+				Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+			},
+		}
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			ItemID:         &itemID,
+			Part:           part,
+		})
+
+		return responses
+	case AnthropicContentBlockTypeToolUse:
+		// Check if this is the structured output tool - if so, skip emitting tool call
+		if state.StructuredOutputToolName != "" && chunk.ContentBlock.Name != nil && *chunk.ContentBlock.Name == state.StructuredOutputToolName {
+			// Mark this output index for structured output handling
+			state.StructuredOutputIndex = &outputIndex
+
+			// Initialize argument buffer for accumulating the JSON
+			state.ToolArgumentBuffers[outputIndex] = ""
+
+			// Mark tool use blocks to prevent synthetic content_part.added events
+			if chunk.Index != nil {
+				state.TextContentIndices[*chunk.Index] = false
+			}
+
+			// Store item ID for this structured output
+			if chunk.ContentBlock.ID != nil {
+				state.ItemIDs[outputIndex] = *chunk.ContentBlock.ID
+			}
+
+			return nil
+		}
+
+		state.SeenRealToolCall = true
+		// Function call starting - emit output_item.added with type "function_call" and status "in_progress"
+		statusInProgress := "in_progress"
+		itemID := ""
+		if chunk.ContentBlock.ID != nil {
+			itemID = *chunk.ContentBlock.ID
+			state.ItemIDs[outputIndex] = itemID
+		}
+		item := &schemas.ResponsesMessage{
+			ID:     chunk.ContentBlock.ID,
+			Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			Status: &statusInProgress,
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:      chunk.ContentBlock.ID,
+				Name:        chunk.ContentBlock.Name,
+				ToolsetName: chunk.ContentBlock.ToolsetName,
+				Arguments:   schemas.Ptr(""), // Arguments will be filled by deltas
+			},
+		}
+
+		// Claude calling a client-run tool_search goes back as the caller's
+		// tool_search_call; its arguments arrive whole on output_item.done.
+		if restoreClientToolSearchCall(item, clientToolSearchFrom(ctx)) {
+			item.Status = &statusInProgress
+			item.Arguments = nil
+		}
+
+		// Initialize argument buffer for this tool call
+		state.ToolArgumentBuffers[outputIndex] = ""
+
+		// Store a cloned copy so later mutations (e.g. setting Arguments/Status
+		// to "completed") don't affect the already-emitted output_item.added event.
+		clonedItem := *item
+		clonedToolMsg := *item.ResponsesToolMessage
+		clonedItem.ResponsesToolMessage = &clonedToolMsg
+		state.OutputItems[outputIndex] = &clonedItem
+
+		// Mark tool use blocks to prevent synthetic content_part.added events
+		// This prevents extra content_block_stop events for tools like web_search
+		if chunk.Index != nil {
+			state.TextContentIndices[*chunk.Index] = false
+		}
+
+		return []*schemas.BifrostResponsesStreamResponse{{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			Item:           item,
+		}}
+	case AnthropicContentBlockTypeMCPToolUse:
+		state.SeenRealToolCall = true
+		// MCP tool call starting - emit output_item.added
+		itemID := ""
+		if chunk.ContentBlock.ID != nil {
+			itemID = *chunk.ContentBlock.ID
+			state.ItemIDs[outputIndex] = itemID
+		}
+		item := &schemas.ResponsesMessage{
+			ID:   chunk.ContentBlock.ID,
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				Name:      chunk.ContentBlock.Name,
+				Arguments: schemas.Ptr(""), // Arguments will be filled by deltas
+			},
+		}
+
+		// Set server name if present
+		if chunk.ContentBlock.ServerName != nil {
+			item.ResponsesToolMessage.ServerLabel = schemas.Ptr(*chunk.ContentBlock.ServerName)
+		}
+
+		// Initialize argument buffer for this MCP call and mark as MCP
+		state.ToolArgumentBuffers[outputIndex] = ""
+		state.MCPCallOutputIndices[outputIndex] = true
+
+		// Mark MCP tool use blocks to prevent synthetic content_part.added events
+		if chunk.Index != nil {
+			state.TextContentIndices[*chunk.Index] = false
+		}
+
+		return []*schemas.BifrostResponsesStreamResponse{{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			Item:           item,
+		}}
+	case AnthropicContentBlockTypeThinking:
+		// Thinking/reasoning block - emit output_item.added with type "reasoning"
+		messageType := schemas.ResponsesMessageTypeReasoning
+		role := schemas.ResponsesInputMessageRoleAssistant
+
+		// Generate stable ID for reasoning item
+		var itemID string
+		if state.MessageID == nil {
+			itemID = fmt.Sprintf("reasoning_%d", outputIndex)
+		} else {
+			itemID = fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
+		}
+		state.ItemIDs[outputIndex] = itemID
+
+		// Initialize reasoning structure
+		item := &schemas.ResponsesMessage{
+			ID:   &itemID,
+			Type: &messageType,
+			Role: &role,
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{},
+			},
+		}
+
+		// Track that this content index is a reasoning block
+		if chunk.Index != nil {
+			state.ReasoningContentIndices[*chunk.Index] = true
+		}
+
+		// Persist into OutputItems so content_block_stop can fold the
+		// accumulated text and signature into the matching output_item.done
+		// and response.completed carries the completed reasoning item.
+		itemCopy := *item
+		state.OutputItems[outputIndex] = &itemCopy
+
+		var responses []*schemas.BifrostResponsesStreamResponse
+
+		// Emit output_item.added
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			Item:           item,
+		})
+
+		// Emit content_part.added with empty reasoning_text part
+		emptyText := ""
+		part := &schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+			Text: &emptyText,
+		}
+		// Preserve signature in the content part if present
+		if chunk.ContentBlock.Signature != nil {
+			part.Signature = chunk.ContentBlock.Signature
+		}
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+			SequenceNumber: sequenceNumber + len(responses),
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			ItemID:         &itemID,
+			Part:           part,
+		})
+
+		return responses
+	case AnthropicContentBlockTypeRedactedThinking:
+		// Redacted thinking blocks arrive complete in content_block_start (no
+		// deltas follow; data-less blocks were already skipped above, before
+		// an output index was reserved). Surface the encrypted payload as a
+		// reasoning item with encrypted_content, mirroring the non-streaming
+		// converter, so streaming clients can replay it on the next turn;
+		// Anthropic rejects tool-use follow-ups whose latest assistant
+		// message dropped it.
+		messageType := schemas.ResponsesMessageTypeReasoning
+		role := schemas.ResponsesInputMessageRoleAssistant
+
+		// Generate stable ID for the reasoning item
+		var itemID string
+		if state.MessageID == nil {
+			itemID = fmt.Sprintf("reasoning_%d", outputIndex)
+		} else {
+			itemID = fmt.Sprintf("msg_%s_reasoning_%d", *state.MessageID, outputIndex)
+		}
+		state.ItemIDs[outputIndex] = itemID
+
+		item := &schemas.ResponsesMessage{
+			ID:   &itemID,
+			Type: &messageType,
+			Role: &role,
+			ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary:          []schemas.ResponsesReasoningSummary{},
+				EncryptedContent: chunk.ContentBlock.Data,
+			},
+		}
+
+		// Persist into OutputItems so the block's content_block_stop emits the
+		// matching output_item.done and response.completed carries the item.
+		itemCopy := *item
+		state.OutputItems[outputIndex] = &itemCopy
+
+		return []*schemas.BifrostResponsesStreamResponse{{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			SequenceNumber: sequenceNumber,
+			OutputIndex:    schemas.Ptr(outputIndex),
+			ContentIndex:   chunk.Index,
+			Item:           item,
+		}}
+	default:
+		// Send down an empty response only when integration type is anthropic
+		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
+			return []*schemas.BifrostResponsesStreamResponse{{
+				Type:           "",
+				SequenceNumber: sequenceNumber,
+			}}
+		}
+		return nil
+	}
 }
 
 // ToAnthropicResponsesStreamResponse converts a Bifrost Responses stream response
