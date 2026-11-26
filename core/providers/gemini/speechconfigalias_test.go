@@ -153,14 +153,14 @@ func TestSpeechRefusesAnUnsupportedResponseFormatAsACallerError(t *testing.T) {
 func TestToGeminiSpeechRequestAcceptsWavAndEmptyFormat(t *testing.T) {
 	voice := "Kore"
 	for _, format := range []string{"", "wav"} {
-		_, err := ToGeminiSpeechRequest(&schemas.BifrostSpeechRequest{
+		_, err := ToGeminiSpeechRequest(nil, &schemas.BifrostSpeechRequest{
 			Model:  "gemini-2.5-flash-preview-tts",
 			Input:  &schemas.SpeechInput{Input: "hello"},
 			Params: &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: &voice}, ResponseFormat: format},
 		})
 		require.NoError(t, err, "response_format %q", format)
 	}
-	_, err := ToGeminiSpeechRequest(&schemas.BifrostSpeechRequest{
+	_, err := ToGeminiSpeechRequest(nil, &schemas.BifrostSpeechRequest{
 		Model:  "gemini-2.5-flash-preview-tts",
 		Input:  &schemas.SpeechInput{Input: "hello"},
 		Params: &schemas.SpeechParameters{ResponseFormat: "mp3"},
@@ -173,7 +173,7 @@ func TestToGeminiSpeechRequestAcceptsWavAndEmptyFormat(t *testing.T) {
 func TestToGeminiSpeechRequestPutsInstructionsInFrontOfTheText(t *testing.T) {
 	voice := "Kore"
 	build := func(instructions string) string {
-		request, err := ToGeminiSpeechRequest(&schemas.BifrostSpeechRequest{
+		request, err := ToGeminiSpeechRequest(nil, &schemas.BifrostSpeechRequest{
 			Model:  "gemini-2.5-flash-preview-tts",
 			Input:  &schemas.SpeechInput{Input: "The report is ready."},
 			Params: &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: &voice}, Instructions: instructions},

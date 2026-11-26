@@ -89,8 +89,49 @@ func (request *GeminiGenerationRequest) ToBifrostSpeechRequest(ctx *schemas.Bifr
 	return bifrostReq
 }
 
+// defaultGeminiTTSVoice is the voice a request without one gets, as in LiteLLM
+// (litellm/llms/vertex_ai/text_to_speech/transformation.py, _DEFAULT_GEMINI_TTS_VOICE).
+const defaultGeminiTTSVoice = "Kore"
+
+// openAIToGeminiTTSVoices maps OpenAI's speech voices to the Gemini TTS voices LiteLLM maps them to
+// (litellm/llms/vertex_ai/gemini/vertex_and_google_ai_studio_gemini.py, OPENAI_TO_GEMINI_TTS_VOICES):
+// Gemini answers an OpenAI name with 400 "No matching speaker voice found".
+var openAIToGeminiTTSVoices = map[string]string{
+	"alloy":   "Kore",
+	"ash":     "Iapetus",
+	"ballad":  "Algieba",
+	"cedar":   "Achird",
+	"coral":   "Sulafat",
+	"echo":    "Charon",
+	"fable":   "Umbriel",
+	"marin":   "Despina",
+	"onyx":    "Orus",
+	"sage":    "Vindemiatrix",
+	"shimmer": "Achernar",
+	"verse":   "Puck",
+}
+
+// geminiTTSVoiceConfig is the voice config the Gemini body carries: a multi-speaker config as
+// sent, otherwise one voice, where an OpenAI name becomes its Gemini voice (recorded as
+// AdaptationVoice on ctx) and a missing voice becomes defaultGeminiTTSVoice. Any other name is a
+// Gemini voice and passes unchanged. params is never mutated: a fallback reuses it.
+func geminiTTSVoiceConfig(ctx *schemas.BifrostContext, params *schemas.SpeechParameters) *schemas.SpeechVoiceInput {
+	if params != nil && params.VoiceConfig != nil && len(params.VoiceConfig.MultiVoiceConfig) > 0 {
+		return params.VoiceConfig
+	}
+	voice := defaultGeminiTTSVoice
+	if params != nil && params.VoiceConfig != nil && params.VoiceConfig.Voice != nil && *params.VoiceConfig.Voice != "" {
+		voice = *params.VoiceConfig.Voice
+		if mapped, ok := openAIToGeminiTTSVoices[strings.ToLower(voice)]; ok {
+			voice = mapped
+			schemas.AddAdaptation(ctx, schemas.AdaptationVoice)
+		}
+	}
+	return &schemas.SpeechVoiceInput{Voice: &voice}
+}
+
 // ToGeminiSpeechRequest converts a BifrostSpeechRequest to a GeminiGenerationRequest
-func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGenerationRequest, error) {
+func ToGeminiSpeechRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGenerationRequest, error) {
 	if bifrostReq == nil {
 		return nil, fmt.Errorf("bifrostReq is nil")
 	}
@@ -123,12 +164,9 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 				},
 			},
 		}
-		// Add speech config to generation config if voice config is provided
+		voiceConfig := geminiTTSVoiceConfig(ctx, bifrostReq.Params)
+		addSpeechConfigToGenerationConfig(&geminiReq.GenerationConfig, voiceConfig)
 		if bifrostReq.Params != nil && bifrostReq.Params.VoiceConfig != nil {
-			// Handle both single voice and multi-voice configurations
-			if bifrostReq.Params.VoiceConfig.Voice != nil || len(bifrostReq.Params.VoiceConfig.MultiVoiceConfig) > 0 {
-				addSpeechConfigToGenerationConfig(&geminiReq.GenerationConfig, bifrostReq.Params.VoiceConfig)
-			}
 			geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		}
 	}

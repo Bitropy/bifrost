@@ -21,8 +21,8 @@ var vertexSpeechEncodings = map[string]string{
 }
 
 // toVertexGeminiSpeechRequest builds the Gemini TTS body for Vertex generateContent, which rejects contents without a role.
-func toVertexGeminiSpeechRequest(request *schemas.BifrostSpeechRequest) (*gemini.GeminiGenerationRequest, error) {
-	body, err := gemini.ToGeminiSpeechRequest(request)
+func toVertexGeminiSpeechRequest(ctx *schemas.BifrostContext, request *schemas.BifrostSpeechRequest) (*gemini.GeminiGenerationRequest, error) {
+	body, err := gemini.ToGeminiSpeechRequest(ctx, request)
 	if err != nil {
 		return nil, err
 	}

@@ -44,7 +44,7 @@ func TestToBifrostSpeechResponseWrapsOnlyRawPCM(t *testing.T) {
 // Vertex rejects a content without a role ("Please use a valid role: user, model");
 // AI Studio defaults it, so only the real Vertex API exposes the gap.
 func TestAudioRequestsCarryUserRole(t *testing.T) {
-	speech, err := ToGeminiSpeechRequest(&schemas.BifrostSpeechRequest{Model: "gemini-3.8-flash-tts", Input: &schemas.SpeechInput{Input: "hi"}})
+	speech, err := ToGeminiSpeechRequest(nil, &schemas.BifrostSpeechRequest{Model: "gemini-3.8-flash-tts", Input: &schemas.SpeechInput{Input: "hi"}})
 	require.NoError(t, err)
 	transcription := ToGeminiTranscriptionRequest(&schemas.BifrostTranscriptionRequest{Model: "gemini-3.5-transcribe", Input: &schemas.TranscriptionInput{File: []byte("RIFF____WAVE")}})
 
