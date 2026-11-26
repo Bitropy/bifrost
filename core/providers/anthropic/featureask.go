@@ -270,41 +270,62 @@ func MessagesAsk(body []byte, betas []string) FeatureAsk {
 	return ask
 }
 
-// ResponsesBodyPromises is the promise bits (inference_geo, allowed_callers, compaction_block) that
-// ResponsesAsk finds in the request a raw Responses body decodes to, read without decoding it, for
-// a route that forwards the body as sent. Allocation-free.
-func ResponsesBodyPromises(body []byte) Feature {
-	geo, callers, compaction := bytes.Contains(body, inferenceGeoKeyToken), bytes.Contains(body, allowedCallersKeyToken), bytes.Contains(body, compactionBlockTypeToken)
-	if !geo && !callers && !compaction {
-		return 0
+// ResponsesBodyAsk is ResponsesAsk for a raw Responses body, read without decoding it: the
+// top-level members the Responses decode leaves in ExtraParams (container, task_budget and the
+// raw strip's paths), context_management, its tools and its input items' content blocks.
+// Allocation-free when the body asks for nothing.
+func ResponsesBodyAsk(body []byte, betas []string) FeatureAsk {
+	ask := askBetas(betas)
+	if len(body) == 0 {
+		return ask
 	}
 	doc := bytesAsString(body)
-	var out Feature
-	if geo {
-		out |= when(RawMeaningful(gjson.Get(doc, "inference_geo")), FeatureInferenceGeo)
+	ask.addRawContainer(gjson.Get(doc, "container"))
+	ask.Features |= when(RawMeaningful(gjson.Get(doc, "task_budget")), FeatureTaskBudget)
+	for _, m := range rawMemberFeatures {
+		ask.Features |= when(RawMeaningful(gjson.Get(doc, m.path)), m.feature)
 	}
-	if callers {
-		gjson.Get(doc, "tools").ForEach(func(_, tool gjson.Result) bool {
-			out |= when(RawMeaningful(tool.Get("allowed_callers")), FeatureAllowedCallers)
-			return true
-		})
+	if cm := gjson.Get(doc, "context_management"); RawMeaningful(cm) {
+		ask.Features |= FeatureContextManagement
+		ask.ContextEdits |= rawContextEdits(cm)
 	}
-	if compaction {
+	gjson.Get(doc, "tools").ForEach(func(_, tool gjson.Result) bool {
+		ask.Features |= toolFlags(rawPresent(tool.Get("defer_loading")), RawMeaningful(tool.Get("allowed_callers")),
+			RawMeaningful(tool.Get("input_examples")), rawPresent(tool.Get("eager_input_streaming")), RawMeaningful(tool.Get("cache_control.scope")))
+		if t := schemas.ResponsesToolType(tool.Get("type").Str); isResponsesServerTool(t) {
+			ask.Features |= FeatureServerTool
+			ask.ServerTools = append(ask.ServerTools, rawResponsesServerToolType(t, tool))
+		}
+		return true
+	})
+	if bytes.Contains(body, cacheControlScopeKeyToken) || bytes.Contains(body, fallbackBlockTypeToken) ||
+		bytes.Contains(body, compactionBlockTypeToken) || mayCarryToolChangeBlocks(body) {
 		gjson.Get(doc, "input").ForEach(func(_, item gjson.Result) bool {
 			item.Get("content").ForEach(func(_, block gjson.Result) bool {
-				out |= when(block.Get("type").Str == string(schemas.ResponsesOutputMessageContentTypeCompaction), FeatureCompactionBlock)
+				ask.Features |= replayBlockFeatures(block) | when(RawMeaningful(block.Get("cache_control.scope")), FeatureCacheControlScope)
 				return true
 			})
 			return true
 		})
 	}
-	return out
+	return ask
 }
 
-var (
-	inferenceGeoKeyToken   = []byte(`"inference_geo"`)
-	allowedCallersKeyToken = []byte(`"allowed_callers"`)
-)
+// rawResponsesServerToolType is responsesServerToolType for a raw tool: its client-selected
+// version when it has one, else its Responses type.
+func rawResponsesServerToolType(t schemas.ResponsesToolType, tool gjson.Result) string {
+	var version string
+	switch t {
+	case schemas.ResponsesToolTypeWebSearch:
+		version = tool.Get("web_search_version").Str
+	case schemas.ResponsesToolTypeWebFetch:
+		version = tool.Get("web_fetch_version").Str
+	}
+	if version != "" {
+		return version
+	}
+	return string(t)
+}
 
 // rawMemberFeatures are the top-level member paths the raw strip gates one feature at, other than
 // container and context_management, whose bit depends on the value.

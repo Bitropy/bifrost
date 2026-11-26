@@ -523,9 +523,9 @@ func responsesWireBody(t *testing.T, req *schemas.BifrostResponsesRequest) []byt
 	return body
 }
 
-// The raw-body promise detector agrees with ResponsesAsk on every feature row: a promise row
-// yields its bit, every other row none.
-func TestResponsesBodyPromises_AgreesWithResponsesAsk(t *testing.T) {
+// The raw-body detector agrees with ResponsesAsk on every feature row: the same features, context
+// edits and server tools from the body the request decodes from.
+func TestResponsesBodyAsk_AgreesWithResponsesAsk(t *testing.T) {
 	for _, row := range featureRows() {
 		for _, raw := range []bool{false, true} {
 			if (raw && len(row.raw) == 0) || (!raw && row.responses == nil) {
@@ -533,28 +533,33 @@ func TestResponsesBodyPromises_AgreesWithResponsesAsk(t *testing.T) {
 			}
 			t.Run(row.feature.First()+map[bool]string{false: "/typed", true: "/raw"}[raw], func(t *testing.T) {
 				req := featureResponsesRequest(row, schemas.OpenAI, "gpt-4.1", raw)
-				want := ResponsesAsk(req, nil).Features & responsesPromises
-				assert.Equal(t, row.feature&responsesPromises, want, "the row asks its own promise")
-				assert.Equal(t, want, ResponsesBodyPromises(responsesWireBody(t, req)))
+				want := ResponsesAsk(req, row.betas)
+				got := ResponsesBodyAsk(responsesWireBody(t, req), row.betas)
+				assert.Equal(t, want.Features, got.Features)
+				assert.Equal(t, want.ContextEdits, got.ContextEdits)
+				assert.Equal(t, want.ServerTools, got.ServerTools)
 			})
 		}
 	}
 	for _, empty := range []string{`null`, `""`, `[]`, `{}`} {
-		assert.Zero(t, ResponsesBodyPromises([]byte(`{"inference_geo":`+empty+`,"tools":[{"type":"function","name":"f","allowed_callers":`+empty+`}]}`)), empty)
+		assert.Zero(t, ResponsesBodyAsk([]byte(`{"inference_geo":`+empty+`,"tools":[{"type":"function","name":"f","allowed_callers":`+empty+`}]}`), nil).Features, empty)
 	}
-	assert.Zero(t, ResponsesBodyPromises([]byte(`{"input":"compaction \"compaction\""}`)), "a string input holds no block")
+	assert.Zero(t, ResponsesBodyAsk([]byte(`{"input":"compaction \"compaction\""}`), nil).Features, "a string input holds no block")
+	assert.Equal(t, FeatureAnthropicBeta, ResponsesBodyAsk([]byte(`{"model":"m","input":"hi"}`), []string{"b"}).Features, "the betas ask anthropic_beta")
 }
 
-// The raw-body promise detector allocates nothing, with and without a promise.
-func TestResponsesBodyPromises_AllocBudget(t *testing.T) {
+// The raw-body detector allocates nothing for a body that asks for nothing, nor for one that asks
+// only member-level features.
+func TestResponsesBodyAsk_AllocBudget(t *testing.T) {
 	plain := []byte(`{"model":"m","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"function","name":"f"}]}`)
 	asking := []byte(`{"model":"m","inference_geo":"us","input":[{"role":"assistant","content":[{"type":"compaction","summary":"s"}]}],"tools":[{"type":"function","name":"f","allowed_callers":["direct"]}]}`)
 	allocs := testing.AllocsPerRun(100, func() {
-		_ = ResponsesBodyPromises(plain)
-		_ = ResponsesBodyPromises(asking)
+		_ = ResponsesBodyAsk(plain, nil)
+		_ = ResponsesBodyAsk(asking, nil)
 	})
 	assert.Zero(t, allocs)
-	assert.Equal(t, responsesPromises, ResponsesBodyPromises(asking))
+	assert.Equal(t, responsesPromises, ResponsesBodyAsk(asking, nil).Features)
+	assert.Zero(t, ResponsesBodyAsk(plain, nil).Features)
 }
 
 // ExtraKeyFeature asks what ChatAsk asks of the same single ExtraParams key, on every feature
