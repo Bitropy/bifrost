@@ -350,6 +350,30 @@ func TestProviderBlocks_ResponsesUnplacedStream(t *testing.T) {
 		}
 	})
 
+	t.Run("thinking is always a reasoning item", func(t *testing.T) {
+		for _, block := range []string{`{"type":"thinking","signature":"sig"}`, `{"type":"thinking","thinking":"","signature":"sig"}`} {
+			unary, _ := convertResponsesAnswer(t, answerWith(block), true)
+			if got := strings.Join(outputTypes(unary.Output), ","); got != "reasoning" {
+				t.Fatalf("%s: unary output %s", block, got)
+			}
+			want := itemJSON(t, &unary.Output[0])
+			if gjson.Get(want, "content.0.signature").Str != "sig" {
+				t.Fatalf("%s: unary item lost the signature: %s", block, want)
+			}
+			frames := streamFramesWith("", `{"type":"thinking","thinking":""}`)
+			frames = append(frames[:2], append([]string{`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}`}, frames[2:]...)...)
+			events, last := responsesStreamFrom(t, frames)
+			dones := eventsOf(events, schemas.ResponsesStreamResponseTypeOutputItemDone)
+			// The two converters already differ on a reasoning item's role and summary
+			// members, for every thinking block; the reasoning content is what must agree.
+			want = gjson.Get(want, "content").Raw
+			if len(dones) != 1 || gjson.Get(itemJSON(t, dones[0].Item), "content").Raw != want ||
+				gjson.Get(itemJSON(t, &last.Response.Output[0]), "content").Raw != want {
+				t.Fatalf("%s: stream differs from unary\n want %s\n done %v", block, want, itemJSON(t, dones[0].Item))
+			}
+		}
+	})
+
 	t.Run("no event bytes records the loss", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		state := AcquireAnthropicResponsesStreamState()

@@ -8118,7 +8118,13 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 				bifrostMessages = append(bifrostMessages, item)
 			}
 		case AnthropicContentBlockTypeThinking:
-			if block.Thinking != nil {
+			// Every thinking block is a reasoning block, as on the stream: an absent text reads
+			// as empty and the signature is kept.
+			{
+				thinking := block.Thinking
+				if thinking == nil {
+					thinking = schemas.Ptr("")
+				}
 				// Collect reasoning blocks to create a single reasoning message
 				signature := block.Signature
 				if signature != nil {
@@ -8131,7 +8137,7 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 				}
 				reasoningContentBlocks = append(reasoningContentBlocks, schemas.ResponsesMessageContentBlock{
 					Type:      schemas.ResponsesOutputMessageContentTypeReasoning,
-					Text:      block.Thinking,
+					Text:      thinking,
 					Signature: signature,
 				})
 				folded = true
