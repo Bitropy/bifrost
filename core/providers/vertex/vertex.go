@@ -715,6 +715,31 @@ func (provider *VertexProvider) inlineDocumentURLsResponses(ctx *schemas.Bifrost
 	return nil
 }
 
+// vertexAnthropicPostBuild runs anthropic.HostPostBuild for Vertex over a built Claude chat body
+// (structured or raw passthrough) inside the request-marshal span, as the matching BifrostError.
+func vertexAnthropicPostBuild(ctx *schemas.BifrostContext, body []byte, model string) ([]byte, *schemas.BifrostError) {
+	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
+	body, err := anthropic.HostPostBuild(ctx, body, schemas.Vertex, schemas.ResolveCanonicalModel(ctx, model))
+	var refusal *schemas.UnsupportedOnTargetError
+	switch {
+	case errors.As(err, &refusal):
+		// The refusal is decided after the body is built, so the span itself succeeded.
+		if mt != nil {
+			mt.EndSpan(mh, schemas.SpanStatusOk, "")
+		}
+		return nil, providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
+	case err != nil:
+		if mt != nil {
+			mt.EndSpan(mh, schemas.SpanStatusError, err.Error())
+		}
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
+	}
+	if mt != nil {
+		mt.EndSpan(mh, schemas.SpanStatusOk, "")
+	}
+	return body, nil
+}
+
 // ChatCompletion performs a chat completion request to the Vertex API.
 // It supports both text and image content in messages.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
@@ -750,7 +775,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				var extraParams map[string]interface{}
 				var err error
 
-				if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+				if schemas.IsVertexGeminiModel(ctx, request.Model) {
 					reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
 					if err != nil {
 						return nil, err
@@ -794,7 +819,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+	if schemas.IsVertexGeminiModel(ctx, request.Model) {
 		gt, gh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 		if rawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && rawBody {
 			jsonBody = gemini.NormalizeRawGenerateContentRequestForCompatibility(ctx, jsonBody, schemas.Vertex, request.Model)
@@ -817,31 +842,8 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 	// Remap unsupported tool versions for Vertex (handles raw passthrough bodies)
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) && jsonBody != nil {
-		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
-		capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-		remappedBody, remapErr := anthropic.RemapRawToolVersionsForProviderReport(ctx, jsonBody, schemas.Vertex, capModel)
-		if remapErr != nil {
-			if mt != nil {
-				mt.EndSpan(mh, schemas.SpanStatusError, remapErr.Error())
-			}
-			return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
-		}
-		jsonBody = remappedBody
-
-		// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
-		var stripErr error
-		jsonBody, stripErr = anthropic.StripUnsupportedFieldsFromRawBodyReport(ctx, jsonBody, schemas.Vertex, capModel)
-		if stripErr != nil {
-			if mt != nil {
-				mt.EndSpan(mh, schemas.SpanStatusError, stripErr.Error())
-			}
-			return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
-		}
-		if mt != nil {
-			mt.EndSpan(mh, schemas.SpanStatusOk, "")
-		}
-		if refusal := anthropic.RefuseRemovedFeatures(ctx, schemas.Vertex); refusal != nil {
-			return nil, providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
+		if jsonBody, bifrostErr = vertexAnthropicPostBuild(ctx, jsonBody, request.Model); bifrostErr != nil {
+			return nil, bifrostErr
 		}
 	}
 
@@ -974,10 +976,9 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		anthropicResponse.SetRawBody(responseBody)
 		response := anthropicResponse.ToBifrostChatResponse(ctx)
 
-		response.ExtraFields = schemas.BifrostResponseExtraFields{
-			Latency:                 latency.Milliseconds(),
-			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
-		}
+		// Only the fields Vertex owns are set: the converter's (the served fallback model) stay.
+		response.ExtraFields.Latency = latency.Milliseconds()
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -990,7 +991,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		}
 
 		return response, nil
-	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+	} else if schemas.IsVertexGeminiModel(ctx, request.Model) {
 		geminiResponse := gemini.GenerateContentResponse{}
 
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &geminiResponse, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -1080,31 +1081,8 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 		// Remap unsupported tool versions for Vertex streaming (handles raw passthrough bodies)
 		if jsonData != nil {
-			mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
-			capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-			var remapErr error
-			jsonData, remapErr = anthropic.RemapRawToolVersionsForProviderReport(ctx, jsonData, schemas.Vertex, capModel)
-			if remapErr != nil {
-				if mt != nil {
-					mt.EndSpan(mh, schemas.SpanStatusError, remapErr.Error())
-				}
-				return nil, providerUtils.NewBifrostOperationError(remapErr.Error(), nil)
-			}
-
-			// Strip unsupported body fields for Vertex — covers both structured and raw passthrough paths.
-			var stripErr error
-			jsonData, stripErr = anthropic.StripUnsupportedFieldsFromRawBodyReport(ctx, jsonData, schemas.Vertex, capModel)
-			if stripErr != nil {
-				if mt != nil {
-					mt.EndSpan(mh, schemas.SpanStatusError, stripErr.Error())
-				}
-				return nil, providerUtils.NewBifrostOperationError(stripErr.Error(), nil)
-			}
-			if mt != nil {
-				mt.EndSpan(mh, schemas.SpanStatusOk, "")
-			}
-			if refusal := anthropic.RefuseRemovedFeatures(ctx, schemas.Vertex); refusal != nil {
-				return nil, providerUtils.NewBifrostUnsupportedOnTargetError(refusal)
+			if jsonData, bifrostErr = vertexAnthropicPostBuild(ctx, jsonData, request.Model); bifrostErr != nil {
+				return nil, bifrostErr
 			}
 		}
 
@@ -1147,7 +1125,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			provider.logger,
 			postHookSpanFinalizer,
 		)
-	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+	} else if schemas.IsVertexGeminiModel(ctx, request.Model) {
 		// Use Gemini-style streaming for Gemini models
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
@@ -1427,10 +1405,8 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		// Create final response
 		response := anthropicResponse.ToBifrostResponsesResponse(ctx)
 
-		response.ExtraFields = schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
-		}
-
+		// Only the fields Vertex owns are set: the converter's (the served fallback model) stay.
+		response.ExtraFields.Latency = latency.Milliseconds()
 		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1443,7 +1419,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		return response, nil
-	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+	} else if schemas.IsVertexGeminiModel(ctx, request.Model) {
 		jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
@@ -1687,7 +1663,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			provider.logger,
 			postHookSpanFinalizer,
 		)
-	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+	} else if schemas.IsVertexGeminiModel(ctx, request.Model) {
 		region := resolveVertexRegion(ctx, key)
 		if region == "" {
 			return nil, providerUtils.NewConfigurationError("region is not set in key config")
@@ -4726,7 +4702,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		completeURL = getVertexAnthropicCountTokensURL(provider.networkConfig.BaseURL, region, projectID, request.Model, resolveVertexForceSingleRegion(ctx, key), provider.logger)
-	} else if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
+	} else if schemas.IsVertexGeminiModel(ctx, request.Model) {
 		if key.Value.GetValue() != "" {
 			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
 		}

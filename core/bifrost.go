@@ -6264,16 +6264,20 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 	return true
 }
 
-// stampAdaptations copies the attempt's adaptation set from ctx onto resp's ExtraFields: the
-// unary response, or one stream chunk. The set is complete before the request is sent.
+// stampAdaptations copies the attempt's adaptation set and its stripped features from ctx onto
+// resp's ExtraFields: the unary response, or one stream chunk. Both are complete before the
+// request is sent.
 func stampAdaptations(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse) {
 	if resp == nil {
 		return
 	}
-	if a := schemas.AdaptationsFromContext(ctx); a != 0 {
-		if ef := resp.GetExtraFields(); ef != nil {
-			ef.Adaptations = a
-		}
+	a, f := schemas.AdaptationsFromContext(ctx), schemas.AdaptedFeaturesFromContext(ctx)
+	if a == 0 && f == 0 {
+		return
+	}
+	if ef := resp.GetExtraFields(); ef != nil {
+		ef.Adaptations = a
+		ef.AdaptedFeatures = f
 	}
 }
 

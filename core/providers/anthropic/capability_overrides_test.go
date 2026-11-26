@@ -327,7 +327,7 @@ func webSearchTypeFor(t *testing.T, model string) AnthropicToolType {
 	t.Helper()
 	caps := schemas.ResolveModelCaps(schemas.Anthropic, model)
 	tool := &schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch}
-	out := convertBifrostToolToAnthropic(caps, tool, schemas.Anthropic, false)
+	out := convertBifrostToolToAnthropic(nil, caps, tool, schemas.Anthropic, false)
 	require.NotNil(t, out)
 	require.NotNil(t, out.Type)
 	return *out.Type
@@ -337,7 +337,7 @@ func webFetchTypeFor(t *testing.T, model string) AnthropicToolType {
 	t.Helper()
 	caps := schemas.ResolveModelCaps(schemas.Anthropic, model)
 	tool := &schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebFetch}
-	out := convertBifrostToolToAnthropic(caps, tool, schemas.Anthropic, false)
+	out := convertBifrostToolToAnthropic(nil, caps, tool, schemas.Anthropic, false)
 	require.NotNil(t, out)
 	require.NotNil(t, out.Type)
 	return *out.Type

@@ -3417,6 +3417,12 @@ const (
 // These are executed server-side by OpenRouter and are not part of the OpenAI spec.
 const ResponsesToolTypeOpenRouterPrefix = "openrouter:"
 
+// NormalizeResponsesToolType is the canonical type a raw Responses tool type decodes to, for a
+// reader of a raw body that must classify a tool as the decode does.
+func NormalizeResponsesToolType(t ResponsesToolType) ResponsesToolType {
+	return normalizeResponsesToolType(t)
+}
+
 // normalizeResponsesToolType maps versioned/provider-specific tool type strings
 // to their canonical ResponsesToolType. For example, "web_search_20250305" → "web_search".
 // Returns the input unchanged if it's already canonical or unrecognized.

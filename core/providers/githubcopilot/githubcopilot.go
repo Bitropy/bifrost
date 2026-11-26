@@ -298,8 +298,7 @@ func (p *githubCopilotProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 
 	canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-	caps := schemas.ResolveModelCaps(p.GetProviderKey(), canonicalModel)
-	if !caps.SupportsResponsesEndpoint(schemas.IsOpenAIModelFamily(ctx, canonicalModel)) {
+	if !schemas.GithubCopilotServesResponses(ctx, p.GetProviderKey(), canonicalModel) {
 		chatResponse, bErr := p.ChatCompletion(ctx, key, request.ToChatRequest())
 		if bErr != nil {
 			return nil, bErr
@@ -361,8 +360,7 @@ func (p *githubCopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	}
 
 	canonicalModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-	caps := schemas.ResolveModelCaps(p.GetProviderKey(), canonicalModel)
-	if !caps.SupportsResponsesEndpoint(schemas.IsOpenAIModelFamily(ctx, canonicalModel)) {
+	if !schemas.GithubCopilotServesResponses(ctx, p.GetProviderKey(), canonicalModel) {
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
 		return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 	}

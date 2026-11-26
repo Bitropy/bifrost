@@ -160,22 +160,14 @@ func convertServerToolToAnthropic(tool schemas.ChatTool, caps schemas.ModelCaps,
 	// Normalize computer-use family (computer / text_editor / bash) to the
 	// canonical {type, name} pair for the model's generation. Keeps callers
 	// from having to memorize Anthropic's per-generation tool naming matrix.
-	if baseTool := computerUseBaseTool(typeStr); baseTool != "" {
-		generation := ComputerUseGeneration(caps)
-		if baseTool == "text_editor" {
-			generation = TextEditorGeneration(caps)
-		}
-		if wantType, wantName := NormalizedToolSpec(generation, baseTool); wantType != "" {
-			typeStr = wantType
-			if toolName == "" || toolName != wantName {
-				toolName = wantName
-			}
-			// A toolset is named by its type alone, so it is the one entry that
-			// legitimately carries no name and must skip the guard below.
-			if wantName == "" {
-				atype := AnthropicToolType(typeStr)
-				return AnthropicTool{Type: &atype, CacheControl: tool.CacheControl}, true
-			}
+	if wantType, wantName := normalizedComputerUseSpec(caps, typeStr); wantType != "" {
+		typeStr = wantType
+		toolName = wantName
+		// A toolset is named by its type alone, so it is the one entry that
+		// legitimately carries no name and must skip the guard below.
+		if wantName == "" {
+			atype := AnthropicToolType(typeStr)
+			return AnthropicTool{Type: &atype, CacheControl: tool.CacheControl}, true
 		}
 	}
 	if toolName == "" {

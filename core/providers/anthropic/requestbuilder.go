@@ -466,8 +466,8 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
-				// The typed strip never saw the merged keys; in refusal mode they are gated here.
-				if schemas.FeatureRefusal(ctx) {
+				// The typed strip never saw the merged keys; under a refuse mask they are gated here.
+				if schemas.RefuseMaskFromContext(ctx) != 0 {
 					jsonBody, err = stripMergedBody(ctx, jsonBody, cfg.Provider, capModel)
 					if err != nil {
 						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
@@ -807,8 +807,8 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
-				// The typed strip never saw the merged keys; in refusal mode they are gated here.
-				if schemas.FeatureRefusal(ctx) {
+				// The typed strip never saw the merged keys; under a refuse mask they are gated here.
+				if schemas.RefuseMaskFromContext(ctx) != 0 {
 					jsonBody, err = stripMergedBody(ctx, jsonBody, cfg.Provider, capModel)
 					if err != nil {
 						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)

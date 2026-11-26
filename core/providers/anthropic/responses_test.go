@@ -13,6 +13,8 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWebSearchStreamQueryVariants(t *testing.T) {
@@ -1727,7 +1729,7 @@ func TestConvertBifrostToolsToAnthropicDropsMCPAllowedCallers(t *testing.T) {
 		{"programmatic", []string{"programmatic"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tools, servers, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{mcpTool(tc.callers)}, schemas.Anthropic)
+			tools, servers, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{mcpTool(tc.callers)}, schemas.Anthropic)
 			if err != nil {
 				t.Fatalf("convert failed: %v", err)
 			}
@@ -1747,7 +1749,7 @@ func TestConvertBifrostToolsToAnthropicDropsMCPAllowedCallers(t *testing.T) {
 	// The callers are dropped, so they must not reach the shared code-execution
 	// resolution either: no version raise, and no failure on a legacy version.
 	t.Run("does not raise the code execution version", func(t *testing.T) {
-		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+		tools, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{
 			{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
 			mcpTool([]string{"programmatic"}),
 		}, schemas.Anthropic)
@@ -1758,7 +1760,7 @@ func TestConvertBifrostToolsToAnthropicDropsMCPAllowedCallers(t *testing.T) {
 	})
 
 	t.Run("does not trip the legacy version guard", func(t *testing.T) {
-		_, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+		_, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{
 			{
 				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
 				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250522")},
@@ -1772,7 +1774,7 @@ func TestConvertBifrostToolsToAnthropicDropsMCPAllowedCallers(t *testing.T) {
 
 	// A real programmatic caller alongside an mcp tool is still translated.
 	t.Run("a function tool beside it still gets its caller", func(t *testing.T) {
-		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+		tools, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{
 			mcpTool([]string{"programmatic"}),
 			{
 				Type:                  schemas.ResponsesToolTypeFunction,
@@ -1801,7 +1803,7 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 	}
 
 	t.Run("version-less code_interpreter is raised to 20260120", func(t *testing.T) {
-		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+		tools, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{
 			{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
 			queryTool,
 		}, schemas.Anthropic)
@@ -1813,7 +1815,7 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 	})
 
 	t.Run("explicit version is matched, not raised", func(t *testing.T) {
-		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+		tools, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{
 			{
 				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
 				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250825")},
@@ -1828,7 +1830,7 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 	})
 
 	t.Run("no code execution tool falls back to the auto-injected version", func(t *testing.T) {
-		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{queryTool}, schemas.Anthropic)
+		tools, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{queryTool}, schemas.Anthropic)
 		if err != nil {
 			t.Fatalf("convert failed: %v", err)
 		}
@@ -1838,7 +1840,7 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 	// Legacy 20250522 has no allowed_callers value at all. Dropping the caller would
 	// hand the model a tool the request said was sandbox-only, so this fails instead.
 	t.Run("legacy 20250522 is rejected rather than silently widened", func(t *testing.T) {
-		_, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+		_, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{
 			{
 				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
 				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr("code_execution_20250522")},
@@ -1868,7 +1870,7 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 	}
 
 	t.Run("a dropped legacy interpreter with a programmatic caller does not block the request", func(t *testing.T) {
-		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{webSearch, legacyInterpreter("programmatic")}, schemas.Anthropic)
+		tools, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{webSearch, legacyInterpreter("programmatic")}, schemas.Anthropic)
 		if err != nil {
 			t.Fatalf("convert failed: %v", err)
 		}
@@ -1878,7 +1880,7 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 	})
 
 	t.Run("a dropped legacy interpreter does not decide another tool's caller", func(t *testing.T) {
-		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{webSearch, legacyInterpreter(), queryTool}, schemas.Anthropic)
+		tools, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{webSearch, legacyInterpreter(), queryTool}, schemas.Anthropic)
 		if err != nil {
 			t.Fatalf("convert failed: %v", err)
 		}
@@ -1886,7 +1888,7 @@ func TestConvertBifrostToolsToAnthropicTranslatesProgrammaticCaller(t *testing.T
 	})
 
 	t.Run("a request without programmatic callers is untouched", func(t *testing.T) {
-		tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{
+		tools, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{
 			{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{}},
 			{
 				Type:                  schemas.ResponsesToolTypeFunction,
@@ -2576,7 +2578,7 @@ func TestConvertBifrostToolsToAnthropic_ServerToolCacheControl(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			caps := schemas.ResolveModelCaps(schemas.Anthropic, tc.model)
-			tools, _, err := convertBifrostToolsToAnthropic(caps, []schemas.ResponsesTool{responsesToolFromJSON(t, tc.raw)}, schemas.Anthropic)
+			tools, _, err := convertBifrostToolsToAnthropic(nil, caps, []schemas.ResponsesTool{responsesToolFromJSON(t, tc.raw)}, schemas.Anthropic)
 			if err != nil {
 				t.Fatalf("convert failed: %v", err)
 			}
@@ -2614,7 +2616,7 @@ func TestServerToolCacheControlStripLeavesSourceUnchanged(t *testing.T) {
 	t.Run("responses tool to anthropic", func(t *testing.T) {
 		source := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch,
 			CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, Scope: schemas.Ptr("global")}}
-		tools, _, err := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Vertex, model), []schemas.ResponsesTool{source}, schemas.Vertex)
+		tools, _, err := convertBifrostToolsToAnthropic(nil, schemas.ResolveModelCaps(schemas.Vertex, model), []schemas.ResponsesTool{source}, schemas.Vertex)
 		if err != nil || len(tools) != 1 {
 			t.Fatalf("convert: %v, %+v", err, tools)
 		}
@@ -2632,7 +2634,7 @@ func TestServerToolCacheControlStripLeavesSourceUnchanged(t *testing.T) {
 			t.Fatalf("unmarshal: %v", err)
 		}
 		bifrostReq := req.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
-		tools, _, err := convertBifrostToolsToAnthropic(schemas.ResolveModelCaps(schemas.Vertex, model), bifrostReq.Params.Tools, schemas.Vertex)
+		tools, _, err := convertBifrostToolsToAnthropic(nil, schemas.ResolveModelCaps(schemas.Vertex, model), bifrostReq.Params.Tools, schemas.Vertex)
 		if err != nil || len(tools) != 1 {
 			t.Fatalf("convert: %v, %+v", err, tools)
 		}
@@ -4108,7 +4110,7 @@ func BenchmarkSearchToolVersionConversion(b *testing.B) {
 		tool := &schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch}
 		b.ReportAllocs()
 		for b.Loop() {
-			_ = convertBifrostToolToAnthropic(caps, tool, schemas.Anthropic, false)
+			_ = convertBifrostToolToAnthropic(nil, caps, tool, schemas.Anthropic, false)
 		}
 	})
 	b.Run("roundtrip", func(b *testing.B) {
@@ -4116,7 +4118,7 @@ func BenchmarkSearchToolVersionConversion(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			neutral := convertAnthropicToolToBifrost(tool)
-			_ = convertBifrostToolToAnthropic(caps, neutral, schemas.Anthropic, false)
+			_ = convertBifrostToolToAnthropic(nil, caps, neutral, schemas.Anthropic, false)
 		}
 	})
 }
@@ -4129,7 +4131,7 @@ func TestSearchToolVersionDefaultsAndOpenAIWire(t *testing.T) {
 		{Type: schemas.ResponsesToolTypeWebFetch},
 		{Type: schemas.ResponsesToolTypeWebFetch, ResponsesToolWebFetch: &schemas.ResponsesToolWebFetch{Version: schemas.Ptr("")}},
 	} {
-		got := convertBifrostToolToAnthropic(caps, &tool, schemas.Anthropic, false)
+		got := convertBifrostToolToAnthropic(nil, caps, &tool, schemas.Anthropic, false)
 		want := AnthropicToolTypeWebSearch20260209
 		if tool.Type == schemas.ResponsesToolTypeWebFetch {
 			want = AnthropicToolTypeWebFetch20260309
@@ -4733,5 +4735,74 @@ func TestChatToResponses_ClaudeToolTurnTextKeepsCacheControl(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `{"type":"text","text":"reading","cache_control":{"type":"ephemeral"}}`) {
 		t.Fatalf("assistant text block lost its cache_control: %s", body)
+	}
+}
+
+// AC-3: a Responses web tool whose client-selected version the host remaps is sent downgraded and
+// recorded as tool_version at the tool actually sent, whether declared in tools[] or added by
+// value in a tool_addition block; a host without the remap records nothing.
+// webToolsSupplyCodeExecution resolves the same versions but takes no context, so it cannot record.
+func TestConvertBifrostToolToAnthropic_ReportsToolVersion(t *testing.T) {
+	webSearch := func(version string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch, ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{Version: schemas.Ptr(version)}}
+	}
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		version  string
+		wantType AnthropicToolType
+		want     Feature
+	}{
+		{"vertex remaps 20260209", schemas.Vertex, string(AnthropicToolTypeWebSearch20260209), AnthropicToolTypeWebSearch20250305, FeatureToolVersion},
+		{"vertex keeps 20250305", schemas.Vertex, string(AnthropicToolTypeWebSearch20250305), AnthropicToolTypeWebSearch20250305, 0},
+		{"anthropic keeps 20260209", schemas.Anthropic, string(AnthropicToolTypeWebSearch20260209), AnthropicToolTypeWebSearch20260209, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := schemas.ResolveModelCaps(tc.provider, "claude-sonnet-4-6")
+			tools := []schemas.ResponsesTool{webSearch(tc.version), webSearch(tc.version)}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			out := convertBifrostToolToAnthropic(ctx, caps, &tools[0], tc.provider, false)
+			require.NotNil(t, out)
+			require.NotNil(t, out.Type)
+			assert.Equal(t, tc.wantType, *out.Type)
+			assert.Equal(t, tc.want, RemovedFeatures(ctx))
+
+			ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			converted, _, err := convertBifrostToolsToAnthropic(ctx, caps, tools, tc.provider)
+			require.NoError(t, err)
+			require.Len(t, converted, 2)
+			assert.Equal(t, tc.want, RemovedFeatures(ctx), "two remapped tools record the one bit")
+
+			inline := webSearch(tc.version)
+			ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "claude-sonnet-4-6",
+				Input: []schemas.ResponsesMessage{
+					{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")}},
+					{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+						Type:       schemas.ResponsesInputMessageContentBlockTypeToolAddition,
+						ToolChange: &schemas.ResponsesToolChangeTarget{Type: schemas.ResponsesToolChangeTargetTypeToolDefinition, Definition: &inline},
+					}}}},
+				},
+				Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(64)},
+			})
+			require.NoError(t, err)
+			var sent *AnthropicToolChangeTarget
+			for _, msg := range req.Messages {
+				for _, block := range msg.Content.ContentBlocks {
+					if block.Type == AnthropicContentBlockTypeToolAddition {
+						sent = block.Tool
+					}
+				}
+			}
+			require.NotNil(t, sent)
+			require.NotNil(t, sent.Definition)
+			require.NotNil(t, sent.Definition.Type)
+			assert.Equal(t, tc.wantType, *sent.Definition.Type)
+			assert.Equal(t, tc.want, RemovedFeatures(ctx), "an inline web tool records its remap")
+		})
 	}
 }

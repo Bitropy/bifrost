@@ -120,7 +120,7 @@ func TestAdvisor_ResponsesRoundTrip(t *testing.T) {
 		t.Fatalf("neutral advisor caching not carried: %+v", bifrostTool.ResponsesToolAdvisor.Caching)
 	}
 
-	back := convertBifrostToolToAnthropic(schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6"), bifrostTool, schemas.Anthropic, false)
+	back := convertBifrostToolToAnthropic(nil, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6"), bifrostTool, schemas.Anthropic, false)
 	if back == nil || back.Type == nil || *back.Type != AnthropicToolTypeAdvisor20260301 {
 		t.Fatalf("rebuilt type wrong: %+v", back)
 	}

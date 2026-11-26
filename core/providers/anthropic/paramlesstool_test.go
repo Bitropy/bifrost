@@ -154,7 +154,7 @@ func TestConvertBifrostToolsToAnthropic_InputSchemaObjectRoot(t *testing.T) {
 					t.Fatalf("marshal parameters: %v", err)
 				}
 			}
-			converted, _, err := convertBifrostToolsToAnthropic(
+			converted, _, err := convertBifrostToolsToAnthropic(nil,
 				schemas.ResolveModelCaps(schemas.Anthropic, "claude-fable-5"),
 				[]schemas.ResponsesTool{tool},
 				schemas.Anthropic,

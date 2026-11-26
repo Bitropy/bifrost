@@ -458,7 +458,7 @@ const (
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers"          // map[string]string (set by provider handlers for response header forwarding)
 	BifrostContextKeyDroppedUnsupportedTools             BifrostContextKey = "bifrost-dropped-unsupported-tools"          // []string (set by provider request builders — tool type strings silently dropped because the target provider/model doesn't support them)
 	BifrostContextKeyAdaptations                         BifrostContextKey = "bifrost-adaptations"                        // Adaptation (ORed by request builders and the embedder — the attempt's adapted generic parameters; copied to ExtraFields.Adaptations)
-	BifrostContextKeyRemovedFeatures                     BifrostContextKey = "bifrost-removed-features"                   // anthropic.Feature (ORed by the Anthropic-family strips — explicit parameters the target cannot carry: removed, or for compaction_block forwarded as before)
+	BifrostContextKeyRemovedFeatures                     BifrostContextKey = "bifrost-removed-features"                   // AnthropicFeature (ORed by the Anthropic-family strips — explicit parameters the target cannot carry: removed, or for compaction_block forwarded as before)
 	BifrostContextKeyClientAnthropicBeta                 BifrostContextKey = "bifrost-client-anthropic-beta"              // []string (set by the embedder — the client's own anthropic-beta values; forwarded, and refused in refusal mode when the target lacks them)
 	BifrostContextKeyMCPAddedTools                       BifrostContextKey = "bifrost-mcp-added-tools"                    // []string (set by bifrost - DO NOT SET THIS MANUALLY)) - list of tools added to the request by MCP, all the tool are in the format "clientName-toolName"
 	BifrostContextKeyMCPInstructionsInjected             BifrostContextKey = "bifrost-mcp-instructions-injected"          // bool (set by bifrost - DO NOT SET THIS MANUALLY) - guards the agent loop from stacking the instructions block on every turn
@@ -2167,6 +2167,9 @@ type BifrostResponseExtraFields struct {
 	// Adaptations is the attempt's adaptation set (BifrostContextKeyAdaptations), on the unary
 	// response and on every stream chunk. Never serialized.
 	Adaptations Adaptation `json:"-"`
+	// AdaptedFeatures is the attempt's stripped explicit Anthropic parameters
+	// (AdaptedFeaturesFromContext), on the unary response and on every stream chunk. Never serialized.
+	AdaptedFeatures AnthropicFeature `json:"-"`
 	// ProviderBlockDrops counts the provider-block content a stream lost, on its final chunk.
 	// Never serialized.
 	ProviderBlockDrops ProviderBlockDrops `json:"-"`

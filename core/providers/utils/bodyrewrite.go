@@ -57,7 +57,7 @@ var ErrRequestBodyRewrite = errors.New("bifrost: request body rewrite aborted")
 type RequestBodyRewriter func(body []byte) (r io.Reader, size int64, err error)
 
 // RequestBodyRewriteHook carries a RequestBodyRewriter together with the call's
-// refusal mode (schemas.FeatureRefusal). An embedder stores a pointer to it under
+// refuse mask (schemas.RefuseMaskFromContext). An embedder stores a pointer to it under
 // schemas.BifrostContextKeyRequestBodyRewriter instead of a bare RequestBodyRewriter;
 // a nil Rewrite rewrites nothing.
 type RequestBodyRewriteHook = schemas.RequestBodyRewriteHook

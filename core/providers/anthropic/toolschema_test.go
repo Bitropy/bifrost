@@ -153,7 +153,7 @@ func TestAnthropicOpenAICompatibleToolPathsNormalizeRootOneOf(t *testing.T) {
 				Parameters: schema,
 			},
 		}
-		convertedTools, _, err := convertBifrostToolsToAnthropic(
+		convertedTools, _, err := convertBifrostToolsToAnthropic(nil,
 			schemas.ResolveModelCaps(schemas.Anthropic, "claude-fable-5"),
 			[]schemas.ResponsesTool{*tool},
 			schemas.Anthropic,
@@ -199,7 +199,7 @@ func TestNormalizeAnthropicToolInputSchemaPreservesAllOfPropertyConjunction(t *t
 	assertAnthropicPropertyComposition(t, chatTool.InputSchema, "name", "allOf", 2)
 
 	name := "constrained_name"
-	responseTools, _, err := convertBifrostToolsToAnthropic(
+	responseTools, _, err := convertBifrostToolsToAnthropic(nil,
 		schemas.ResolveModelCaps(schemas.Anthropic, "claude-fable-5"),
 		[]schemas.ResponsesTool{{
 			Type:                  schemas.ResponsesToolTypeFunction,
