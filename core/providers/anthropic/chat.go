@@ -1329,11 +1329,8 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 	textOffset := 0
 	// shared indexes reasoning details and provider blocks together, in content order.
 	shared := 0
-	rawContent, unmapped := rawResponseContent(response)
+	raw := rawAnswerContent{body: response.rawBody, n: len(response.Content)}
 	var providerBlocks []schemas.ChatProviderBlock
-	if unmapped > 0 {
-		providerBlocks = make([]schemas.ChatProviderBlock, 0, unmapped)
-	}
 
 	// Process content and tool calls
 	if response.Content != nil {
@@ -1349,8 +1346,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 					textOffset += len(*c.Text)
 					if c.Citations != nil {
 						annotations = appendAnthropicWebSearchAnnotations(annotations, c.Citations.TextCitations, start, textOffset, seenAnnotations)
-						if rawContent != nil {
-							annotations = appendRawProviderCitations(annotations, c.Citations.TextCitations, rawContent[i], start, textOffset)
+						if hasProviderCitation(c.Citations.TextCitations) {
+							if block, ok := raw.result(i); ok {
+								annotations = appendRawProviderCitations(annotations, c.Citations.TextCitations, block, start, textOffset)
+							}
 						}
 					}
 				}
@@ -1425,8 +1424,11 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			default:
 				// The raw bytes, never a re-marshal of the typed block: members core does not
 				// declare would be lost.
-				if rawContent != nil && rawContent[i].IsObject() {
-					providerBlocks = append(providerBlocks, schemas.ChatProviderBlock{Index: shared, Provider: schemas.ProviderBlockAnthropic, Block: json.RawMessage(rawContent[i].Raw)})
+				if block, ok := raw.at(i); ok {
+					if providerBlocks == nil {
+						providerBlocks = make([]schemas.ChatProviderBlock, 0, len(response.Content)-i)
+					}
+					providerBlocks = append(providerBlocks, schemas.ChatProviderBlock{Index: shared, Provider: schemas.ProviderBlockAnthropic, Block: block})
 					shared++
 				}
 			}
@@ -1806,17 +1808,10 @@ type AnthropicStreamState struct {
 	// pendingCitationRaw keeps, per open text block, the raw object of each provider
 	// citation in citation order. Created on the stream's first provider citation.
 	pendingCitationRaw map[int][]json.RawMessage
-	// openBlock is the unmapped block being buffered. Anthropic streams one content
-	// block at a time, so one record is enough; its index comes from
-	// nextReasoningDetailIdx, the counter reasoning details share with provider blocks.
-	openBlock openProviderBlock
-	// scratch holds the open block's start object and its folded deltas. Allocated on the
-	// stream's first unmapped block and reused for every later one.
-	scratch            *providerBlockScratch
-	providerBlockDrops schemas.ProviderBlockDrops
-	// eventData is the current event's undecoded data, set by the stream loop before each
-	// conversion; unmapped blocks are copied from it verbatim.
-	eventData []byte
+	providerBlockFold
+	// openShared is the open provider block's index in the counter reasoning details share
+	// with provider blocks.
+	openShared int
 }
 
 // NewAnthropicStreamState returns an initialised stream state for one streaming response.
@@ -1843,10 +1838,19 @@ func (state *AnthropicStreamState) reasoningDetailIndex(blockIndex int) int {
 }
 
 // ToBifrostChatCompletionStream converts an Anthropic stream event to a Bifrost Chat Completion Stream response
+// A caller here has no event bytes, so a block with no chat arm cannot be carried verbatim;
+// HandleAnthropicChatCompletionStreaming passes them.
 func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.BifrostContext, structuredOutputToolName string, state *AnthropicStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+	return chunk.toBifrostChatCompletionStream(ctx, structuredOutputToolName, state, nil)
+}
+
+// toBifrostChatCompletionStream is ToBifrostChatCompletionStream with the event's undecoded
+// bytes, which provider blocks and provider citations are copied from.
+func (chunk *AnthropicStreamEvent) toBifrostChatCompletionStream(ctx *schemas.BifrostContext, structuredOutputToolName string, state *AnthropicStreamState, eventData []byte) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
 	if state == nil {
 		state = NewAnthropicStreamState()
 	}
+	state.eventData = eventData
 	if state.contentBlockToToolCallIdx == nil {
 		state.contentBlockToToolCallIdx = make(map[int]int)
 	}

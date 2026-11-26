@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	"github.com/tidwall/gjson"
@@ -1563,6 +1564,7 @@ const (
 	ResponsesMessageTypeAdditionalTools      ResponsesMessageType = "additional_tools"
 	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call"         // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
 	ResponsesMessageTypeConfigurationUpdate  ResponsesMessageType = "configuration_update" // OpenAI mid-conversation reasoning effort change
+	ResponsesMessageTypeProviderBlock        ResponsesMessageType = "provider_block"       // a provider content block with no Responses item, carried verbatim
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -1638,7 +1640,47 @@ func isRawPreservedItem(t string) bool {
 	return t == string(ResponsesMessageTypeToolSearchCall) ||
 		t == string(ResponsesMessageTypeToolSearchOutput) ||
 		t == string(ResponsesMessageTypeAdditionalTools) ||
-		t == string(ResponsesMessageTypeConfigurationUpdate)
+		t == string(ResponsesMessageTypeConfigurationUpdate) ||
+		t == string(ResponsesMessageTypeProviderBlock)
+}
+
+// NewResponsesProviderBlock builds a provider_block item carrying block, one JSON object,
+// verbatim. The item is raw-preserved, so it encodes exactly as built; block is copied.
+func NewResponsesProviderBlock(id, provider string, block json.RawMessage) ResponsesMessage {
+	idJSON, _ := json.Marshal(id)
+	providerJSON, _ := json.Marshal(provider)
+	const (
+		head    = `{"type":"provider_block","id":`
+		pMember = `,"provider":`
+		bMember = `,"block":`
+		tail    = `,"content":[]}`
+	)
+	raw := make([]byte, 0, len(head)+len(idJSON)+len(pMember)+len(providerJSON)+len(bMember)+len(block)+len(tail))
+	raw = append(raw, head...)
+	raw = append(raw, idJSON...)
+	raw = append(append(raw, pMember...), providerJSON...)
+	raw = append(append(raw, bMember...), block...)
+	raw = append(raw, tail...)
+	t := ResponsesMessageTypeProviderBlock
+	return ResponsesMessage{ID: &id, Type: &t, rawPreserved: raw}
+}
+
+// ProviderBlock returns the provider and block of a provider_block item. block aliases the
+// item's bytes and is valid only while the item is; ok is false unless block is an object.
+func (m *ResponsesMessage) ProviderBlock() (provider string, block json.RawMessage, ok bool) {
+	if m == nil || m.Type == nil || *m.Type != ResponsesMessageTypeProviderBlock || len(m.rawPreserved) == 0 {
+		return "", nil, false
+	}
+	// A view, not a copy: gjson.GetBytes would copy every result.
+	s := unsafe.String(unsafe.SliceData(m.rawPreserved), len(m.rawPreserved))
+	b := gjson.Get(s, "block")
+	if !b.IsObject() || b.Index <= 0 {
+		return "", nil, false
+	}
+	if p := gjson.Get(s, "provider"); p.Type == gjson.String {
+		provider = p.Str
+	}
+	return provider, json.RawMessage(m.rawPreserved[b.Index : b.Index+len(b.Raw)]), true
 }
 
 // UnmarshalJSON preserves codex tool_search/additional_tools items verbatim

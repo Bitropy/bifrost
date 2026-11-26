@@ -1400,6 +1400,25 @@ func ChatMapsBlock(t AnthropicContentBlockType) bool {
 	return false
 }
 
+// ResponsesMapsBlock reports whether the Responses converters have an answer arm for a
+// response block of type t. Every other block, a type core does not know included, reaches
+// a Responses client as a provider_block item.
+func ResponsesMapsBlock(t AnthropicContentBlockType) bool {
+	switch t {
+	case AnthropicContentBlockTypeText, AnthropicContentBlockTypeImage, AnthropicContentBlockTypeDocument,
+		AnthropicContentBlockTypeContainerUpload, AnthropicContentBlockTypeThinking, AnthropicContentBlockTypeRedactedThinking,
+		AnthropicContentBlockTypeToolUse, AnthropicContentBlockTypeToolResult, AnthropicContentBlockTypeServerToolUse,
+		AnthropicContentBlockTypeWebSearchToolResult, AnthropicContentBlockTypeWebSearchToolResultError,
+		AnthropicContentBlockTypeWebFetchToolResult, AnthropicContentBlockTypeCodeExecutionToolResult,
+		AnthropicContentBlockTypeBashCodeExecutionToolResult, AnthropicContentBlockTypeTextEditorCodeExecutionToolResult,
+		AnthropicContentBlockTypeToolSearchToolResult, AnthropicContentBlockTypeAdvisorToolResult,
+		AnthropicContentBlockTypeMCPToolUse, AnthropicContentBlockTypeMCPToolResult,
+		AnthropicContentBlockTypeCompaction, AnthropicContentBlockTypeFallback:
+		return true
+	}
+	return false
+}
+
 // AnthropicToolCallerType identifies which agentic caller produced a tool
 // invocation. Appears on tool_use, server_tool_use, and every *_tool_result
 // block per Anthropic docs.

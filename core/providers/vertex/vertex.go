@@ -1403,6 +1403,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		// Create final response
+		anthropicResponse.SetRawBody(responseBody)
 		response := anthropicResponse.ToBifrostResponsesResponse(ctx)
 
 		// Only the fields Vertex owns are set: the converter's (the served fallback model) stay.

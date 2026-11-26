@@ -209,6 +209,9 @@ func responsesServerToolType(t *schemas.ResponsesTool) string {
 }
 
 func (ask *FeatureAsk) addResponsesItem(m *schemas.ResponsesMessage) {
+	if _, block, ok := m.ProviderBlock(); ok {
+		ask.Features |= replayBlockFeatures(gjson.Parse(bytesAsString(block)))
+	}
 	if m.Content == nil {
 		return
 	}
@@ -302,6 +305,9 @@ func ResponsesBodyAsk(body []byte, betas []string) FeatureAsk {
 	if bytes.Contains(body, cacheControlScopeKeyToken) || bytes.Contains(body, fallbackBlockTypeToken) ||
 		bytes.Contains(body, compactionBlockTypeToken) || mayCarryToolChangeBlocks(body) {
 		gjson.Get(doc, "input").ForEach(func(_, item gjson.Result) bool {
+			if item.Get("type").Str == string(schemas.ResponsesMessageTypeProviderBlock) {
+				ask.Features |= replayBlockFeatures(item.Get("block"))
+			}
 			item.Get("content").ForEach(func(_, block gjson.Result) bool {
 				ask.Features |= replayBlockFeatures(block) | when(RawMeaningful(block.Get("cache_control.scope")), FeatureCacheControlScope)
 				return true

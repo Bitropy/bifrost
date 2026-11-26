@@ -1436,8 +1436,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 			// Per-event mapping -> "convertor" (Convertor) stream phase.
 			convStart := time.Now()
-			streamState.eventData = eventDataBytes
-			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream(ctx, structuredOutputToolName, streamState)
+			response, bifrostErr, isLastChunk := event.toBifrostChatCompletionStream(ctx, structuredOutputToolName, streamState, eventDataBytes)
 			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1617,6 +1616,7 @@ func HandleAnthropicResponsesRequest(
 	}
 
 	// Create final response
+	response.SetRawBody(responseBody)
 	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := response.ToBifrostResponsesResponse(ctx)
 	if convTracer != nil {
@@ -2041,7 +2041,7 @@ func HandleAnthropicResponsesStream(
 			}
 
 			convCallStart := time.Now()
-			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(ctx, chunkIndex, streamState)
+			responses, bifrostErr, isLastChunk := event.toBifrostResponsesStream(ctx, chunkIndex, streamState, eventDataBytes)
 			schemas.AddStreamConvert(ctx, time.Since(convCallStart))
 			// Propagate message_delta emission flag to context so the output converter
 			// (ToAnthropicResponsesStreamResponse) can skip synthesizing a duplicate.
@@ -2115,6 +2115,7 @@ func HandleAnthropicResponsesStream(
 						}
 						setBedrockInvokeGuardrailOutcome(response.Response, invokeGuardrailAction, invokeGuardrailTrace)
 						response.Response.Usage = usage
+						response.ExtraFields.ProviderBlockDrops = streamState.providerBlockDrops
 						if servedServiceTier != nil {
 							response.Response.ServiceTier = servedServiceTier
 						}

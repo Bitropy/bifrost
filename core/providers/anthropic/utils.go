@@ -5646,7 +5646,7 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 // server_tool_use id and attaches the discovered tool names. Mirrors
 // attachWebSearchSourcesToCall: the call item and its result block arrive as two
 // separate content blocks, matched on server_tool_use.id == result.tool_use_id.
-func attachToolSearchReferencesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock) {
+func attachToolSearchReferencesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock) bool {
 	for i := len(bifrostMessages) - 1; i >= 0; i-- {
 		msg := &bifrostMessages[i]
 		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeToolSearchCall ||
@@ -5665,8 +5665,9 @@ func attachToolSearchReferencesToCall(bifrostMessages []schemas.ResponsesMessage
 			msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
 		}
 		msg.ResponsesToolMessage.ResponsesToolSearchCall = &schemas.ResponsesToolSearchCall{ToolReferences: refs}
-		return
+		return true
 	}
+	return false
 }
 
 // extractWebSearchSources extracts search sources from Anthropic content blocks.

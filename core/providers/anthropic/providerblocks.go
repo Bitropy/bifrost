@@ -18,32 +18,6 @@ func bytesAsString(b []byte) string {
 	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
-// rawResponseContent resolves the raw content array of the body handed over by SetRawBody,
-// and counts the unmapped blocks. It walks the body only when a decoded block is unmapped or
-// carries a provider citation, so an ordinary answer costs nothing.
-func rawResponseContent(response *AnthropicMessageResponse) ([]gjson.Result, int) {
-	if response.rawBody == nil {
-		return nil, 0
-	}
-	unmapped, cited := 0, false
-	for i := range response.Content {
-		b := &response.Content[i]
-		if !ChatMapsBlock(b.Type) {
-			unmapped++
-		} else if b.Citations != nil && hasProviderCitation(b.Citations.TextCitations) {
-			cited = true
-		}
-	}
-	if unmapped == 0 && !cited {
-		return nil, 0
-	}
-	raw := gjson.Get(bytesAsString(response.rawBody), "content").Array()
-	if len(raw) != len(response.Content) {
-		return nil, 0
-	}
-	return raw, unmapped
-}
-
 // appendRawProviderCitations appends a provider_citation annotation for each provider
 // citation of one text block, with the citation object copied from the block's raw bytes.
 func appendRawProviderCitations(out []schemas.ChatAssistantMessageAnnotation, cs []AnthropicTextCitation, raw gjson.Result, start, end int) []schemas.ChatAssistantMessageAnnotation {
@@ -127,163 +101,41 @@ func (state *AnthropicStreamState) keepRawCitation(blockIndex, s, e int) {
 	state.pendingCitationRaw[blockIndex] = append(state.pendingCitationRaw[blockIndex], raw)
 }
 
-// Stream folding: an unmapped block is buffered from its content_block_start and emitted
-// whole at its content_block_stop. The scratch holds the start object followed by the
-// value its deltas accumulate.
-const (
-	providerBlockClosed uint8 = iota
-	providerBlockOpen
-	providerBlockFoldInput   // input_json_delta: partial_json fragments of "input"
-	providerBlockFoldContent // compaction_delta: escaped string fragments of "content"
-)
-
-// providerBlockScratch sits behind a pointer so growing it is not a store into the stream
-// state itself, which escape analysis would read as the state's maps escaping.
-type providerBlockScratch struct{ b []byte }
-
-type openProviderBlock struct {
-	index, shared int
-	kind          uint8
-	objLen        int
-}
-
-// providerBlockEvent handles every event of an unmapped block, ahead of the typed
+// providerBlockEvent handles every event of a chat-unmapped block, ahead of the typed
 // conversion, and reports whether it did.
 func (state *AnthropicStreamState) providerBlockEvent(chunk *AnthropicStreamEvent) (*schemas.BifrostChatResponse, bool) {
-	if chunk.Index == nil {
-		return nil, false
-	}
-	open := state.openBlock.kind != providerBlockClosed && state.openBlock.index == *chunk.Index
-	switch chunk.Type {
-	case AnthropicStreamEventTypeContentBlockStart:
-		if chunk.ContentBlock == nil {
+	if chunk.Type == AnthropicStreamEventTypeContentBlockStart {
+		if chunk.ContentBlock == nil || chunk.Index == nil {
 			return nil, false
 		}
-		// The event yields one chunk and it belongs to the new block, so a block still
-		// open here, which Anthropic does not produce, is lost; it is counted.
-		if state.openBlock.kind != providerBlockClosed {
-			state.openBlock = openProviderBlock{}
-			state.providerBlockDrops.Interleaved++
-		}
+		state.interrupt()
 		if ChatMapsBlock(chunk.ContentBlock.Type) {
 			return nil, false
 		}
-		state.startProviderBlock(*chunk.Index)
+		if state.start(*chunk.Index) {
+			// The block's index comes from the counter reasoning details share with provider blocks.
+			state.openShared = state.nextReasoningDetailIdx
+			state.nextReasoningDetailIdx++
+		}
 		return nil, true
-	case AnthropicStreamEventTypeContentBlockDelta:
-		if open && chunk.Delta != nil {
-			state.foldProviderBlockDelta(chunk.Delta)
-			return nil, true
-		}
-	case AnthropicStreamEventTypeContentBlockStop:
-		if open {
-			return state.closeProviderBlock(), true
-		}
+	}
+	block, st := state.event(chunk)
+	switch st {
+	case foldConsumed:
+		return nil, true
+	case foldClosed:
+		blocks := []schemas.ChatProviderBlock{{Index: state.openShared, Provider: schemas.ProviderBlockAnthropic, Block: block}}
+		return &schemas.BifrostChatResponse{
+			Object: "chat.completion.chunk",
+			Choices: []schemas.BifrostResponseChoice{{
+				Index: 0,
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{ProviderBlocks: &blocks},
+				},
+			}},
+		}, true
 	}
 	return nil, false
-}
-
-// startProviderBlock opens an unmapped block from the event's raw content_block. Without
-// the event bytes there is nothing verbatim to copy, so the block is not tracked at all.
-func (state *AnthropicStreamState) startProviderBlock(blockIndex int) {
-	data := state.eventData
-	s, e := jsonMember(data, 0, len(data), "content_block")
-	if !isJSONObjectAt(data, s, e) {
-		return
-	}
-	state.openBlock = openProviderBlock{index: blockIndex, shared: state.nextReasoningDetailIdx, kind: providerBlockOpen, objLen: e - s}
-	state.nextReasoningDetailIdx++
-	if state.scratch == nil {
-		state.scratch = &providerBlockScratch{}
-	}
-	state.scratch.b = append(state.scratch.b[:0], data[s:e]...)
-}
-
-// foldProviderBlockDelta appends one delta of the open block to the scratch. A delta it
-// cannot fold, or one that would fold into a second member, is dropped and counted.
-func (state *AnthropicStreamState) foldProviderBlockDelta(delta *AnthropicStreamDelta) {
-	var kind uint8
-	switch delta.Type {
-	case AnthropicStreamDeltaTypeInputJSON:
-		if delta.PartialJSON != nil {
-			kind = providerBlockFoldInput
-		}
-	case AnthropicStreamDeltaTypeCompaction:
-		kind = providerBlockFoldContent
-	}
-	// The compaction fragment is kept escaped as sent, so the fragments concatenate
-	// into one JSON string.
-	data := state.eventData
-	ds, de := jsonMember(data, 0, len(data), "delta")
-	cs, ce := jsonMember(data, ds, de, "content")
-	if kind == providerBlockFoldContent && (cs < 0 || data[cs] != '"') {
-		kind = providerBlockClosed
-	}
-	if kind == providerBlockClosed || (state.openBlock.kind != providerBlockOpen && state.openBlock.kind != kind) {
-		state.providerBlockDrops.UnknownDelta++
-		return
-	}
-	if kind == providerBlockFoldContent && state.openBlock.kind == providerBlockOpen {
-		state.scratch.b = append(state.scratch.b, '"')
-	}
-	state.openBlock.kind = kind
-	if kind == providerBlockFoldInput {
-		state.scratch.b = append(state.scratch.b, *delta.PartialJSON...)
-	} else {
-		state.scratch.b = append(state.scratch.b, data[cs+1:ce-1]...)
-	}
-}
-
-// providerBlockFoldMember names the member a fold kind accumulates.
-func providerBlockFoldMember(kind uint8) string {
-	switch kind {
-	case providerBlockFoldInput:
-		return "input"
-	case providerBlockFoldContent:
-		return "content"
-	}
-	return ""
-}
-
-// closeProviderBlock assembles the open block and returns its one chunk: the start object
-// with the folded member set to the accumulated value. The splice is by hand, into one
-// sized allocation, because sjson's path handling costs two more allocations per block.
-func (state *AnthropicStreamState) closeProviderBlock() *schemas.BifrostChatResponse {
-	open := state.openBlock
-	state.openBlock = openProviderBlock{}
-	obj, acc := state.scratch.b[:open.objLen], state.scratch.b[open.objLen:]
-	member := providerBlockFoldMember(open.kind)
-	if open.kind == providerBlockFoldContent {
-		acc = append(acc, '"')
-	}
-
-	var block []byte
-	if member == "" || len(acc) == 0 {
-		block = bytes.Clone(obj)
-	} else if vs, ve := jsonMember(obj, 0, len(obj), member); vs > 0 {
-		block = make([]byte, 0, len(obj)-(ve-vs)+len(acc))
-		block = append(append(append(block, obj[:vs]...), acc...), obj[ve:]...)
-	} else {
-		end := bytes.LastIndexByte(obj, '}')
-		block = make([]byte, 0, len(obj)+len(member)+4+len(acc))
-		block = append(block, obj[:end]...)
-		if len(bytes.TrimSpace(obj[1:end])) > 0 {
-			block = append(block, ',')
-		}
-		block = append(append(append(append(block, '"'), member...), `":`...), acc...)
-		block = append(block, obj[end:]...)
-	}
-
-	blocks := []schemas.ChatProviderBlock{{Index: open.shared, Provider: schemas.ProviderBlockAnthropic, Block: block}}
-	return &schemas.BifrostChatResponse{
-		Object: "chat.completion.chunk",
-		Choices: []schemas.BifrostResponseChoice{{
-			Index: 0,
-			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-				Delta: &schemas.ChatStreamResponseChoiceDelta{ProviderBlocks: &blocks},
-			},
-		}},
-	}
 }
 
 // anthropicReasoningBlock maps one replayed reasoning detail to its Anthropic block.
@@ -322,7 +174,7 @@ func appendAnthropicLeadingRun(dst []AnthropicContentBlock, msgIndex int, msg *s
 		entries = append(entries, entry{detail.Index, anthropicReasoningBlock(detail)})
 	}
 	for k, pb := range msg.ProviderBlocks {
-		block, err := replayedProviderBlock(pb)
+		block, err := replayedProviderBlock(pb.Provider, pb.Block)
 		if err != nil {
 			return nil, fmt.Errorf("messages[%d].provider_blocks[%d]: %w", msgIndex, k, err)
 		}
@@ -338,17 +190,19 @@ func appendAnthropicLeadingRun(dst []AnthropicContentBlock, msgIndex int, msg *s
 // replayedProviderBlock turns a replayed entry into a raw content block. Its type and
 // cache_control are lifted into the typed fields, so every typed strip and gate reads the
 // block as it reads a typed one, and cache_control has one home.
-func replayedProviderBlock(pb schemas.ChatProviderBlock) (AnthropicContentBlock, error) {
-	if pb.Provider != schemas.ProviderBlockAnthropic {
+// It reads decoded values, so an escaped provider name passes here; the router's check reads
+// the raw bytes and refuses it first. The router is the stricter on purpose: do not align it.
+func replayedProviderBlock(provider string, block json.RawMessage) (AnthropicContentBlock, error) {
+	if provider != schemas.ProviderBlockAnthropic {
 		return AnthropicContentBlock{}, fmt.Errorf("provider is not %q", schemas.ProviderBlockAnthropic)
 	}
-	raw := bytes.TrimSpace(pb.Block)
+	raw := bytes.TrimSpace(block)
 	if len(raw) == 0 || raw[0] != '{' {
 		return AnthropicContentBlock{}, fmt.Errorf("block is not a JSON object")
 	}
-	block := AnthropicContentBlock{Raw: json.RawMessage(raw)}
+	out := AnthropicContentBlock{Raw: json.RawMessage(raw)}
 	if t := gjson.GetBytes(raw, "type"); t.Type == gjson.String {
-		block.Type = AnthropicContentBlockType(t.Str)
+		out.Type = AnthropicContentBlockType(t.Str)
 	}
 	if cc := gjson.GetBytes(raw, "cache_control"); cc.Exists() {
 		if cc.Type != gjson.Null {
@@ -356,15 +210,15 @@ func replayedProviderBlock(pb schemas.ChatProviderBlock) (AnthropicContentBlock,
 			if err := sonic.UnmarshalString(cc.Raw, &c); err != nil {
 				return AnthropicContentBlock{}, fmt.Errorf("cache_control is not a cache control object")
 			}
-			block.CacheControl = &c
+			out.CacheControl = &c
 		}
 		stripped, err := providerUtils.DeleteJSONField(raw, "cache_control")
 		if err != nil {
 			return AnthropicContentBlock{}, fmt.Errorf("cache_control could not be moved")
 		}
-		block.Raw = stripped
+		out.Raw = stripped
 	}
-	return block, nil
+	return out, nil
 }
 
 func hasRawContentBlock(blocks []AnthropicContentBlock) bool {

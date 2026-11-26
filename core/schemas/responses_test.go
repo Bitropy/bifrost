@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"unsafe"
 )
 
 func TestAnthropicBillingHeaderExtraction(t *testing.T) {
@@ -2793,5 +2794,86 @@ func BenchmarkToolUsageUnmarshal(b *testing.B) {
 		if err := Unmarshal(body, &usage); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestProviderBlocks_ResponsesItemBytes(t *testing.T) {
+	t.Run("constructor golden", func(t *testing.T) {
+		block := []byte(`{"type":"future_block","x":[1,"a"]}`)
+		m := NewResponsesProviderBlock("pb_1", ProviderBlockAnthropic, block)
+		got, err := m.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		const want = `{"type":"provider_block","id":"pb_1","provider":"anthropic","block":{"type":"future_block","x":[1,"a"]},"content":[]}`
+		if string(got) != want {
+			t.Fatalf("bytes:\n got %s\nwant %s", got, want)
+		}
+		if m.ID == nil || *m.ID != "pb_1" || m.Type == nil || *m.Type != ResponsesMessageTypeProviderBlock {
+			t.Fatalf("typed fields not set: %+v", m)
+		}
+		block[2] = 'X'
+		if again, _ := m.MarshalJSON(); string(again) != want {
+			t.Fatalf("constructor aliases its block argument: %s", again)
+		}
+		provider, raw, ok := m.ProviderBlock()
+		if !ok || provider != ProviderBlockAnthropic || string(raw) != `{"type":"future_block","x":[1,"a"]}` {
+			t.Fatalf("ProviderBlock() = %q, %s, %v", provider, raw, ok)
+		}
+	})
+
+	t.Run("client item round-trips byte for byte", func(t *testing.T) {
+		const item = `{"type":"provider_block","provider":"anthropic","block":{"type":"tool_addition","a" : [1, {"b":null}]},"id":"x","content":[]}`
+		var m ResponsesMessage
+		if err := json.Unmarshal([]byte(item), &m); err != nil {
+			t.Fatal(err)
+		}
+		got, err := m.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != item {
+			t.Fatalf("round trip:\n got %s\nwant %s", got, item)
+		}
+		if _, b, ok := m.ProviderBlock(); !ok || string(b) != `{"type":"tool_addition","a" : [1, {"b":null}]}` {
+			t.Fatalf("ProviderBlock() = %s, %v", b, ok)
+		}
+	})
+
+	t.Run("deep copy shares no bytes", func(t *testing.T) {
+		m := NewResponsesProviderBlock("pb_1", ProviderBlockAnthropic, json.RawMessage(`{"type":"x"}`))
+		c := DeepCopyResponsesMessage(m)
+		if unsafe.SliceData(c.rawPreserved) == unsafe.SliceData(m.rawPreserved) {
+			t.Fatal("copy shares the item bytes")
+		}
+		a, _ := m.MarshalJSON()
+		b, _ := c.MarshalJSON()
+		if string(a) != string(b) {
+			t.Fatalf("copy differs: %s vs %s", a, b)
+		}
+	})
+
+	t.Run("accessor rejects non-items", func(t *testing.T) {
+		for _, item := range []string{
+			`{"type":"provider_block","provider":"anthropic","block":"x"}`,
+			`{"type":"provider_block","provider":"anthropic"}`,
+			`{"type":"provider_block","provider":"anthropic","block":null}`,
+			`{"type":"message","role":"user","content":"hi"}`,
+		} {
+			var m ResponsesMessage
+			if err := json.Unmarshal([]byte(item), &m); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, ok := m.ProviderBlock(); ok {
+				t.Errorf("ProviderBlock() ok on %s", item)
+			}
+		}
+	})
+}
+
+func TestProviderBlocks_ResponsesAccessor_AllocBudget(t *testing.T) {
+	m := NewResponsesProviderBlock("pb_1", ProviderBlockAnthropic, json.RawMessage(`{"type":"x","y":[1]}`))
+	if got := testing.AllocsPerRun(100, func() { _, _, _ = m.ProviderBlock() }); got != 0 {
+		t.Fatalf("ProviderBlock() allocates %v", got)
 	}
 }

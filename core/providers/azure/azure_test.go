@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	"github.com/maximhq/bifrost/core/internal/providerblocktest"
 	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/providers/typesafe"
@@ -1004,4 +1005,37 @@ func TestAzureOnYourDataKeepsCitationContext(t *testing.T) {
 			t.Errorf("delta.context seen %d times, want Azure's citation context once; chunks:\n%s", len(contexts), strings.Join(chunks, "\n"))
 		}
 	})
+}
+
+// The Azure Claude path reaches the shared Anthropic handler, which hands the converter
+// the raw body, so an unmapped block is carried.
+func TestProviderBlocks_ResponsesRawBodyCallers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(providerblocktest.FutureBlockAnswer))
+	}))
+	t.Cleanup(server.Close)
+	provider, err := azure.NewAzureProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10},
+	}, routingTestLogger{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := schemas.Key{
+		Value:          *schemas.NewSecretVar("k"),
+		Models:         []string{"*"},
+		AzureKeyConfig: &schemas.AzureKeyConfig{Endpoint: *schemas.NewSecretVar(server.URL)},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	resp, bifrostErr := provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Azure, Model: "claude-sonnet-4-6",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Responses: %s", bifrostErr.Error.Message)
+	}
+	if blocks := providerblocktest.CarriedProviderBlocks(t, resp.Output); len(blocks) != 1 || blocks[0] != providerblocktest.FutureBlock {
+		t.Fatalf("provider blocks %v", blocks)
+	}
 }
