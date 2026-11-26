@@ -953,12 +953,6 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 		if usage.OutputTokensDetails.NumSearchQueries == nil || n > *usage.OutputTokensDetails.NumSearchQueries {
 			usage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(n)
 		}
-		if usage.ToolUsage == nil {
-			usage.ToolUsage = &schemas.ToolUsage{}
-		}
-		if usage.ToolUsage.WebSearch == nil || n > usage.ToolUsage.WebSearch.NumRequests {
-			usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
-		}
 		if billedUsage != nil {
 			if billedUsage.CompletionTokensDetails == nil {
 				billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
@@ -966,13 +960,11 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			if billedUsage.CompletionTokensDetails.NumSearchQueries == nil || n > *billedUsage.CompletionTokensDetails.NumSearchQueries {
 				billedUsage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(n)
 			}
-			if billedUsage.ToolUsage == nil {
-				billedUsage.ToolUsage = &schemas.ToolUsage{}
-			}
-			if billedUsage.ToolUsage.WebSearch == nil || n > billedUsage.ToolUsage.WebSearch.NumRequests {
-				billedUsage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
-			}
 		}
+	}
+	foldServerToolUsage(&usage.ToolUsage, usageToProcess.ServerToolUse)
+	if billedUsage != nil {
+		foldServerToolUsage(&billedUsage.ToolUsage, usageToProcess.ServerToolUse)
 	}
 	// Extended-thinking tokens. Max-merged (per-request total, not per-event
 	// increment) and mirrored onto the billing handle so a mid-stream cancel or

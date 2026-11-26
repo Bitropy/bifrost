@@ -99,6 +99,59 @@ func marshalResponse(t *testing.T, r *schemas.BifrostResponsesResponse) string {
 	return string(b)
 }
 
+func TestResponsesUsage_WebFetch(t *testing.T) {
+	cases := []struct {
+		name, serverToolUse string
+		wantToolUsage       string
+		wantSearchQueries   int64
+	}{
+		{"search and fetch", `{"web_search_requests":2,"web_fetch_requests":3}`, `{"web_search":{"num_requests":2},"web_fetch":{"num_requests":3}}`, 2},
+		{"fetch only", `{"web_search_requests":0,"web_fetch_requests":3}`, `{"web_fetch":{"num_requests":3}}`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := `{"input_tokens":3,"output_tokens":4,"server_tool_use":` + tc.serverToolUse +
+				`,"iterations":[{"type":"message","input_tokens":3,"output_tokens":4,"server_tool_use":` + tc.serverToolUse + `}]}`
+			check := func(mode, out string) {
+				t.Helper()
+				if got := gjson.Get(out, "tool_usage").Raw; got != tc.wantToolUsage {
+					t.Errorf("%s: tool_usage = %s, want %s", mode, got, tc.wantToolUsage)
+				}
+				q := gjson.Get(out, "usage.output_tokens_details.num_search_queries")
+				if tc.wantSearchQueries == 0 && q.Exists() {
+					t.Errorf("%s: num_search_queries = %s, want absent", mode, q.Raw)
+				} else if tc.wantSearchQueries > 0 && q.Int() != tc.wantSearchQueries {
+					t.Errorf("%s: num_search_queries = %s, want %d", mode, q.Raw, tc.wantSearchQueries)
+				}
+			}
+
+			unary, _ := responsesUnaryFrom(t, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","stop_reason":"end_turn","content":[{"type":"text","text":"hi"}],"usage":`+usage+`}`)
+			out := marshalResponse(t, unary)
+			check("unary", out)
+			if got := gjson.Get(out, "usage.iterations.0.tool_usage.web_fetch.num_requests").Int(); got != 3 {
+				t.Errorf("unary iteration web_fetch = %d, want 3 (%s)", got, gjson.Get(out, "usage.iterations.0").Raw)
+			}
+
+			_, last := responsesStreamFrom(t, streamFramesWith(usage, `{"type":"text","text":"hi"}`))
+			if last.Response == nil {
+				t.Fatal("stream: terminal event has no response")
+			}
+			check("stream", marshalResponse(t, last.Response))
+
+			var acc schemas.ResponsesResponseUsage
+			var billed schemas.BifrostLLMUsage
+			var au AnthropicUsage
+			if err := sonic.UnmarshalString(usage, &au); err != nil {
+				t.Fatal(err)
+			}
+			accumulateAnthropicResponsesUsage(&acc, &billed, &au, anthropicPromptCounts{})
+			if billed.ToolUsage == nil || billed.ToolUsage.WebFetch == nil || billed.ToolUsage.WebFetch.NumRequests != 3 {
+				t.Errorf("billed web_fetch = %+v, want 3", billed.ToolUsage)
+			}
+		})
+	}
+}
+
 // responsesBlockFixture is a realistic top-level answer block of one type, after the call
 // blocks its arm needs to place it.
 type responsesBlockFixture struct{ pre, block string }

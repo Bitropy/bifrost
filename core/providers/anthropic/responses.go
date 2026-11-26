@@ -5651,8 +5651,8 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
 		}
 		bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(billable.ServerToolUse.WebSearchRequests)
-		bifrostUsage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: billable.ServerToolUse.WebSearchRequests}}
 	}
+	foldServerToolUsage(&bifrostUsage.ToolUsage, billable.ServerToolUse)
 
 	// Extended-thinking token count. Already a subset of OutputTokens upstream, so it
 	// carries across unchanged and OutputTokens/TotalTokens are left alone. Presence is
