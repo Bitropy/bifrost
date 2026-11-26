@@ -1548,6 +1548,8 @@ func (chunk *AnthropicStreamEvent) toBifrostResponsesStream(ctx *schemas.Bifrost
 					itemID := *item.ID
 					// The tool_changes went out with the summary; the stop has nothing left to emit.
 					delete(state.CompactionToolChanges, outputIndex)
+					stored := *item
+					state.OutputItems[outputIndex] = &stored
 
 					// Emit both output_item.added (with summary) and output_item.done
 					return []*schemas.BifrostResponsesStreamResponse{
@@ -2187,6 +2189,7 @@ func (chunk *AnthropicStreamEvent) toBifrostResponsesStream(ctx *schemas.Bifrost
 			}
 
 			// Check if this content index is a text block
+			isText := chunk.Index != nil && state.TextContentIndices[*chunk.Index]
 			if chunk.Index != nil {
 				if state.TextContentIndices[*chunk.Index] {
 					// Emit output_text.done with full accumulated text
@@ -2507,10 +2510,10 @@ func (chunk *AnthropicStreamEvent) toBifrostResponsesStream(ctx *schemas.Bifrost
 				if doneItemID != "" {
 					doneItem.ID = &doneItemID
 				}
-				// Only persist synthesized items that actually have text content — reasoning
-				// and MCP blocks fall through here without storedItems but must not pollute
-				// response.completed with empty assistant message shells.
-				if len(contentBlocks) > 0 {
+				// A text block's item is kept even when empty: every done item reaches
+				// response.completed. Other blocks without a stored item must not add
+				// empty assistant message shells.
+				if len(contentBlocks) > 0 || isText {
 					cloned := *doneItem
 					clonedContent := *doneItem.Content
 					cloned.Content = &clonedContent
@@ -3161,22 +3164,7 @@ func (chunk *AnthropicStreamEvent) responsesBlockStart(ctx *schemas.BifrostConte
 		state.ItemIDs[outputIndex] = itemID
 		state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeFallback
 		item := anthropicFallbackItem(chunk.ContentBlock, itemID, schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant))
-		return []*schemas.BifrostResponsesStreamResponse{
-			{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-				SequenceNumber: sequenceNumber,
-				OutputIndex:    schemas.Ptr(outputIndex),
-				ContentIndex:   chunk.Index,
-				Item:           &item,
-			},
-			{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-				SequenceNumber: sequenceNumber + 1,
-				OutputIndex:    schemas.Ptr(outputIndex),
-				ContentIndex:   chunk.Index,
-				Item:           &item,
-			},
-		}, true
+		return state.emitWholeItem(outputIndex, chunk.Index, &item, sequenceNumber), true
 	case AnthropicContentBlockTypeImage, AnthropicContentBlockTypeDocument, AnthropicContentBlockTypeContainerUpload,
 		AnthropicContentBlockTypeToolResult, AnthropicContentBlockTypeMCPToolResult:
 		// Anthropic streams these whole: the item is the one the unary arm builds.
@@ -3362,6 +3350,12 @@ func (chunk *AnthropicStreamEvent) responsesBlockStart(ctx *schemas.BifrostConte
 		if chunk.Index != nil {
 			state.TextContentIndices[*chunk.Index] = false
 		}
+		// Kept so its output_item.done and response.completed carry the call; the clone keeps
+		// the stop path's argument fill off the emitted added item.
+		stored := *item
+		storedToolMsg := *item.ResponsesToolMessage
+		stored.ResponsesToolMessage = &storedToolMsg
+		state.OutputItems[outputIndex] = &stored
 
 		return []*schemas.BifrostResponsesStreamResponse{{
 			Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,

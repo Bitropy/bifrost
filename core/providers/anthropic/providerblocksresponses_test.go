@@ -482,7 +482,7 @@ func TestProviderBlocks_ResponsesStreamParity(t *testing.T) {
 	fixtures := responsesBlockFixtures()
 	for _, ct := range []AnthropicContentBlockType{
 		AnthropicContentBlockTypeImage, AnthropicContentBlockTypeDocument, AnthropicContentBlockTypeContainerUpload,
-		AnthropicContentBlockTypeToolResult, AnthropicContentBlockTypeMCPToolResult,
+		AnthropicContentBlockTypeToolResult, AnthropicContentBlockTypeMCPToolResult, AnthropicContentBlockTypeFallback,
 	} {
 		t.Run(string(ct), func(t *testing.T) {
 			fx := fixtures[ct]
@@ -530,6 +530,21 @@ func TestProviderBlocks_ResponsesStreamParity(t *testing.T) {
 		completed := last.Response.Output
 		if len(completed) != 1 || *completed[0].Status != "failed" {
 			t.Fatalf("completed output %v", outputTypes(completed))
+		}
+	})
+
+	t.Run("completed keeps every done item", func(t *testing.T) {
+		mcp := responsesBlockFixtures()[AnthropicContentBlockTypeMCPToolUse].block
+		_, last := responsesStreamFrom(t, streamFramesWith("", mcp, `{"type":"text","text":""}`))
+		if got := strings.Join(outputTypes(last.Response.Output), ","); got != "mcp_call,message" {
+			t.Fatalf("completed output %s, want the mcp_tool_use call and the empty text", got)
+		}
+		frames := streamFramesWith("", `{"type":"compaction"}`)
+		frames = append(frames[:2], append([]string{`{"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"sum"}}`}, frames[2:]...)...)
+		events, last := responsesStreamFrom(t, frames)
+		dones := eventsOf(events, schemas.ResponsesStreamResponseTypeOutputItemDone)
+		if len(dones) != 1 || len(last.Response.Output) != 1 || itemJSON(t, &last.Response.Output[0]) != itemJSON(t, dones[0].Item) {
+			t.Fatalf("compaction: %d done events, completed output %v; want its done item kept", len(dones), outputTypes(last.Response.Output))
 		}
 	})
 
