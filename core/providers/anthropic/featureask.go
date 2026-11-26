@@ -272,7 +272,8 @@ func MessagesAsk(body []byte, betas []string) FeatureAsk {
 
 // ResponsesBodyAsk is ResponsesAsk for a raw Responses body, read without decoding it: the
 // top-level members the Responses decode leaves in ExtraParams (container, task_budget and the
-// raw strip's paths), context_management, its tools and its input items' content blocks.
+// raw strip's paths), context_management, its tools (a dated type classified as the decode
+// normalizes it) and its input items' content blocks.
 // Allocation-free when the body asks for nothing.
 func ResponsesBodyAsk(body []byte, betas []string) FeatureAsk {
 	ask := askBetas(betas)
@@ -292,7 +293,7 @@ func ResponsesBodyAsk(body []byte, betas []string) FeatureAsk {
 	gjson.Get(doc, "tools").ForEach(func(_, tool gjson.Result) bool {
 		ask.Features |= toolFlags(rawPresent(tool.Get("defer_loading")), RawMeaningful(tool.Get("allowed_callers")),
 			RawMeaningful(tool.Get("input_examples")), rawPresent(tool.Get("eager_input_streaming")), RawMeaningful(tool.Get("cache_control.scope")))
-		if t := schemas.ResponsesToolType(tool.Get("type").Str); isResponsesServerTool(t) {
+		if t := schemas.NormalizeResponsesToolType(schemas.ResponsesToolType(tool.Get("type").Str)); isResponsesServerTool(t) {
 			ask.Features |= FeatureServerTool
 			ask.ServerTools = append(ask.ServerTools, rawResponsesServerToolType(t, tool))
 		}

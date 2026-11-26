@@ -546,6 +546,19 @@ func TestResponsesBodyAsk_AgreesWithResponsesAsk(t *testing.T) {
 	}
 	assert.Zero(t, ResponsesBodyAsk([]byte(`{"input":"compaction \"compaction\""}`), nil).Features, "a string input holds no block")
 	assert.Equal(t, FeatureAnthropicBeta, ResponsesBodyAsk([]byte(`{"model":"m","input":"hi"}`), []string{"b"}).Features, "the betas ask anthropic_beta")
+	for _, tools := range []string{
+		`[{"type":"web_fetch_20250910","name":"web_fetch"}]`,
+		`[{"type":"web_search_20260209","name":"web_search","web_search_version":"web_search_20260209"}]`,
+		`[{"type":"code_execution_20250825","name":"code_execution"}]`,
+	} {
+		var decoded []schemas.ResponsesTool
+		require.NoError(t, json.Unmarshal([]byte(tools), &decoded))
+		want := ResponsesAsk(&schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{Tools: decoded}}, nil)
+		require.NotZero(t, want.Features&FeatureServerTool, tools)
+		got := ResponsesBodyAsk([]byte(`{"model":"m","input":"hi","tools":`+tools+`}`), nil)
+		assert.Equal(t, want.Features, got.Features, "a dated type is classified as the decode normalizes it: %s", tools)
+		assert.Equal(t, want.ServerTools, got.ServerTools, tools)
+	}
 }
 
 // The raw-body detector allocates nothing for a body that asks for nothing, nor for one that asks
