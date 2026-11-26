@@ -2365,7 +2365,7 @@ func TestAnthropicComputerToolUseReplaysWithComputerCallID(t *testing.T) {
 	for _, grouped := range []bool{true, false} {
 		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 		var call *schemas.ResponsesMessage
-		out := convertAnthropicMessagesToBifrostMessages(ctx, msgs, nil, false, grouped, false)
+		out := convertAnthropicMessagesToBifrostMessages(ctx, msgs, nil, false, grouped, false, nil)
 		cancel()
 		for i := range out {
 			if out[i].Type != nil && *out[i].Type == schemas.ResponsesMessageTypeComputerCall {

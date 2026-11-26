@@ -953,12 +953,6 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 		if usage.OutputTokensDetails.NumSearchQueries == nil || n > *usage.OutputTokensDetails.NumSearchQueries {
 			usage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(n)
 		}
-		if usage.ToolUsage == nil {
-			usage.ToolUsage = &schemas.ToolUsage{}
-		}
-		if usage.ToolUsage.WebSearch == nil || n > usage.ToolUsage.WebSearch.NumRequests {
-			usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
-		}
 		if billedUsage != nil {
 			if billedUsage.CompletionTokensDetails == nil {
 				billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
@@ -966,13 +960,11 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 			if billedUsage.CompletionTokensDetails.NumSearchQueries == nil || n > *billedUsage.CompletionTokensDetails.NumSearchQueries {
 				billedUsage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(n)
 			}
-			if billedUsage.ToolUsage == nil {
-				billedUsage.ToolUsage = &schemas.ToolUsage{}
-			}
-			if billedUsage.ToolUsage.WebSearch == nil || n > billedUsage.ToolUsage.WebSearch.NumRequests {
-				billedUsage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
-			}
 		}
+	}
+	foldServerToolUsage(&usage.ToolUsage, usageToProcess.ServerToolUse)
+	if billedUsage != nil {
+		foldServerToolUsage(&billedUsage.ToolUsage, usageToProcess.ServerToolUse)
 	}
 	// Extended-thinking tokens. Max-merged (per-request total, not per-event
 	// increment) and mirrored onto the billing handle so a mid-stream cancel or
@@ -1436,8 +1428,7 @@ func HandleAnthropicChatCompletionStreaming(
 
 			// Per-event mapping -> "convertor" (Convertor) stream phase.
 			convStart := time.Now()
-			streamState.eventData = eventDataBytes
-			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream(ctx, structuredOutputToolName, streamState)
+			response, bifrostErr, isLastChunk := event.toBifrostChatCompletionStream(ctx, structuredOutputToolName, streamState, eventDataBytes)
 			schemas.AddStreamConvert(ctx, time.Since(convStart))
 			if bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -1617,6 +1608,7 @@ func HandleAnthropicResponsesRequest(
 	}
 
 	// Create final response
+	response.SetRawBody(responseBody)
 	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
 	bifrostResponse := response.ToBifrostResponsesResponse(ctx)
 	if convTracer != nil {
@@ -2041,7 +2033,7 @@ func HandleAnthropicResponsesStream(
 			}
 
 			convCallStart := time.Now()
-			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(ctx, chunkIndex, streamState)
+			responses, bifrostErr, isLastChunk := event.toBifrostResponsesStream(ctx, chunkIndex, streamState, eventDataBytes)
 			schemas.AddStreamConvert(ctx, time.Since(convCallStart))
 			// Propagate message_delta emission flag to context so the output converter
 			// (ToAnthropicResponsesStreamResponse) can skip synthesizing a duplicate.
@@ -2115,6 +2107,7 @@ func HandleAnthropicResponsesStream(
 						}
 						setBedrockInvokeGuardrailOutcome(response.Response, invokeGuardrailAction, invokeGuardrailTrace)
 						response.Response.Usage = usage
+						response.ExtraFields.ProviderBlockDrops = streamState.providerBlockDrops
 						if servedServiceTier != nil {
 							response.Response.ServiceTier = servedServiceTier
 						}

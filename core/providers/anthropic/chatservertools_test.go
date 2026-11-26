@@ -571,8 +571,7 @@ func runWebSearchStream(t *testing.T, events []string) wsStreamResult {
 		if err := sonic.Unmarshal([]byte(raw), &ev); err != nil {
 			t.Fatalf("unmarshal event %d: %v", i, err)
 		}
-		state.eventData = []byte(raw)
-		resp, bErr, _ := ev.ToBifrostChatCompletionStream(nil, "", state)
+		resp, bErr, _ := ev.toBifrostChatCompletionStream(nil, "", state, []byte(raw))
 		if bErr != nil {
 			t.Fatalf("event %d: unexpected error %+v", i, bErr)
 		}

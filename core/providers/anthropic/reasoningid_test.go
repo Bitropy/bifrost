@@ -590,7 +590,7 @@ func TestOrderedConversionKeepsEmbeddedReasoningIDsPerRun(t *testing.T) {
 	}
 	role := schemas.ResponsesMessageRoleType(AnthropicMessageRoleAssistant)
 	ctx := schemas.NewBifrostContext(nil, time.Time{})
-	out := convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx, blocks, &role, false, "", true)
+	out := convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx, blocks, &role, false, "", true, nil)
 
 	var reasoning []schemas.ResponsesMessage
 	var order []string

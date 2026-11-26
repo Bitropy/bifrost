@@ -183,8 +183,7 @@ func feedChatStream(t *testing.T, events []string) chatStreamOut {
 		if err := decodeAnthropicStreamEvent(data, &ev); err != nil {
 			t.Fatalf("event %d: %v", i, err)
 		}
-		out.state.eventData = data
-		resp, bErr, _ := ev.ToBifrostChatCompletionStream(nil, "", out.state)
+		resp, bErr, _ := ev.toBifrostChatCompletionStream(nil, "", out.state, data)
 		if bErr != nil {
 			t.Fatalf("event %d: %+v", i, bErr)
 		}
@@ -719,8 +718,7 @@ func decodeEvents(t *testing.T, events []string) []decodedEvent {
 
 func runEvents(state *AnthropicStreamState, evs []decodedEvent) {
 	for _, e := range evs {
-		state.eventData = e.data
-		_, _, _ = e.ev.ToBifrostChatCompletionStream(nil, "", state)
+		_, _, _ = e.ev.toBifrostChatCompletionStream(nil, "", state, e.data)
 	}
 }
 
@@ -771,8 +769,7 @@ func textStreamEvents(n int) []string {
 func convertAndMarshal(evs []decodedEvent) {
 	state := NewAnthropicStreamState()
 	for _, e := range evs {
-		state.eventData = e.data
-		resp, _, _ := e.ev.ToBifrostChatCompletionStream(nil, "", state)
+		resp, _, _ := e.ev.toBifrostChatCompletionStream(nil, "", state, e.data)
 		if resp != nil && resp.Choices[0].ChatStreamResponseChoice != nil && resp.Choices[0].Delta != nil {
 			_, _ = sonic.Marshal(resp.Choices[0].Delta)
 		}
@@ -861,8 +858,7 @@ func TestAnthropicChatStream_ProviderBlockConstant_AllocBudget(t *testing.T) {
 func runOnce(state *AnthropicStreamState, evs []decodedEvent) ([][]byte, error) {
 	var blocks [][]byte
 	for _, e := range evs {
-		state.eventData = e.data
-		resp, _, _ := e.ev.ToBifrostChatCompletionStream(nil, "", state)
+		resp, _, _ := e.ev.toBifrostChatCompletionStream(nil, "", state, e.data)
 		if resp != nil && resp.Choices[0].Delta.ProviderBlocks != nil {
 			for _, pb := range *resp.Choices[0].Delta.ProviderBlocks {
 				blocks = append(blocks, pb.Block)

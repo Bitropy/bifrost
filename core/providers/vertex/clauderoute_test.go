@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/internal/providerblocktest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/oauth2"
 )
@@ -355,4 +356,26 @@ func TestVertexUnary_KeepsServerSideFallbackModel(t *testing.T) {
 		}
 		check(t, resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
 	})
+}
+
+// The Vertex Claude unary branch hands the converter the raw body, so an unmapped block
+// is carried.
+func TestProviderBlocks_ResponsesRawBodyCallers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(providerblocktest.FutureBlockAnswer))
+	}))
+	t.Cleanup(srv.Close)
+	provider, key := newClaudeTestVertex(t, srv.URL)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Vertex, Model: "claude-sonnet-4-6",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Responses: %s", bifrostErr.GetErrorString())
+	}
+	if blocks := providerblocktest.CarriedProviderBlocks(t, resp.Output); len(blocks) != 1 || blocks[0] != providerblocktest.FutureBlock {
+		t.Fatalf("provider blocks %v", blocks)
+	}
 }
