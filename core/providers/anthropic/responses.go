@@ -1279,7 +1279,7 @@ func (state *AnthropicResponsesStreamState) closeWebSearch(sequenceNumber int, s
 			ResponsesToolMessage: state.webSearchToolMessage(action),
 		},
 	}
-	state.storeWebSearchOutputItem(state.WebSearchOutputIndex, done.Item)
+	state.storeDoneOutputItem(state.WebSearchOutputIndex, done.Item)
 	state.WebSearchToolID = nil
 	state.WebSearchOutputIndex = nil
 	state.WebSearchQuery = nil
@@ -1287,10 +1287,10 @@ func (state *AnthropicResponsesStreamState) closeWebSearch(sequenceNumber int, s
 	return done
 }
 
-// storeWebSearchOutputItem keeps a closed web_search_call for the response.completed output
-// built at message_stop, as the advisor and web_fetch paths do for their items. The item is
-// cloned because the emitted one is handed to the consumer.
-func (state *AnthropicResponsesStreamState) storeWebSearchOutputItem(outputIdx *int, item *schemas.ResponsesMessage) {
+// storeDoneOutputItem keeps a closed server-tool call for the response.completed output
+// built at message_stop. The item is cloned because the emitted one is handed to the
+// consumer.
+func (state *AnthropicResponsesStreamState) storeDoneOutputItem(outputIdx *int, item *schemas.ResponsesMessage) {
 	if outputIdx == nil || state.OutputItems == nil {
 		return
 	}
@@ -1923,7 +1923,7 @@ func (chunk *AnthropicStreamEvent) toBifrostResponsesStream(ctx *schemas.Bifrost
 				}
 
 				outputIdx := state.WebSearchOutputIndex
-				state.storeWebSearchOutputItem(outputIdx, item)
+				state.storeDoneOutputItem(outputIdx, item)
 
 				// Clear all web search state
 				state.WebSearchToolID = nil
@@ -1969,6 +1969,7 @@ func (chunk *AnthropicStreamEvent) toBifrostResponsesStream(ctx *schemas.Bifrost
 					ResponsesToolMessage: toolMsg,
 				}
 				outputIdx := state.WebFetchOutputIndex
+				state.storeDoneOutputItem(outputIdx, item)
 
 				state.WebFetchToolID = nil
 				state.WebFetchOutputIndex = nil
@@ -2019,14 +2020,7 @@ func (chunk *AnthropicStreamEvent) toBifrostResponsesStream(ctx *schemas.Bifrost
 					},
 				}
 				outputIdx := state.AdvisorOutputIndex
-				// Persist into OutputItems so message_stop includes the advisor_call
-				// in response.completed (mirrors the web_search_call handling).
-				if outputIdx != nil {
-					cloned := *item
-					clonedToolMsg := *item.ResponsesToolMessage
-					cloned.ResponsesToolMessage = &clonedToolMsg
-					state.OutputItems[*outputIdx] = &cloned
-				}
+				state.storeDoneOutputItem(outputIdx, item)
 				state.AdvisorToolID = nil
 				state.AdvisorOutputIndex = nil
 				state.AdvisorResult = nil
@@ -2067,14 +2061,7 @@ func (chunk *AnthropicStreamEvent) toBifrostResponsesStream(ctx *schemas.Bifrost
 					},
 				}
 				outputIdx := state.ToolSearchOutputIndex
-				// Persist into OutputItems so message_stop includes the tool_search_call
-				// in response.completed (mirrors web_search_call / advisor_call handling).
-				if outputIdx != nil {
-					cloned := *item
-					clonedToolMsg := *item.ResponsesToolMessage
-					cloned.ResponsesToolMessage = &clonedToolMsg
-					state.OutputItems[*outputIdx] = &cloned
-				}
+				state.storeDoneOutputItem(outputIdx, item)
 				state.ToolSearchToolID = nil
 				state.ToolSearchToolName = nil
 				state.ToolSearchOutputIndex = nil
@@ -2111,16 +2098,8 @@ func (chunk *AnthropicStreamEvent) toBifrostResponsesStream(ctx *schemas.Bifrost
 
 				outputIdx := state.CodeExecOutputIndex
 				itemID := state.CodeExecToolID
-				// Persist into OutputItems so response.completed includes the call;
-				// the sandbox container is folded in at message_stop.
-				if outputIdx != nil {
-					cloned := *item
-					if item.ResponsesToolMessage != nil {
-						clonedTM := *item.ResponsesToolMessage
-						cloned.ResponsesToolMessage = &clonedTM
-					}
-					state.OutputItems[*outputIdx] = &cloned
-				}
+				// The sandbox container is folded into the stored call at message_stop.
+				state.storeDoneOutputItem(outputIdx, item)
 
 				state.CodeExecToolID = nil
 				state.CodeExecToolName = nil
