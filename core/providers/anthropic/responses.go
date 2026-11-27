@@ -5079,7 +5079,8 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		if bifrostReq.Params.Text != nil {
 			thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
 				(bifrostReq.Params.Reasoning.MaxTokens != nil ||
-					(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+					(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none")) ||
+				verbatimThinkingActive(ctx, bifrostReq.Params.ExtraParams)
 			unforceable := thinkingEnabled || !forcedToolChoiceSupported
 			switch routeStructuredOutput(familyProvider, caps, unforceable, responsesInputHasCitations(bifrostReq.Input)) {
 			case structuredOutputStandIn:

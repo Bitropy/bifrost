@@ -156,6 +156,17 @@ const (
 	structuredOutputNone                                 // no schema at all
 )
 
+// verbatimThinkingActive reports thinking the caller sends as ExtraParams["thinking"]
+// under the passthrough flag: core merges it onto the wire without promoting it, so the
+// typed reasoning reads off, yet Anthropic still thinks and a forced stand-in still loses.
+func verbatimThinkingActive(ctx context.Context, extra map[string]interface{}) bool {
+	if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !passthrough {
+		return false
+	}
+	thinking, ok := decodeThinkingExtraParam(extra["thinking"])
+	return ok && (thinking.Type == "adaptive" || thinking.Type == "enabled")
+}
+
 // routeStructuredOutput picks the route for a JSON schema. unforceable: the stand-in could not be
 // pinned with tool_choice. citations: an input document has citations enabled, which Anthropic
 // rejects beside output_config.format.
