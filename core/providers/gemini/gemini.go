@@ -1516,7 +1516,7 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		ctx,
 		request,
 		func() (*GeminiGenerationRequest, error) {
-			return ToGeminiSpeechRequest(request)
+			return ToGeminiSpeechRequest(ctx, request)
 		})
 	if err != nil {
 		return nil, err
@@ -1671,7 +1671,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		ctx,
 		request,
 		func() (*GeminiGenerationRequest, error) {
-			return ToGeminiSpeechRequest(request)
+			return ToGeminiSpeechRequest(ctx, request)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr

@@ -229,7 +229,7 @@ func (provider *VertexProvider) geminiSpeech(ctx *schemas.BifrostContext, key sc
 		ctx,
 		request,
 		func() (*gemini.GeminiGenerationRequest, error) {
-			reqBody, err := toVertexGeminiSpeechRequest(request)
+			reqBody, err := toVertexGeminiSpeechRequest(ctx, request)
 			if err != nil {
 				return nil, err
 			}
@@ -293,7 +293,7 @@ func (provider *VertexProvider) geminiSpeechStream(ctx *schemas.BifrostContext, 
 		ctx,
 		request,
 		func() (*gemini.GeminiGenerationRequest, error) {
-			reqBody, err := toVertexGeminiSpeechRequest(request)
+			reqBody, err := toVertexGeminiSpeechRequest(ctx, request)
 			if err != nil {
 				return nil, err
 			}

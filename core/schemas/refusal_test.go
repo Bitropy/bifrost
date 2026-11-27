@@ -14,7 +14,7 @@ func TestAdaptation_StringHasAdd(t *testing.T) {
 	for i := range adaptationNames {
 		all = all.Add(1 << i)
 	}
-	if got, want := all.String(), "sampling, tool_choice, max_tokens, reasoning, service_tier, strict, unmapped, top_k, prefill, tool_schema"; got != want {
+	if got, want := all.String(), "sampling, tool_choice, max_tokens, reasoning, service_tier, strict, unmapped, top_k, prefill, tool_schema, voice"; got != want {
 		t.Fatalf("all = %q, want %q", got, want)
 	}
 	a := AdaptationTopK.Add(AdaptationSampling)

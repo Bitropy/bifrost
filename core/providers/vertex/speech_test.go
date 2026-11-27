@@ -101,7 +101,7 @@ func TestToVertexGeminiSpeechRequest_UnsupportedFormatsAreRefused(t *testing.T) 
 			Input:    &schemas.SpeechInput{Input: "hello"},
 			Params:   &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: &voice}, ResponseFormat: format},
 		}
-		_, err := toVertexGeminiSpeechRequest(request)
+		_, err := toVertexGeminiSpeechRequest(nil, request)
 		require.Error(t, err, format)
 		assert.True(t, providerUtils.IsInvalidRequestError(err), "response_format %q must be a caller error", format)
 	}
