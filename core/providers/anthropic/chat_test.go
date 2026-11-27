@@ -1840,6 +1840,13 @@ func assertUnforcedStandIn(t *testing.T, ctx *schemas.BifrostContext, req *Anthr
 	assert.True(t, toolChoiceAdapted(ctx), "the dropped pin is recorded")
 }
 
+// passthroughCtx is the context the router sends Claude thinking under: ExtraParams merged verbatim.
+func passthroughCtx() *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return ctx
+}
+
 func noForcedToolChoice() schemas.ModelCapabilities {
 	return schemas.ModelCapabilities{SupportsForcedToolChoice: new(false)}
 }
@@ -1880,6 +1887,26 @@ func TestToAnthropicChatRequest_StructuredOutput_VertexUnforceable(t *testing.T)
 		assertNativeFormat(t, ctx, out)
 		require.NotNil(t, out.OutputConfig.Effort)
 		assert.Equal(t, "high", *out.OutputConfig.Effort)
+	})
+
+	t.Run("verbatim thinking under the passthrough flag goes native", func(t *testing.T) {
+		for _, thinking := range []map[string]any{{"type": "adaptive"}, {"type": "enabled", "budget_tokens": 2000}} {
+			req := soChatRequest(schemas.Vertex, "claude-haiku-5-5", nil)
+			req.Params.ExtraParams = map[string]interface{}{"thinking": thinking}
+			ctx := passthroughCtx()
+			out, err := ToAnthropicChatRequest(ctx, req)
+			require.NoError(t, err)
+			assertNativeFormat(t, ctx, out)
+		}
+	})
+
+	t.Run("verbatim disabled thinking keeps the forced stand-in", func(t *testing.T) {
+		req := soChatRequest(schemas.Vertex, "claude-haiku-5-5", nil)
+		req.Params.ExtraParams = map[string]interface{}{"thinking": map[string]any{"type": "disabled"}}
+		ctx := passthroughCtx()
+		out, err := ToAnthropicChatRequest(ctx, req)
+		require.NoError(t, err)
+		assertForcedStandIn(t, ctx, out)
 	})
 
 	t.Run("forceable with thinking off keeps the forced stand-in", func(t *testing.T) {
@@ -1932,6 +1959,14 @@ func TestToAnthropicChatRequest_StructuredOutput_UnforceableStandInElsewhere(t *
 		t.Run(string(provider)+"/thinking on", func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 			out, err := ToAnthropicChatRequest(ctx, soChatRequest(provider, "claude-sonnet-4-6", schemas.Ptr("high")))
+			require.NoError(t, err)
+			assertUnforcedStandIn(t, ctx, out)
+		})
+		t.Run(string(provider)+"/verbatim thinking under the passthrough flag", func(t *testing.T) {
+			req := soChatRequest(provider, "claude-sonnet-4-6", nil)
+			req.Params.ExtraParams = map[string]interface{}{"thinking": map[string]any{"type": "adaptive"}}
+			ctx := passthroughCtx()
+			out, err := ToAnthropicChatRequest(ctx, req)
 			require.NoError(t, err)
 			assertUnforcedStandIn(t, ctx, out)
 		})

@@ -156,6 +156,23 @@ const (
 	structuredOutputNone                                 // no schema at all
 )
 
+// thinkingActive reports thinking that reaches the wire, which makes a forced stand-in
+// impossible: the typed reasoning, or ExtraParams["thinking"] merged verbatim under the
+// passthrough flag (core does not promote it there, so the typed reasoning reads off).
+func thinkingActive(ctx *schemas.BifrostContext, maxTokens *int, effort *string, extra map[string]interface{}) bool {
+	if maxTokens != nil || (effort != nil && *effort != "none") {
+		return true
+	}
+	if ctx == nil {
+		return false
+	}
+	if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !passthrough {
+		return false
+	}
+	thinking, ok := decodeThinkingExtraParam(extra["thinking"])
+	return ok && (thinking.Type == "adaptive" || thinking.Type == "enabled")
+}
+
 // routeStructuredOutput picks the route for a JSON schema. unforceable: the stand-in could not be
 // pinned with tool_choice. citations: an input document has citations enabled, which Anthropic
 // rejects beside output_config.format.

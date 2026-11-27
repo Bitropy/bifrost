@@ -686,10 +686,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		}
 		if bifrostReq.Params.ResponseFormat != nil {
 			// Anthropic rejects forced tool_choice when extended thinking is active.
-			thinkingEnabled := (reasoningParams != nil &&
-				(reasoningParams.MaxTokens != nil ||
-					(reasoningParams.Effort != nil && *reasoningParams.Effort != "none"))) ||
-				promotedThinking != nil
+			var maxTokens *int
+			var effort *string
+			if reasoningParams != nil {
+				maxTokens, effort = reasoningParams.MaxTokens, reasoningParams.Effort
+			}
+			thinkingEnabled := promotedThinking != nil || thinkingActive(ctx, maxTokens, effort, bifrostReq.Params.ExtraParams)
 			unforceable := thinkingEnabled || !forcedToolChoiceSupported
 			// Only Vertex's native choice is guarded: the other providers keep sending the format
 			// beside citations as they always have.
