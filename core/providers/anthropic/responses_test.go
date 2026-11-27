@@ -321,7 +321,7 @@ func TestToAnthropicResponsesRequest_StructuredOutput_ToolConversion(t *testing.
 // The model reaches the tool under the default "auto" — with only the bf_so_*
 // tool bound there is nothing else it can call.
 func TestToAnthropicResponsesRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *testing.T) {
-	for _, provider := range toolConversionProviders {
+	for _, provider := range unforceableStandInProviders {
 		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
 			t.Run(string(provider)+"/"+model, func(t *testing.T) {
 				req := &schemas.BifrostResponsesRequest{
@@ -396,6 +396,54 @@ func TestToAnthropicResponsesRequest_StructuredOutput_NativeOutputConfig_Anthrop
 			t.Errorf("did not expect a synthetic tool for Anthropic, got %q", tool.Name)
 		}
 	}
+}
+
+func soResponsesRequest(provider schemas.ModelProvider, model string, blocks []schemas.ResponsesMessageContentBlock) *schemas.BifrostResponsesRequest {
+	content := &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello")}
+	if blocks != nil {
+		content = &schemas.ResponsesMessageContent{ContentBlocks: blocks}
+	}
+	return &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: content}},
+		Params:   &schemas.ResponsesParameters{Text: makeResponsesTextFormat("my_schema")},
+	}
+}
+
+// TestToAnthropicResponsesRequest_StructuredOutput_VertexUnforceable mirrors the chat converter's
+// Vertex routing. It installs a capability resolver, so it does not run in parallel.
+func TestToAnthropicResponsesRequest_StructuredOutput_VertexUnforceable(t *testing.T) {
+	t.Run("record without forced tool_choice goes native", func(t *testing.T) {
+		setProviderOverride(t, schemas.Vertex, "claude-sonnet-5-5", noForcedToolChoice())
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		out, err := ToAnthropicResponsesRequest(ctx, soResponsesRequest(schemas.Vertex, "claude-sonnet-5-5", nil))
+		require.NoError(t, err)
+		assertNativeFormat(t, ctx, out)
+	})
+
+	t.Run("forceable with thinking off keeps the forced stand-in", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		out, err := ToAnthropicResponsesRequest(ctx, soResponsesRequest(schemas.Vertex, "claude-sonnet-4-5@20250929", nil))
+		require.NoError(t, err)
+		assertForcedStandIn(t, ctx, out)
+	})
+
+	t.Run("citations keep the unforced stand-in", func(t *testing.T) {
+		setProviderOverride(t, schemas.Vertex, "claude-sonnet-5-5", noForcedToolChoice())
+		blocks := []schemas.ResponsesMessageContentBlock{{
+			Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+			ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+				FileData: schemas.Ptr("plain text document"),
+				FileType: schemas.Ptr("text/plain"),
+			},
+			Citations: &schemas.Citations{Enabled: schemas.Ptr(true)},
+		}}
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		out, err := ToAnthropicResponsesRequest(ctx, soResponsesRequest(schemas.Vertex, "claude-sonnet-5-5", blocks))
+		require.NoError(t, err)
+		assertUnforcedStandIn(t, ctx, out)
+	})
 }
 
 // makeContextManagementReq builds a minimal BifrostResponsesRequest for the

@@ -136,12 +136,57 @@ func ValidateChatToolsForProvider(tools []schemas.ChatTool, caps schemas.ModelCa
 }
 
 // ProviderRequiresSyntheticStructuredOutput reports whether a provider's Anthropic Messages
-// surface rejects native structured outputs (output_config.format) and must receive the schema as
-// the synthetic bf_so_* tool instead. Single source of truth for the typed converters and for the
-// raw-body passthrough guards, which have to agree: a body the converter would have rewritten must
-// never reach the provider verbatim ("output_config.format: Extra inputs are not permitted").
+// surface takes the schema as the synthetic bf_so_* tool by default rather than as native
+// structured outputs (output_config.format). Bedrock Mantle and Azure do not document the native
+// field. Vertex validates it on Claude 4.5+ but serves it only where the org policy
+// constraints/vertexai.allowedPartnerModelFeatures allows structured_outputs, which it denies by
+// default; see routeStructuredOutput for when Vertex still gets it. Single source of
+// truth for the typed converters and for the raw-body passthrough guards, which have to agree: a
+// body the converter would have rewritten must never reach the provider verbatim.
 func ProviderRequiresSyntheticStructuredOutput(provider schemas.ModelProvider) bool {
 	return provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure
+}
+
+// structuredOutputRoute is how a request's JSON schema reaches an Anthropic Messages surface.
+type structuredOutputRoute int
+
+const (
+	structuredOutputNative  structuredOutputRoute = iota // output_config.format
+	structuredOutputStandIn                              // the synthetic bf_so_* tool
+	structuredOutputNone                                 // no schema at all
+)
+
+// routeStructuredOutput picks the route for a JSON schema. unforceable: the stand-in could not be
+// pinned with tool_choice. citations: an input document has citations enabled, which Anthropic
+// rejects beside output_config.format.
+//
+// Vertex validates output_config.format on Claude 4.5+, but its org policy denies it by default,
+// so it is sent only where the stand-in cannot be forced: unforced, the model may answer in prose,
+// while a denied native schema at least answers a 400 naming the constraint to allow.
+func routeStructuredOutput(provider schemas.ModelProvider, caps schemas.ModelCaps, unforceable, citations bool) structuredOutputRoute {
+	if !ProviderRequiresSyntheticStructuredOutput(provider) {
+		if citations {
+			return structuredOutputNone
+		}
+		return structuredOutputNative
+	}
+	if provider == schemas.Vertex && unforceable && !citations &&
+		caps.SupportsNativeStructuredOutput(IsClaude45Plus(caps.Model())) {
+		return structuredOutputNative
+	}
+	return structuredOutputStandIn
+}
+
+// setFormatOnOutputConfig writes output_config.format, keeping the fields other blocks wrote
+// there (task_budget, effort).
+func setFormatOnOutputConfig(req *AnthropicMessageRequest, format json.RawMessage) {
+	if format == nil {
+		return
+	}
+	if req.OutputConfig == nil {
+		req.OutputConfig = &AnthropicOutputConfig{}
+	}
+	req.OutputConfig.Format = format
 }
 
 // ValidateResponsesToolsForProvider is the Responses-path mirror of
@@ -1442,6 +1487,20 @@ func IsOpus47Plus(model string) bool {
 	return strings.Contains(model, "4-7") || strings.Contains(model, "4.7") ||
 		strings.Contains(model, "4-8") || strings.Contains(model, "4.8") ||
 		IsOpus5Plus(model)
+}
+
+// IsClaude45Plus returns true for Claude 4.5 and later Opus, Sonnet, Haiku and the Fable/Mythos
+// family: the models Vertex documents for native structured outputs.
+func IsClaude45Plus(model string) bool {
+	m := strings.ToLower(model)
+	if strings.Contains(m, "opus") || strings.Contains(m, "sonnet") || strings.Contains(m, "haiku") {
+		for _, v := range []string{"4-5", "4.5", "4-6", "4.6", "4-7", "4.7", "4-8", "4.8"} {
+			if strings.Contains(m, v) {
+				return true
+			}
+		}
+	}
+	return IsOpus5Plus(m) || IsSonnet5Plus(m) || IsHaiku5Plus(m) || IsFableFamily(m)
 }
 
 // IsOpus5Plus returns true for Claude Opus 5 (and later Opus 5.x). Opus 5 is a

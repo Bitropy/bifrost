@@ -4972,6 +4972,22 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	return bifrostReq
 }
 
+// responsesInputHasCitations reports whether an input file block has citations enabled.
+func responsesInputHasCitations(input []schemas.ResponsesMessage) bool {
+	for _, message := range input {
+		if message.Content == nil {
+			continue
+		}
+		for _, block := range message.Content.ContentBlocks {
+			if block.Type == schemas.ResponsesInputMessageContentBlockTypeFile &&
+				block.Citations != nil && block.Citations.Enabled != nil && *block.Citations.Enabled {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ToAnthropicResponsesRequest converts a BifrostRequest with Responses structure back to AnthropicMessageRequest
 func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) (*AnthropicMessageRequest, error) {
 	if bifrostReq == nil {
@@ -5061,9 +5077,12 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			}
 		}
 		if bifrostReq.Params.Text != nil {
-			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
-			// (output_config.format), so convert to a tool instead.
-			if ProviderRequiresSyntheticStructuredOutput(familyProvider) {
+			thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
+				(bifrostReq.Params.Reasoning.MaxTokens != nil ||
+					(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
+			unforceable := thinkingEnabled || !forcedToolChoiceSupported
+			switch routeStructuredOutput(familyProvider, caps, unforceable, responsesInputHasCitations(bifrostReq.Input)) {
+			case structuredOutputStandIn:
 				if bifrostReq.Params.Text.Format != nil {
 					responseFormatTool, err := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
 					if err != nil {
@@ -5074,10 +5093,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 							anthropicReq.Tools = []AnthropicTool{}
 						}
 						anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
-						thinkingEnabled := bifrostReq.Params.Reasoning != nil &&
-							(bifrostReq.Params.Reasoning.MaxTokens != nil ||
-								(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
-						if !thinkingEnabled && forcedToolChoiceSupported {
+						if !unforceable {
 							anthropicReq.ToolChoice = &AnthropicToolChoice{
 								Type: "tool",
 								Name: responseFormatTool.Name,
@@ -5087,38 +5103,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						}
 					}
 				}
-			} else {
-				// Citations cannot be used together with Structured Outputs in anthropic.
-				hasCitationsEnabled := false
-				// loop over input messages and check if any message has citations enabled
-				for _, message := range bifrostReq.Input {
-					if message.Content == nil || message.Content.ContentBlocks == nil {
-						continue
-					}
-					if message.Content.ContentBlocks != nil {
-						for _, block := range message.Content.ContentBlocks {
-							if block.Type == schemas.ResponsesInputMessageContentBlockTypeFile &&
-								block.Citations != nil &&
-								block.Citations.Enabled != nil &&
-								*block.Citations.Enabled {
-								hasCitationsEnabled = true
-								break
-							}
-						}
-					}
-					if hasCitationsEnabled {
-						break
-					}
-				}
-				if !hasCitationsEnabled {
-					// Use GA structured outputs (output_config.format) instead of beta (output_format)
-					outputFormat := convertResponsesTextConfigToAnthropicOutputFormat(bifrostReq.Params.Text)
-					if outputFormat != nil {
-						anthropicReq.OutputConfig = &AnthropicOutputConfig{
-							Format: outputFormat,
-						}
-					}
-				}
+			case structuredOutputNative:
+				// Use GA structured outputs (output_config.format) instead of beta (output_format)
+				setFormatOnOutputConfig(anthropicReq, convertResponsesTextConfigToAnthropicOutputFormat(bifrostReq.Params.Text))
 			}
 		}
 		if bifrostReq.Params.Reasoning != nil {

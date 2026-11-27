@@ -357,6 +357,22 @@ func decodeThinkingExtraParam(value interface{}) (AnthropicThinking, bool) {
 	return thinking, true
 }
 
+// chatInputHasCitations reports whether an input file block has citations enabled.
+func chatInputHasCitations(input []schemas.ChatMessage) bool {
+	for _, message := range input {
+		if message.Content == nil {
+			continue
+		}
+		for _, block := range message.Content.ContentBlocks {
+			if block.Type == schemas.ChatContentBlockTypeFile &&
+				block.Citations != nil && block.Citations.Enabled != nil && *block.Citations.Enabled {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ToAnthropicChatRequest converts a Bifrost request to Anthropic format
 // This is the reverse of ConvertChatRequestToBifrost for provider-side usage
 func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*AnthropicMessageRequest, error) {
@@ -669,19 +685,22 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.MCPServers = servers
 		}
 		if bifrostReq.Params.ResponseFormat != nil {
-			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
-			// (output_config.format), so convert to a tool instead.
-			if ProviderRequiresSyntheticStructuredOutput(familyProvider) {
+			// Anthropic rejects forced tool_choice when extended thinking is active.
+			thinkingEnabled := (reasoningParams != nil &&
+				(reasoningParams.MaxTokens != nil ||
+					(reasoningParams.Effort != nil && *reasoningParams.Effort != "none"))) ||
+				promotedThinking != nil
+			unforceable := thinkingEnabled || !forcedToolChoiceSupported
+			// Only Vertex's native choice is guarded: the other providers keep sending the format
+			// beside citations as they always have.
+			citations := familyProvider == schemas.Vertex && chatInputHasCitations(bifrostReq.Input)
+			switch routeStructuredOutput(familyProvider, caps, unforceable, citations) {
+			case structuredOutputStandIn:
 				responseFormatTool := convertChatResponseFormatToTool(ctx, bifrostReq.Params)
 				if responseFormatTool != nil {
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
-					// Anthropic rejects forced tool_choice when extended thinking is active.
-					// Skip forcing tool_choice in that case; the model may still call the tool.
-					thinkingEnabled := (reasoningParams != nil &&
-						(reasoningParams.MaxTokens != nil ||
-							(reasoningParams.Effort != nil && *reasoningParams.Effort != "none"))) ||
-						promotedThinking != nil
-					if !thinkingEnabled && forcedToolChoiceSupported {
+					// Unforced, the model may still call the tool.
+					if !unforceable {
 						anthropicReq.ToolChoice = &AnthropicToolChoice{
 							Type: "tool",
 							Name: responseFormatTool.Name,
@@ -690,14 +709,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
 					}
 				}
-			} else {
+			case structuredOutputNative:
 				// Use GA structured outputs (output_config.format) instead of beta (output_format)
-				outputFormat := convertChatResponseFormatToAnthropicOutputFormat(bifrostReq.Params.ResponseFormat)
-				if outputFormat != nil {
-					anthropicReq.OutputConfig = &AnthropicOutputConfig{
-						Format: outputFormat,
-					}
-				}
+				setFormatOnOutputConfig(anthropicReq, convertChatResponseFormatToAnthropicOutputFormat(bifrostReq.Params.ResponseFormat))
 			}
 		}
 

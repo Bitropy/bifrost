@@ -465,9 +465,10 @@ func (c ModelCaps) SupportsMultimodalToolOutput(fallback bool) bool {
 	return fallback
 }
 
-// SupportsNativeStructuredOutput reports whether the model takes a JSON schema
-// natively (Bedrock Converse outputConfig.textFormat) rather than through the
-// synthetic bf_so_* tool.
+// SupportsNativeStructuredOutput reports whether the model takes a JSON schema in
+// the provider's native structured-output slot (Bedrock outputConfig.textFormat,
+// Vertex output_config.format) rather than through the synthetic bf_so_* tool.
+// Records are keyed by (provider, model), so the slots never mix.
 func (c ModelCaps) SupportsNativeStructuredOutput(fallback bool) bool {
 	if c.record != nil && c.record.SupportsNativeStructuredOutput != nil {
 		return *c.record.SupportsNativeStructuredOutput

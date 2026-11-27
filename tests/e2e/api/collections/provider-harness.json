@@ -346640,6 +346640,155 @@
           }
         }
       ]
+    },
+    {
+      "name": "373. Vertex Claude json_schema under reasoning goes native (vertex native structured output) (BIT-3339)",
+      "description": "On Vertex, a json_schema request whose bf_so_* stand-in tool cannot be forced (reasoning on, or a model that rejects forced tool_choice) used to go upstream with the stand-in unforced, and the model could answer 200 in prose. For Claude 4.5+ core now sends output_config.format instead. Vertex serves it where the org policy constraints/vertexai.allowedPartnerModelFeatures allows publishers/anthropic/models/<model>:structured_outputs, and otherwise answers 400 naming that value. Each case accepts the schema JSON (with output_config.format on the wire) or that 400; the collection-level status check still requires 200, so on a denying project the status check fails while the row test passes and names the cause. Red before the change: the wire carries a bf_so_ tool and no output_config.format.",
+      "item": [
+        {
+          "name": "vertex/claude-opus-4-7 /v1/chat/completions reasoning + json_schema goes native - BIT-3339",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// With reasoning on, the stand-in tool cannot be forced, so the schema goes upstream as",
+                  "// output_config.format. Vertex serves it only where the org policy allows structured_outputs;",
+                  "// a denying project answers 400 naming the value to allow. Both are constrained answers. The",
+                  "// collection-level status check still requires 200, so a denying project fails that check",
+                  "// while this test reports why.",
+                  "if (pm.response.code === 400) {",
+                  "  pm.test('chat: the 400 is the org-policy refusal of structured_outputs - BIT-3339', function () {",
+                  "    pm.expect(txt, 'unexpected 400: ' + txt.slice(0, 400)).to.include('allowedPartnerModelFeatures');",
+                  "  });",
+                  "  return;",
+                  "}",
+                  "pm.test('chat: served - BIT-3339', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('chat: the wire carries output_config.format and no bf_so_ stand-in - BIT-3339', function () {",
+                  "  pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object');",
+                  "  pm.expect(((rr || {}).output_config || {}).format, 'wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object');",
+                  "  var standIn = ((rr || {}).tools || []).some(function (t) { return t && /^bf_so_/.test(t.name || ''); });",
+                  "  pm.expect(standIn, 'a bf_so_ stand-in tool reached the wire').to.be.false;",
+                  "});",
+                  "var content = String(((((body.choices || [])[0] || {}).message) || {}).content || '');",
+                  "var parsed = null; try { parsed = JSON.parse(content); } catch (e) { parsed = null; }",
+                  "pm.test('chat: the answer is the schema JSON, not prose - BIT-3339', function () {",
+                  "  pm.expect(parsed, 'content is not JSON: ' + content.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect((parsed || {}).city, 'content: ' + content.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-opus-4-7\",\"max_completion_tokens\":2048,\"reasoning_effort\":\"low\",\"messages\":[{\"role\":\"user\",\"content\":\"Name the capital of France. Answer as JSON with a city field.\"}],\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"capital\",\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-opus-4-7 /v1/responses reasoning + json_schema goes native - BIT-3339",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "// With reasoning on, the stand-in tool cannot be forced, so the schema goes upstream as",
+                  "// output_config.format. Vertex serves it only where the org policy allows structured_outputs;",
+                  "// a denying project answers 400 naming the value to allow. Both are constrained answers. The",
+                  "// collection-level status check still requires 200, so a denying project fails that check",
+                  "// while this test reports why.",
+                  "if (pm.response.code === 400) {",
+                  "  pm.test('responses: the 400 is the org-policy refusal of structured_outputs - BIT-3339', function () {",
+                  "    pm.expect(txt, 'unexpected 400: ' + txt.slice(0, 400)).to.include('allowedPartnerModelFeatures');",
+                  "  });",
+                  "  return;",
+                  "}",
+                  "pm.test('responses: served - BIT-3339', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var ef = body.extra_fields || {};",
+                  "var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('responses: the wire carries output_config.format and no bf_so_ stand-in - BIT-3339', function () {",
+                  "  pm.expect(rr, 'raw_request missing - is client_config.allow_per_request_raw_override on?').to.be.an('object');",
+                  "  pm.expect(((rr || {}).output_config || {}).format, 'wire: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('object');",
+                  "  var standIn = ((rr || {}).tools || []).some(function (t) { return t && /^bf_so_/.test(t.name || ''); });",
+                  "  pm.expect(standIn, 'a bf_so_ stand-in tool reached the wire').to.be.false;",
+                  "});",
+                  "var content = typeof body.output_text === 'string' ? body.output_text : ''; (body.output || []).forEach(function (o) { if (o && o.type === 'message') { (o.content || []).forEach(function (c) { if (c && c.type === 'output_text' && !content) { content = String(c.text || ''); } }); } });",
+                  "var parsed = null; try { parsed = JSON.parse(content); } catch (e) { parsed = null; }",
+                  "pm.test('responses: the answer is the schema JSON, not prose - BIT-3339', function () {",
+                  "  pm.expect(parsed, 'content is not JSON: ' + content.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect((parsed || {}).city, 'content: ' + content.slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/claude-opus-4-7\",\"max_output_tokens\":2048,\"reasoning\":{\"effort\":\"low\"},\"input\":\"Name the capital of France. Answer as JSON with a city field.\",\"text\":{\"format\":{\"type\":\"json_schema\",\"name\":\"capital\",\"strict\":true,\"schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
