@@ -425,8 +425,7 @@ func TestToAnthropicResponsesRequest_StructuredOutput_VertexUnforceable(t *testi
 	t.Run("verbatim thinking under the passthrough flag goes native", func(t *testing.T) {
 		req := soResponsesRequest(schemas.Vertex, "claude-haiku-5-5", nil)
 		req.Params.ExtraParams = map[string]interface{}{"thinking": map[string]any{"type": "adaptive"}}
-		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		ctx := passthroughCtx()
 		out, err := ToAnthropicResponsesRequest(ctx, req)
 		require.NoError(t, err)
 		assertNativeFormat(t, ctx, out)
