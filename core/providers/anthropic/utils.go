@@ -140,19 +140,41 @@ func ValidateChatToolsForProvider(tools []schemas.ChatTool, caps schemas.ModelCa
 // structured outputs (output_config.format). Bedrock Mantle and Azure do not document the native
 // field. Vertex validates it on Claude 4.5+ but serves it only where the org policy
 // constraints/vertexai.allowedPartnerModelFeatures allows structured_outputs, which it denies by
-// default; see vertexTakesNativeStructuredOutput for when Vertex still gets it. Single source of
+// default; see routeStructuredOutput for when Vertex still gets it. Single source of
 // truth for the typed converters and for the raw-body passthrough guards, which have to agree: a
 // body the converter would have rewritten must never reach the provider verbatim.
 func ProviderRequiresSyntheticStructuredOutput(provider schemas.ModelProvider) bool {
 	return provider == schemas.Vertex || provider == schemas.BedrockMantle || provider == schemas.Azure
 }
 
-// vertexTakesNativeStructuredOutput reports whether a Vertex request sends its JSON schema as
-// output_config.format instead of the stand-in tool. Only when the stand-in cannot be forced:
-// unforced, the model may answer in prose, while a native schema the org policy denies at least
-// answers a 400 naming the constraint. A forceable stand-in keeps working on every project.
-func vertexTakesNativeStructuredOutput(provider schemas.ModelProvider, caps schemas.ModelCaps, unforceable bool) bool {
-	return provider == schemas.Vertex && unforceable && caps.SupportsNativeStructuredOutput(IsClaude45Plus(caps.Model()))
+// structuredOutputRoute is how a request's JSON schema reaches an Anthropic Messages surface.
+type structuredOutputRoute int
+
+const (
+	structuredOutputNative  structuredOutputRoute = iota // output_config.format
+	structuredOutputStandIn                              // the synthetic bf_so_* tool
+	structuredOutputNone                                 // no schema at all
+)
+
+// routeStructuredOutput picks the route for a JSON schema. unforceable: the stand-in could not be
+// pinned with tool_choice. citations: an input document has citations enabled, which Anthropic
+// rejects beside output_config.format.
+//
+// Vertex validates output_config.format on Claude 4.5+, but its org policy denies it by default,
+// so it is sent only where the stand-in cannot be forced: unforced, the model may answer in prose,
+// while a denied native schema at least answers a 400 naming the constraint to allow.
+func routeStructuredOutput(provider schemas.ModelProvider, caps schemas.ModelCaps, unforceable, citations bool) structuredOutputRoute {
+	if !ProviderRequiresSyntheticStructuredOutput(provider) {
+		if citations {
+			return structuredOutputNone
+		}
+		return structuredOutputNative
+	}
+	if provider == schemas.Vertex && unforceable && !citations &&
+		caps.SupportsNativeStructuredOutput(IsClaude45Plus(caps.Model())) {
+		return structuredOutputNative
+	}
+	return structuredOutputStandIn
 }
 
 // setFormatOnOutputConfig writes output_config.format, keeping the fields other blocks wrote

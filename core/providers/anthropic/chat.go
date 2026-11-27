@@ -357,6 +357,22 @@ func decodeThinkingExtraParam(value interface{}) (AnthropicThinking, bool) {
 	return thinking, true
 }
 
+// chatInputHasCitations reports whether an input file block has citations enabled.
+func chatInputHasCitations(input []schemas.ChatMessage) bool {
+	for _, message := range input {
+		if message.Content == nil {
+			continue
+		}
+		for _, block := range message.Content.ContentBlocks {
+			if block.Type == schemas.ChatContentBlockTypeFile &&
+				block.Citations != nil && block.Citations.Enabled != nil && *block.Citations.Enabled {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ToAnthropicChatRequest converts a Bifrost request to Anthropic format
 // This is the reverse of ConvertChatRequestToBifrost for provider-side usage
 func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*AnthropicMessageRequest, error) {
@@ -675,8 +691,11 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					(reasoningParams.Effort != nil && *reasoningParams.Effort != "none"))) ||
 				promotedThinking != nil
 			unforceable := thinkingEnabled || !forcedToolChoiceSupported
-			if ProviderRequiresSyntheticStructuredOutput(familyProvider) &&
-				!vertexTakesNativeStructuredOutput(familyProvider, caps, unforceable) {
+			// Only Vertex's native choice is guarded: the other providers keep sending the format
+			// beside citations as they always have.
+			citations := familyProvider == schemas.Vertex && chatInputHasCitations(bifrostReq.Input)
+			switch routeStructuredOutput(familyProvider, caps, unforceable, citations) {
+			case structuredOutputStandIn:
 				responseFormatTool := convertChatResponseFormatToTool(ctx, bifrostReq.Params)
 				if responseFormatTool != nil {
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
@@ -690,7 +709,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 						schemas.AddAdaptation(ctx, schemas.AdaptationToolChoice)
 					}
 				}
-			} else {
+			case structuredOutputNative:
 				// Use GA structured outputs (output_config.format) instead of beta (output_format)
 				setFormatOnOutputConfig(anthropicReq, convertChatResponseFormatToAnthropicOutputFormat(bifrostReq.Params.ResponseFormat))
 			}

@@ -2859,6 +2859,21 @@ func TestIsFableFamily(t *testing.T) {
 	}
 }
 
+func TestIsClaude45Plus(t *testing.T) {
+	for model, want := range map[string]bool{
+		"claude-sonnet-4-5@20250929": true,
+		"claude-haiku-4-5@20251001":  true,
+		"claude-opus-4-8":            true,
+		"claude-sonnet-5-5":          true,
+		"claude-fable-5-1":           true,
+		"claude-opus-4-1@20250805":   false,
+		"claude-sonnet-4@20250514":   false,
+		"claude-3-5-haiku":           false,
+	} {
+		assert.Equal(t, want, IsClaude45Plus(model), model)
+	}
+}
+
 // TestIsSonnet5Plus pins the Sonnet 5 predicate. Sonnet 5 adopts the Opus 4.7+
 // request surface (adaptive-only thinking, temperature/top_p/top_k removed). The
 // "sonnet-5" substring must NOT match "sonnet-4-5" or "3-5-sonnet".

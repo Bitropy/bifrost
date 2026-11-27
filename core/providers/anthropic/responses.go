@@ -5081,12 +5081,8 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				(bifrostReq.Params.Reasoning.MaxTokens != nil ||
 					(bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none"))
 			unforceable := thinkingEnabled || !forcedToolChoiceSupported
-			synthetic := ProviderRequiresSyntheticStructuredOutput(familyProvider)
-			native := !synthetic || vertexTakesNativeStructuredOutput(familyProvider, caps, unforceable)
-			// Anthropic rejects citations combined with structured outputs: Anthropic direct then
-			// sends no format at all, and Vertex keeps the stand-in.
-			citations := native && responsesInputHasCitations(bifrostReq.Input)
-			if !native || (synthetic && citations) {
+			switch routeStructuredOutput(familyProvider, caps, unforceable, responsesInputHasCitations(bifrostReq.Input)) {
+			case structuredOutputStandIn:
 				if bifrostReq.Params.Text.Format != nil {
 					responseFormatTool, err := convertResponsesTextFormatToTool(ctx, bifrostReq.Params.Text)
 					if err != nil {
@@ -5107,7 +5103,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						}
 					}
 				}
-			} else if !citations {
+			case structuredOutputNative:
 				// Use GA structured outputs (output_config.format) instead of beta (output_format)
 				setFormatOnOutputConfig(anthropicReq, convertResponsesTextConfigToAnthropicOutputFormat(bifrostReq.Params.Text))
 			}

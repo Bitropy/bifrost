@@ -1558,7 +1558,7 @@ func makeSOResponseFormat(schemaName string) interface{} {
 var toolConversionProviders = []schemas.ModelProvider{schemas.Vertex, schemas.BedrockMantle, schemas.Azure}
 
 // unforceableStandInProviders keep the unforced stand-in when it cannot be forced. Vertex sends
-// output_config.format there instead (vertexnativestructuredoutput_test.go).
+// output_config.format there instead (TestToAnthropicChatRequest_StructuredOutput_VertexUnforceable).
 var unforceableStandInProviders = []schemas.ModelProvider{schemas.BedrockMantle, schemas.Azure}
 
 // TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking verifies that when
@@ -1777,6 +1777,190 @@ func TestToAnthropicChatRequest_StructuredOutput_NativeOutputConfig_Anthropic(t 
 			t.Errorf("did not expect a synthetic bf_so_* tool for Anthropic, got %q", tool.Name)
 		}
 	}
+}
+
+// The tests below that install a capability resolver change process-global state, so they do not
+// run in parallel.
+
+func soChatRequest(provider schemas.ModelProvider, model string, effort *string) *schemas.BifrostChatRequest {
+	rf := makeSOResponseFormat("my_schema")
+	params := &schemas.ChatParameters{ResponseFormat: &rf}
+	if effort != nil {
+		params.MaxCompletionTokens = new(16000)
+		params.Reasoning = &schemas.ChatReasoning{Effort: effort}
+	}
+	return &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}},
+		},
+		Params: params,
+	}
+}
+
+func standInTool(req *AnthropicMessageRequest) *AnthropicTool {
+	for i := range req.Tools {
+		if strings.HasPrefix(req.Tools[i].Name, "bf_so_") {
+			return &req.Tools[i]
+		}
+	}
+	return nil
+}
+
+func toolChoiceAdapted(ctx *schemas.BifrostContext) bool {
+	return schemas.AdaptationsFromContext(ctx)&schemas.AdaptationToolChoice != 0
+}
+
+func assertNativeFormat(t *testing.T, ctx *schemas.BifrostContext, req *AnthropicMessageRequest) {
+	t.Helper()
+	require.NotNil(t, req.OutputConfig, "output_config must carry the schema")
+	assert.Contains(t, string(req.OutputConfig.Format), `"json_schema"`)
+	assert.Nil(t, standInTool(req), "no stand-in tool beside the native format")
+	assert.Nil(t, req.ToolChoice)
+	assert.False(t, toolChoiceAdapted(ctx), "nothing is dropped, so no tool_choice adaptation")
+}
+
+func assertForcedStandIn(t *testing.T, ctx *schemas.BifrostContext, req *AnthropicMessageRequest) {
+	t.Helper()
+	tool := standInTool(req)
+	require.NotNil(t, tool, "the stand-in tool must be sent")
+	require.NotNil(t, req.ToolChoice)
+	assert.Equal(t, "tool", req.ToolChoice.Type)
+	assert.Equal(t, tool.Name, req.ToolChoice.Name)
+	assert.True(t, req.OutputConfig == nil || req.OutputConfig.Format == nil, "no output_config.format")
+	assert.False(t, toolChoiceAdapted(ctx))
+}
+
+func assertUnforcedStandIn(t *testing.T, ctx *schemas.BifrostContext, req *AnthropicMessageRequest) {
+	t.Helper()
+	require.NotNil(t, standInTool(req), "the stand-in tool must be sent")
+	assert.Nil(t, req.ToolChoice)
+	assert.True(t, req.OutputConfig == nil || req.OutputConfig.Format == nil, "no output_config.format")
+	assert.True(t, toolChoiceAdapted(ctx), "the dropped pin is recorded")
+}
+
+func noForcedToolChoice() schemas.ModelCapabilities {
+	return schemas.ModelCapabilities{SupportsForcedToolChoice: new(false)}
+}
+
+func citedDocumentBlocks() []schemas.ChatContentBlock {
+	return []schemas.ChatContentBlock{
+		{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Summarise the document.")},
+		{
+			Type:      schemas.ChatContentBlockTypeFile,
+			File:      &schemas.ChatInputFile{FileData: schemas.Ptr("plain text document"), FileType: schemas.Ptr("text/plain")},
+			Citations: &schemas.Citations{Enabled: schemas.Ptr(true)},
+		},
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_VertexUnforceable covers when Vertex sends the
+// schema as output_config.format instead of the stand-in tool.
+func TestToAnthropicChatRequest_StructuredOutput_VertexUnforceable(t *testing.T) {
+	t.Run("record without forced tool_choice goes native", func(t *testing.T) {
+		setProviderOverride(t, schemas.Vertex, "claude-sonnet-5-5", noForcedToolChoice())
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		out, err := ToAnthropicChatRequest(ctx, soChatRequest(schemas.Vertex, "claude-sonnet-5-5", nil))
+		require.NoError(t, err)
+		assertNativeFormat(t, ctx, out)
+	})
+
+	t.Run("model unforceable by name goes native", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		out, err := ToAnthropicChatRequest(ctx, soChatRequest(schemas.Vertex, "claude-opus-5-5", nil))
+		require.NoError(t, err)
+		assertNativeFormat(t, ctx, out)
+	})
+
+	t.Run("thinking on goes native and keeps effort", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		out, err := ToAnthropicChatRequest(ctx, soChatRequest(schemas.Vertex, "claude-sonnet-4-6", schemas.Ptr("high")))
+		require.NoError(t, err)
+		assertNativeFormat(t, ctx, out)
+		require.NotNil(t, out.OutputConfig.Effort)
+		assert.Equal(t, "high", *out.OutputConfig.Effort)
+	})
+
+	t.Run("forceable with thinking off keeps the forced stand-in", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		out, err := ToAnthropicChatRequest(ctx, soChatRequest(schemas.Vertex, "claude-sonnet-4-5@20250929", nil))
+		require.NoError(t, err)
+		assertForcedStandIn(t, ctx, out)
+	})
+
+	t.Run("pre-4.5 model under thinking keeps the unforced stand-in", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		out, err := ToAnthropicChatRequest(ctx, soChatRequest(schemas.Vertex, "claude-sonnet-4@20250514", schemas.Ptr("high")))
+		require.NoError(t, err)
+		assertUnforcedStandIn(t, ctx, out)
+	})
+
+	t.Run("record without native structured output keeps the unforced stand-in", func(t *testing.T) {
+		setProviderOverride(t, schemas.Vertex, "claude-sonnet-5-5", schemas.ModelCapabilities{
+			SupportsForcedToolChoice:       new(false),
+			SupportsNativeStructuredOutput: new(false),
+		})
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		out, err := ToAnthropicChatRequest(ctx, soChatRequest(schemas.Vertex, "claude-sonnet-5-5", nil))
+		require.NoError(t, err)
+		assertUnforcedStandIn(t, ctx, out)
+	})
+
+	t.Run("citations keep the unforced stand-in", func(t *testing.T) {
+		setProviderOverride(t, schemas.Vertex, "claude-sonnet-5-5", noForcedToolChoice())
+		req := soChatRequest(schemas.Vertex, "claude-sonnet-5-5", nil)
+		req.Input[0].Content = &schemas.ChatMessageContent{ContentBlocks: citedDocumentBlocks()}
+		ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+		out, err := ToAnthropicChatRequest(ctx, req)
+		require.NoError(t, err)
+		assertUnforcedStandIn(t, ctx, out)
+	})
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_UnforceableStandInElsewhere: only Vertex goes native;
+// Azure and Bedrock Mantle keep the unforced stand-in.
+func TestToAnthropicChatRequest_StructuredOutput_UnforceableStandInElsewhere(t *testing.T) {
+	for _, provider := range unforceableStandInProviders {
+		t.Run(string(provider)+"/forced tool_choice unsupported", func(t *testing.T) {
+			setProviderOverride(t, provider, "claude-sonnet-5-5", noForcedToolChoice())
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			out, err := ToAnthropicChatRequest(ctx, soChatRequest(provider, "claude-sonnet-5-5", nil))
+			require.NoError(t, err)
+			assertUnforcedStandIn(t, ctx, out)
+		})
+		t.Run(string(provider)+"/thinking on", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			out, err := ToAnthropicChatRequest(ctx, soChatRequest(provider, "claude-sonnet-4-6", schemas.Ptr("high")))
+			require.NoError(t, err)
+			assertUnforcedStandIn(t, ctx, out)
+		})
+	}
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_AnthropicCitationsKeepFormat: Anthropic direct chat
+// sends the format beside a cited document, as it always has.
+func TestToAnthropicChatRequest_StructuredOutput_AnthropicCitationsKeepFormat(t *testing.T) {
+	req := soChatRequest(schemas.Anthropic, "claude-opus-4-7", nil)
+	req.Input[0].Content = &schemas.ChatMessageContent{ContentBlocks: citedDocumentBlocks()}
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	out, err := ToAnthropicChatRequest(ctx, req)
+	require.NoError(t, err)
+	assertNativeFormat(t, ctx, out)
+}
+
+// TestToAnthropicChatRequest_StructuredOutput_KeepsTaskBudget: the format joins an output_config
+// another field already wrote.
+func TestToAnthropicChatRequest_StructuredOutput_KeepsTaskBudget(t *testing.T) {
+	req := soChatRequest(schemas.Anthropic, "claude-opus-4-7", nil)
+	req.Params.TaskBudget = &schemas.ChatTaskBudget{Type: "tokens", Total: 20000}
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	out, err := ToAnthropicChatRequest(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, out.OutputConfig)
+	assert.Contains(t, string(out.OutputConfig.Format), `"json_schema"`)
+	require.NotNil(t, out.OutputConfig.TaskBudget)
+	assert.Equal(t, 20000, out.OutputConfig.TaskBudget.Total)
 }
 
 // TestToBifrostChatResponse_StructuredOutput_FinishReasonStop verifies that when
