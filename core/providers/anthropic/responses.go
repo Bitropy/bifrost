@@ -1279,7 +1279,7 @@ func (state *AnthropicResponsesStreamState) closeWebSearch(sequenceNumber int, s
 			ResponsesToolMessage: state.webSearchToolMessage(action),
 		},
 	}
-	state.storeWebSearchOutputItem(state.WebSearchOutputIndex, done.Item)
+	state.storeDoneOutputItem(state.WebSearchOutputIndex, done.Item)
 	state.WebSearchToolID = nil
 	state.WebSearchOutputIndex = nil
 	state.WebSearchQuery = nil
@@ -1287,10 +1287,10 @@ func (state *AnthropicResponsesStreamState) closeWebSearch(sequenceNumber int, s
 	return done
 }
 
-// storeWebSearchOutputItem keeps a closed web_search_call for the response.completed output
-// built at message_stop, as the advisor and web_fetch paths do for their items. The item is
-// cloned because the emitted one is handed to the consumer.
-func (state *AnthropicResponsesStreamState) storeWebSearchOutputItem(outputIdx *int, item *schemas.ResponsesMessage) {
+// storeDoneOutputItem keeps a closed server-tool call for the response.completed output
+// built at message_stop. The item is cloned because the emitted one is handed to the
+// consumer.
+func (state *AnthropicResponsesStreamState) storeDoneOutputItem(outputIdx *int, item *schemas.ResponsesMessage) {
 	if outputIdx == nil || state.OutputItems == nil {
 		return
 	}
@@ -1923,7 +1923,7 @@ func (chunk *AnthropicStreamEvent) toBifrostResponsesStream(ctx *schemas.Bifrost
 				}
 
 				outputIdx := state.WebSearchOutputIndex
-				state.storeWebSearchOutputItem(outputIdx, item)
+				state.storeDoneOutputItem(outputIdx, item)
 
 				// Clear all web search state
 				state.WebSearchToolID = nil
@@ -1969,6 +1969,7 @@ func (chunk *AnthropicStreamEvent) toBifrostResponsesStream(ctx *schemas.Bifrost
 					ResponsesToolMessage: toolMsg,
 				}
 				outputIdx := state.WebFetchOutputIndex
+				state.storeDoneOutputItem(outputIdx, item)
 
 				state.WebFetchToolID = nil
 				state.WebFetchOutputIndex = nil

@@ -592,6 +592,12 @@ func TestProviderBlocks_ResponsesStreamParity(t *testing.T) {
 		if got := strings.Join(outputTypes(last.Response.Output), ","); got != "mcp_call,message" {
 			t.Fatalf("completed output %s, want the mcp_tool_use call and the empty text", got)
 		}
+		wf := responsesBlockFixtures()[AnthropicContentBlockTypeWebFetchToolResult]
+		wfEvents, wfLast := responsesStreamFrom(t, streamFramesWith("", wf.pre, wf.block))
+		wfDones := eventsOf(wfEvents, schemas.ResponsesStreamResponseTypeOutputItemDone)
+		if got := strings.Join(outputTypes(wfLast.Response.Output), ","); got != "web_fetch_call" || len(wfDones) != 1 || itemJSON(t, &wfLast.Response.Output[0]) != itemJSON(t, wfDones[0].Item) {
+			t.Fatalf("web_fetch: completed output %s, %d done events; want its done web_fetch_call kept", got, len(wfDones))
+		}
 		frames := streamFramesWith("", `{"type":"compaction"}`)
 		frames = append(frames[:2], append([]string{`{"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"sum"}}`}, frames[2:]...)...)
 		events, last := responsesStreamFrom(t, frames)
