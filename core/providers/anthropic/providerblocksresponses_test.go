@@ -595,8 +595,11 @@ func TestProviderBlocks_ResponsesStreamParity(t *testing.T) {
 		wf := responsesBlockFixtures()[AnthropicContentBlockTypeWebFetchToolResult]
 		wfEvents, wfLast := responsesStreamFrom(t, streamFramesWith("", wf.pre, wf.block))
 		wfDones := eventsOf(wfEvents, schemas.ResponsesStreamResponseTypeOutputItemDone)
-		if got := strings.Join(outputTypes(wfLast.Response.Output), ","); got != "web_fetch_call" || len(wfDones) != 1 || itemJSON(t, &wfLast.Response.Output[0]) != itemJSON(t, wfDones[0].Item) {
-			t.Fatalf("web_fetch: completed output %s, %d done events; want its done web_fetch_call kept", got, len(wfDones))
+		if got := strings.Join(outputTypes(wfLast.Response.Output), ","); got != "web_fetch_call" || len(wfDones) != 1 {
+			t.Fatalf("web_fetch: completed output %s with %d done events, want the one web_fetch_call", got, len(wfDones))
+		}
+		if itemJSON(t, &wfLast.Response.Output[0]) != itemJSON(t, wfDones[0].Item) {
+			t.Fatal("web_fetch: the completed web_fetch_call differs from its done item")
 		}
 		frames := streamFramesWith("", `{"type":"compaction"}`)
 		frames = append(frames[:2], append([]string{`{"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"sum"}}`}, frames[2:]...)...)
