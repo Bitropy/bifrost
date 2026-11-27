@@ -321,7 +321,7 @@ func TestToAnthropicResponsesRequest_StructuredOutput_ToolConversion(t *testing.
 // The model reaches the tool under the default "auto" — with only the bf_so_*
 // tool bound there is nothing else it can call.
 func TestToAnthropicResponsesRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *testing.T) {
-	for _, provider := range toolConversionProviders {
+	for _, provider := range unforceableStandInProviders {
 		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
 			t.Run(string(provider)+"/"+model, func(t *testing.T) {
 				req := &schemas.BifrostResponsesRequest{

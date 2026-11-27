@@ -517,7 +517,7 @@ func TestBuildChat_AdaptationSites(t *testing.T) {
 		{"sampling: temperature with top_p", schemas.Anthropic, refusalTestModel, `{"temperature":0.5,"top_p":0.9}`, nil, schemas.AdaptationSampling},
 		{"tool_choice: forced choice unsupported", schemas.Anthropic, refusalTestModel, `{"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],"tool_choice":"required"}`, &schemas.ModelCapabilities{SupportsForcedToolChoice: &no}, schemas.AdaptationToolChoice},
 		{"tool_choice: custom", schemas.Anthropic, refusalTestModel, `{"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],"tool_choice":{"type":"custom","custom":{"name":"f"}}}`, nil, schemas.AdaptationToolChoice},
-		{"tool_choice: synthetic structured-output tool not forced", schemas.Vertex, refusalTestModel, `{"response_format":{"type":"json_schema","json_schema":{"name":"o","schema":{"type":"object"}}},"reasoning_effort":"high"}`, nil, schemas.AdaptationToolChoice},
+		{"tool_choice: synthetic structured-output tool not forced", schemas.Vertex, "claude-sonnet-4@20250514", `{"response_format":{"type":"json_schema","json_schema":{"name":"o","schema":{"type":"object"}}},"reasoning_effort":"high"}`, nil, schemas.AdaptationToolChoice},
 		{"max_tokens: above the ceiling", schemas.Anthropic, refusalTestModel, `{"max_completion_tokens":1000000}`, nil, schemas.AdaptationMaxTokens},
 		{"reasoning: display updates downgraded", schemas.Anthropic, refusalTestModel, `{"reasoning":{"effort":"high","display":"updates"}}`, nil, schemas.AdaptationReasoning},
 		{"service_tier: route has none", schemas.Vertex, refusalTestModel, `{"service_tier":"auto"}`, nil, schemas.AdaptationServiceTier},

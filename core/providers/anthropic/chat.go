@@ -669,19 +669,19 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.MCPServers = servers
 		}
 		if bifrostReq.Params.ResponseFormat != nil {
-			// Vertex, Bedrock Mantle, and Azure don't accept native structured outputs
-			// (output_config.format), so convert to a tool instead.
-			if ProviderRequiresSyntheticStructuredOutput(familyProvider) {
+			// Anthropic rejects forced tool_choice when extended thinking is active.
+			thinkingEnabled := (reasoningParams != nil &&
+				(reasoningParams.MaxTokens != nil ||
+					(reasoningParams.Effort != nil && *reasoningParams.Effort != "none"))) ||
+				promotedThinking != nil
+			unforceable := thinkingEnabled || !forcedToolChoiceSupported
+			if ProviderRequiresSyntheticStructuredOutput(familyProvider) &&
+				!vertexTakesNativeStructuredOutput(familyProvider, caps, unforceable) {
 				responseFormatTool := convertChatResponseFormatToTool(ctx, bifrostReq.Params)
 				if responseFormatTool != nil {
 					anthropicReq.Tools = append(anthropicReq.Tools, *responseFormatTool)
-					// Anthropic rejects forced tool_choice when extended thinking is active.
-					// Skip forcing tool_choice in that case; the model may still call the tool.
-					thinkingEnabled := (reasoningParams != nil &&
-						(reasoningParams.MaxTokens != nil ||
-							(reasoningParams.Effort != nil && *reasoningParams.Effort != "none"))) ||
-						promotedThinking != nil
-					if !thinkingEnabled && forcedToolChoiceSupported {
+					// Unforced, the model may still call the tool.
+					if !unforceable {
 						anthropicReq.ToolChoice = &AnthropicToolChoice{
 							Type: "tool",
 							Name: responseFormatTool.Name,
@@ -692,12 +692,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			} else {
 				// Use GA structured outputs (output_config.format) instead of beta (output_format)
-				outputFormat := convertChatResponseFormatToAnthropicOutputFormat(bifrostReq.Params.ResponseFormat)
-				if outputFormat != nil {
-					anthropicReq.OutputConfig = &AnthropicOutputConfig{
-						Format: outputFormat,
-					}
-				}
+				setFormatOnOutputConfig(anthropicReq, convertChatResponseFormatToAnthropicOutputFormat(bifrostReq.Params.ResponseFormat))
 			}
 		}
 

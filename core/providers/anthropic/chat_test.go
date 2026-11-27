@@ -1557,6 +1557,10 @@ func makeSOResponseFormat(schemaName string) interface{} {
 // in the future must also be added to the branch under test in chat.go/responses.go.
 var toolConversionProviders = []schemas.ModelProvider{schemas.Vertex, schemas.BedrockMantle, schemas.Azure}
 
+// unforceableStandInProviders keep the unforced stand-in when it cannot be forced. Vertex sends
+// output_config.format there instead (vertexnativestructuredoutput_test.go).
+var unforceableStandInProviders = []schemas.ModelProvider{schemas.BedrockMantle, schemas.Azure}
+
 // TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking verifies that when
 // response_format=json_schema is sent to a provider whose native Anthropic endpoint rejects
 // output_config.format, Bifrost adds a synthetic bf_so_* tool AND forces tool_choice to it.
@@ -1618,7 +1622,7 @@ func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_NoThinking(t *te
 // "any" with a 400. With only the bf_so_* tool bound the model reaches it under
 // the default "auto".
 func TestToAnthropicChatRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *testing.T) {
-	for _, provider := range toolConversionProviders {
+	for _, provider := range unforceableStandInProviders {
 		for _, model := range []string{"claude-fable-5-1", "claude-mythos-5-1"} {
 			t.Run(string(provider)+"/"+model, func(t *testing.T) {
 				rf := makeSOResponseFormat("my_schema")
@@ -1661,7 +1665,7 @@ func TestToAnthropicChatRequest_StructuredOutput_Fable51_NoForcedToolChoice(t *t
 // Bifrost still adds the synthetic tool but does NOT set tool_choice (to avoid Anthropic's
 // "Thinking may not be enabled when tool_choice forces tool use" 400 error).
 func TestToAnthropicChatRequest_StructuredOutput_ToolConversion_ThinkingEffort(t *testing.T) {
-	for _, provider := range toolConversionProviders {
+	for _, provider := range unforceableStandInProviders {
 		t.Run(string(provider), func(t *testing.T) {
 			rf := makeSOResponseFormat("my_schema")
 			effort := "medium"
